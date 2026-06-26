@@ -340,13 +340,14 @@ TEST_CASE(variant_attribute) {
 // ===== Error reporting =====
 
 TEST_CASE(error_reported_on_missing_semicolon) {
-    Lexer lexer("material X { property y = 1.0 }");  // missing ;
+    // Phase 1 decision: semicolons are optional (Python-like).
+    // A missing ';' no longer produces a parser error.
+    Lexer lexer("material X { property y = 1.0 }");  // no ;
     std::vector<Token> tokens;
     lexer.tokenize(tokens);
     Parser parser(tokens);
     parser.parse();
-    // Parser should have reported at least one error (the missing ';')
-    CHECK(parser.hasErrors());
+    CHECK(!parser.hasErrors());  // semicolon is optional
 }
 
 TEST_CASE(no_error_on_valid_source) {

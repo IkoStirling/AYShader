@@ -220,7 +220,7 @@ TEST_CASE(number_integer) {
     std::vector<Token> tokens;
     lexer.tokenize(tokens);
     CHECK(tokens.size() == 2);
-    CHECK(tokens[0].type == TokenType::FloatLiteral);
+    CHECK(tokens[0].type == TokenType::IntLiteral);
     CHECK(tokens[0].lexeme == "42");
 }
 
@@ -237,7 +237,7 @@ TEST_CASE(number_zero) {
     Lexer lexer("0");
     std::vector<Token> tokens;
     lexer.tokenize(tokens);
-    CHECK(tokens[0].type == TokenType::FloatLiteral);
+    CHECK(tokens[0].type == TokenType::IntLiteral);
     CHECK(tokens[0].lexeme == "0");
 }
 
@@ -246,7 +246,7 @@ TEST_CASE(number_zero_point_not_float) {
     Lexer lexer("0.");
     std::vector<Token> tokens;
     lexer.tokenize(tokens);
-    CHECK(tokens[0].type == TokenType::FloatLiteral);
+    CHECK(tokens[0].type == TokenType::IntLiteral);
     CHECK(tokens[1].type == TokenType::Dot);
 }
 
@@ -369,14 +369,14 @@ TEST_CASE(realistic_material_declaration) {
 }
 
 TEST_CASE(variant_attribute_syntax) {
-    // '#[variant name]' - '[' is LeftBracket, 'variant' is Identifier (not a keyword),
+    // '#[variant name]' - '[' is LeftBracket, 'variant' is Variant keyword,
     // 'name' is Identifier, ']' is RightBracket
     Lexer lexer("[ variant useEmission ]");
     std::vector<Token> tokens;
     lexer.tokenize(tokens);
     CHECK(tokens.size() == 5);
     CHECK(tokens[0].type == TokenType::LeftBracket);
-    CHECK(tokens[1].type == TokenType::Identifier);
+    CHECK(tokens[1].type == TokenType::Variant);
     CHECK(tokens[1].lexeme == "variant");
     CHECK(tokens[2].type == TokenType::Identifier);
     CHECK(tokens[2].lexeme == "useEmission");

@@ -24,6 +24,7 @@ static const char* tokenTypeName(TokenType t) {
         case TokenType::Return: return "Return";
         case TokenType::True: return "True";
         case TokenType::False: return "False";
+        case TokenType::Variant: return "Variant";
         case TokenType::Float: return "Float";
         case TokenType::Vec2: return "Vec2";
         case TokenType::Vec3: return "Vec3";
@@ -143,16 +144,34 @@ std::unique_ptr<Expr> Parser::parseExpression() {
 }
 
 std::unique_ptr<Expr> Parser::parseBinary(int precedence) {
+    std::cerr << "[parseBinary] entry precedence=" << precedence
+              << " _current=" << _current
+              << " curType=" << tokenTypeName(current().type) << "\n";
     auto left = parseUnary();
 
     while (!isAtEnd()) {
         TokenType op = current().type;
         int nextPrecedence = getPrecedence(op);
+        std::cerr << "[parseBinary.loop] _current=" << _current
+                  << " curType=" << tokenTypeName(op)
+                  << " prec=" << nextPrecedence
+                  << " vs base=" << precedence << "\n";
         if (nextPrecedence <= precedence) break;
 
+        // Capture the operator token BEFORE advancing. The recursive
+        // parseBinary(nextPrecedence) will itself advance through parsePrimary
+        // at least once, so `previous()` after the recursion no longer points
+        // at the operator — it points at the operand that followed. We must
+        // snapshot the operator here while `_current` is still on it.
+        Token opTok = current();
+        std::cerr << "[parseBinary] capturing opTok _current=" << _current
+                  << " opTok.type=" << tokenTypeName(opTok.type)
+                  << " opTok.lexeme='" << opTok.lexeme << "'\n";
         advance();
         auto right = parseBinary(nextPrecedence);
-        left = std::make_unique<BinaryExpr>(std::move(left), previous(), std::move(right));
+        std::cerr << "[parseBinary] constructing BinaryExpr with op.type="
+                  << tokenTypeName(opTok.type) << "\n";
+        left = std::make_unique<BinaryExpr>(std::move(left), opTok, std::move(right));
     }
 
     return left;
@@ -294,7 +313,7 @@ std::unique_ptr<Stmt> Parser::parsePropertyDecl() {
     auto initializer = parseExpression();
     std::cerr << "[parsePropertyDecl] after expr _current=" << _current
               << " curType=" << tokenTypeName(current().type) << "\n";
-    consume(TokenType::Semicolon, "Expected ';' after property");
+    match(TokenType::Semicolon);  // ';' is optional (Python-like)
     std::cerr << "[parsePropertyDecl] after ; _current=" << _current << "\n";
     return std::make_unique<PropertyDecl>(name.lexeme, std::move(initializer));
 }
@@ -306,13 +325,13 @@ std::unique_ptr<Stmt> Parser::parseUniformDecl() {
     // consume() once the Lexer change lands.
     Token type = consumeTypeName("Expected uniform type");
     Token name = consume(TokenType::Identifier, "Expected uniform name");
-    consume(TokenType::Semicolon, "Expected ';' after uniform");
+    match(TokenType::Semicolon);  // ';' is optional (Python-like)
     return std::make_unique<UniformDecl>(type.lexeme, name.lexeme);
 }
 
 std::unique_ptr<Stmt> Parser::parseTextureDecl() {
     Token name = consume(TokenType::Identifier, "Expected texture name");
-    consume(TokenType::Semicolon, "Expected ';' after texture");
+    match(TokenType::Semicolon);  // ';' is optional (Python-like)
     return std::make_unique<TextureDecl>(name.lexeme);
 }
 
@@ -343,13 +362,21 @@ std::unique_ptr<Stmt> Parser::parseShadingFunc() {
 }
 
 std::unique_ptr<Stmt> Parser::parseVariantAttribute() {
-    // We've already consumed '[' via match(). Expect: identifier (variant name) ']'
-    if (!check(TokenType::Identifier)) {
+    // We've already consumed '[' via match().
+    // Two accepted forms:
+    //   [ variant <name> ]   — 'variant' keyword followed by an Identifier
+    //   [ <name> ]           — bare Identifier (legacy/shorthand)
+    Token name;
+    if (match(TokenType::Variant)) {
+        // 'variant' keyword — read the next Identifier as the attribute name.
+        name = consume(TokenType::Identifier, "Expected variant attribute name after 'variant'");
+    } else if (check(TokenType::Identifier)) {
+        name = current();
+        advance();
+    } else {
         error("Expected variant name after '['");
         return nullptr;
     }
-    Token name = current();
-    advance();
     consume(TokenType::RightBracket, "Expected ']' after variant name");
     return std::make_unique<VariantAttribute>(name.lexeme);
 }
@@ -358,7 +385,7 @@ std::unique_ptr<Stmt> Parser::parseLetStmt() {
     Token name = consume(TokenType::Identifier, "Expected variable name");
     consume(TokenType::Equal, "Expected '=' after let");
     auto initializer = parseExpression();
-    consume(TokenType::Semicolon, "Expected ';' after let");
+    match(TokenType::Semicolon);  // ';' is optional (Python-like)
     return std::make_unique<LetStmt>(name.lexeme, std::move(initializer));
 }
 
@@ -367,7 +394,7 @@ std::unique_ptr<Stmt> Parser::parseReturnStmt() {
     if (!check(TokenType::Semicolon)) {
         value = parseExpression();
     }
-    consume(TokenType::Semicolon, "Expected ';' after return");
+    match(TokenType::Semicolon);  // ';' is optional (Python-like)
     return std::make_unique<ReturnStmt>(std::move(value));
 }
 

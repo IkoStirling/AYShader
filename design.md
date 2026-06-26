@@ -302,7 +302,34 @@ Phoskia 的语法控制在以下 5 个文件里。**改一个语法特性需要�
 
 ## 8. 后端与多平台（Phase 2+）
 
-Phase 1 仅实现 BGFX 后端。未来新增后端：
+### BGFX `.sc` 格式支持的 Shader 类型
+
+BGFX `.sc` 格式**仅支持 Vertex / Fragment shader**。`BGFXShaderType` 枚举定义如下：
+
+```cpp
+enum class BGFXShaderType {
+    Vertex,   // → gl_Position =
+    Fragment, // → gl_FragColor =
+    Compute,  // Phase 2+ — 无固定输出变量，raw dispatch
+    Ray       // Phase 3+ — 独立路径
+};
+```
+
+**Compute shader 特殊处理**：BGFX 不通过 `.sc` 提供 compute 支持。Phase 2+ Compute shader 走独立路径：
+- 生成目标平台的 compute shader 源码（HLSL for DX11/DX12、WebGPU SPIR-V 等）
+- 或通过 `bgfx::create_compute_shader()` 直接加载平台特定二进制
+- shaderc 工具链需单独调用（`--type compute`）
+
+**长期路线**：
+
+| Shader 类型 | 现状 | Phase 2 | Phase 3 |
+|---|---|---|---|
+| Vertex | `.sc` 生成 `gl_Position =` | 完善 `gl_Position` 语义 | 多后端 |
+| Fragment | `.sc` 生成 `gl_FragColor =` | 完善 PBR/光照 | 多后端 |
+| Compute | BGFX 不支持 `.sc` | DX11/HLSL compute 生成 | SPIR-V / WGSL |
+| Ray | 不支持 | — | 独立架构 |
+
+### 新增后端步骤
 
 1. 实现 `IAYBackendConverter` 接口
 2. 构造 `Compiler` 后调用 `registerBackend("hlsl", ...)` 即可
@@ -462,12 +489,15 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 - [ ] 错误恢复与 panic-mode 验证
 - [ ] 单元测试与 golden-file 验证
 - [ ] **类型名降级重构**（与 type checker 共同推进，详见下文）
+- [ ] **Compute shader 后端**（HLSL / SPIR-V 生成路径，BGFX `.sc` 不支持 compute）
+- [ ] **Shader type 动态输出变量**（`gl_Position` / `gl_FragColor`，已完成 `_shadingOutputVar`）
 
 ### Phase 3: IR 与多后端
 - [ ] IR 设计实现（SSA 形式）
-- [ ] HLSL 后端 (`AYHLSLConverter`)
+- [ ] HLSL 后端 (`AYHLSLConverter`) — 含 Compute / Ray shader 支持
 - [ ] WGSL 后端 (`AYWGLSConverter`)
 - [ ] 跨后端优化（dead code、constant folding）
+- [ ] **Ray shader 架构**（独立于 compute 的路径）
 
 ### Phase 4: ShaderGraph 与工具链
 - [ ] 节点图数据结构

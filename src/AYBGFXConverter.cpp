@@ -2,6 +2,8 @@
 
 #include "AYBGFXConverter.h"
 #include "AYAst.h"
+#include <cstdio>
+#include <iostream>
 #include <sstream>
 
 namespace ayt::shader
@@ -18,6 +20,8 @@ BGFXConvertResult AYBGFXConverter::convertBGFX(const phoskia::Program& ast) {
         result.success = true;
     } catch (const std::exception& e) {
         result.errors.push_back(e.what());
+    } catch (...) {
+        result.errors.push_back("Unknown exception during generateSC");
     }
 
     return result;
@@ -40,7 +44,7 @@ ConvertResult AYBGFXConverter::convert(const phoskia::Program& ast) {
 }
 
 std::string AYBGFXConverter::generateSC(const phoskia::Program& ast) {
-    _output.clear();
+    _output = std::string();
     _uniforms.clear();
     _textures.clear();
 
@@ -51,15 +55,27 @@ std::string AYBGFXConverter::generateSC(const phoskia::Program& ast) {
     // Process all material declarations
     for (const auto& decl : ast.declarations) {
         if (auto material = dynamic_cast<const phoskia::MaterialDecl*>(decl.get())) {
-            generateShaderBlock(*material, _shaderType == BGFXShaderType::Vertex);
+            generateShaderBlock(*material, _shaderType);
         }
     }
 
     return _output;
 }
 
-void AYBGFXConverter::generateShaderBlock(const phoskia::MaterialDecl& material, bool isVertex) {
-    std::string blockName = isVertex ? "vertex" : "fragment";
+void AYBGFXConverter::generateShaderBlock(const phoskia::MaterialDecl& material, BGFXShaderType shaderType) {
+    std::string blockName =
+        (shaderType == BGFXShaderType::Vertex)  ? "vertex"   :
+        (shaderType == BGFXShaderType::Fragment) ? "fragment" :
+        (shaderType == BGFXShaderType::Compute)   ? "compute"  :
+                                                   "fragment";
+
+    // Set shading output variable based on shader type
+    if (shaderType == BGFXShaderType::Vertex) {
+        _shadingOutputVar = "gl_Position";
+    } else if (shaderType == BGFXShaderType::Fragment) {
+        _shadingOutputVar = "gl_FragColor";
+    }
+    // Compute: no fixed output variable; handled in generateShading
 
     _output += "[" + blockName + "]\n";
     _output += "[" + material.name + "]\n\n";
@@ -126,15 +142,40 @@ void AYBGFXConverter::generateTexture(const phoskia::TextureDecl& texture) {
 }
 
 void AYBGFXConverter::generateShading(const phoskia::ShadingFunc& shading) {
-    _output += "\nvoid main() {\n";
+    if (_shaderType == BGFXShaderType::Compute) {
+        _output += "\nvoid main() {\n";
+        for (const auto& stmt : shading.body) {
+            if (auto let = dynamic_cast<const phoskia::LetStmt*>(stmt.get())) {
+                _output += "    let " + let->name + " = ";
+                generateExpr(*let->initializer);
+                _output += ";\n";
+            } else if (auto ret = dynamic_cast<const phoskia::ReturnStmt*>(stmt.get())) {
+                // Compute shader return: emit as raw expression (assignment to shared variable
+                // or dispatches handled externally). Phase 2 will define compute-specific ABI.
+                _output += "    ";
+                if (ret->value) {
+                    generateExpr(*ret->value);
+                }
+                _output += ";\n";
+            } else if (auto expr = dynamic_cast<const phoskia::ExprStmt*>(stmt.get())) {
+                _output += "    ";
+                generateExpr(*expr->expr);
+                _output += ";\n";
+            }
+        }
+        _output += "}\n";
+        return;
+    }
 
+    // Vertex / Fragment
+    _output += "\nvoid main() {\n";
     for (const auto& stmt : shading.body) {
         if (auto let = dynamic_cast<const phoskia::LetStmt*>(stmt.get())) {
             _output += "    let " + let->name + " = ";
             generateExpr(*let->initializer);
             _output += ";\n";
         } else if (auto ret = dynamic_cast<const phoskia::ReturnStmt*>(stmt.get())) {
-            _output += "    gl_FragColor = ";
+            _output += "    " + _shadingOutputVar + " = ";
             if (ret->value) {
                 generateExpr(*ret->value);
             }
@@ -145,7 +186,6 @@ void AYBGFXConverter::generateShading(const phoskia::ShadingFunc& shading) {
             _output += ";\n";
         }
     }
-
     _output += "}\n";
 }
 

@@ -33,6 +33,7 @@ enum class TokenType : uint8_t {
     Return,
     True,
     False,
+    Variant,
 
     // Types
     Float,

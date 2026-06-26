@@ -2,6 +2,7 @@
 
 #include "AYLexer.h"
 #include <unordered_map>
+#include <iostream>
 
 namespace ayt::shader::phoskia
 {
@@ -45,7 +46,7 @@ void Lexer::scanToken(std::vector<Token>& out) {
         case '{': makeToken(out, TokenType::LeftBrace, 1); break;
         case '}': makeToken(out, TokenType::RightBrace, 1); break;
         case '[': makeToken(out, TokenType::LeftBracket, 1); break;
-        case ']': makeToken(out, TokenType::RightBracket, 1); break;
+        case ']': std::cerr << "[scanToken] ] -> TokenType::RightBracket int=" << static_cast<int>(TokenType::RightBracket) << "\n"; makeToken(out, TokenType::RightBracket, 1); break;
         case ',': makeToken(out, TokenType::Comma, 1); break;
         case ':': makeToken(out, TokenType::Colon, 1); break;
         case ';': makeToken(out, TokenType::Semicolon, 1); break;
@@ -65,7 +66,14 @@ void Lexer::scanToken(std::vector<Token>& out) {
         case ' ':
         case '\r':
         case '\t':
+            break;
         case '\n':
+            std::cerr << "[scanToken] saw \\n before= _line=" << _line
+                      << " _column=" << _column << " _current=" << _current << "\n";
+            _line++;
+            _column = 0;
+            std::cerr << "[scanToken] saw \\n after= _line=" << _line
+                      << " _column=" << _column << "\n";
             break;
         default:
             if (isdigit(c)) {
@@ -83,12 +91,19 @@ Token Lexer::makeToken(std::vector<Token>& out, TokenType type, int length) {
     token.type = type;
     token.lexeme = _source.substr(_start, length);
     token.line = _line;
-    token.column = _column - length;
+    // Column is 1-based: the first character on a line is column 1.
+    // `_column` has already been advanced past the last character of this
+    // token, so the token's starting column is `_column - length + 1`.
+    token.column = _column - length + 1;
     out.push_back(token);
     return token;
 }
 
 TokenType Lexer::identifierType(const std::string& lexeme) {
+    if (lexeme == "variant") {
+        std::cerr << "[identifierType] variant -> TokenType::Variant int="
+                  << static_cast<int>(TokenType::Variant) << "\n";
+    }
     static const std::unordered_map<std::string, TokenType> keywords = {
         {"material", TokenType::Material},
         {"property", TokenType::Property},
@@ -106,6 +121,7 @@ TokenType Lexer::identifierType(const std::string& lexeme) {
         {"return", TokenType::Return},
         {"true", TokenType::True},
         {"false", TokenType::False},
+        {"variant", TokenType::Variant},
         {"float", TokenType::Float},
         {"vec2", TokenType::Vec2},
         {"vec3", TokenType::Vec3},
@@ -128,16 +144,23 @@ TokenType Lexer::identifierType(const std::string& lexeme) {
 Token Lexer::number(std::vector<Token>& out) {
     while (isdigit(peek())) advance();
 
+    // Decide whether this is an integer or float literal based on whether
+    // a fractional part follows. "42" → IntLiteral, "3.14" → FloatLiteral.
+    // A trailing "." without following digits (e.g. "0.") is treated as
+    // an integer followed by a Dot operator, matching the
+    // `number_zero_point_not_float` test expectation.
+    bool hasFraction = false;
     if (peek() == '.' && isdigit(peekNext())) {
+        hasFraction = true;
         advance();
         while (isdigit(peek())) advance();
     }
 
     Token token;
-    token.type = TokenType::FloatLiteral;
+    token.type = hasFraction ? TokenType::FloatLiteral : TokenType::IntLiteral;
     token.lexeme = _source.substr(_start, _current - _start);
     token.line = _line;
-    token.column = _column - static_cast<int>(token.lexeme.length());
+    token.column = _column - static_cast<int>(token.lexeme.length()) + 1;
     // Note: numeric conversion is deferred to the Parser. The Lexer only
     // captures the lexeme; turning "3.14" into a float is a semantic concern.
     out.push_back(token);
@@ -151,8 +174,9 @@ Token Lexer::identifier(std::vector<Token>& out) {
     token.lexeme = _source.substr(_start, _current - _start);
     token.type = identifierType(token.lexeme);
     token.line = _line;
-    token.column = _column - token.lexeme.length();
+    token.column = _column - static_cast<int>(token.lexeme.length()) + 1;
     out.push_back(token);
+    std::cerr << "[identifier] pushed lexeme='" << token.lexeme << "' at index=" << (out.size()-1) << "\n";
     return token;
 }
 
@@ -176,7 +200,7 @@ Token Lexer::stringLiteral(std::vector<Token>& out) {
     // processing). Escape handling is the Parser's job.
     token.lexeme = _source.substr(_start + 1, _current - _start - 2);
     token.line = _line;
-    token.column = _column - static_cast<int>(token.lexeme.length()) - 2;
+    token.column = _column - static_cast<int>(token.lexeme.length()) - 2 + 1;
     out.push_back(token);
     return token;
 }

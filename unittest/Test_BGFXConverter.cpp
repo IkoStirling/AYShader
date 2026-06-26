@@ -163,7 +163,7 @@ TEST_CASE(shading_let_emission) {
     auto result = conv.convert(*prog);
     CHECK(result.success);
     CHECK(result.output.find("let x = 1") != std::string::npos);
-    CHECK(result.output.find("return x") != std::string::npos);
+    CHECK(result.output.find("gl_FragColor = x") != std::string::npos);
 }
 
 // ===== Binary expression emission =====

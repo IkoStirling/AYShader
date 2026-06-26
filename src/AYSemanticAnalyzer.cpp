@@ -2,6 +2,7 @@
 
 #include "AYSemanticAnalyzer.h"
 #include "AYBuiltinFunctions.h"
+#include <cstdio>
 
 namespace ayt::shader::phoskia
 {
@@ -170,6 +171,9 @@ std::shared_ptr<Type> AYSemanticAnalyzer::analyzeExpr(const Expr& expr) {
 }
 
 void AYSemanticAnalyzer::error(const std::string& message, int line, int column) {
+    std::printf("[SemanticAnalyzer] error at line=%d col=%d: %s\n",
+                line, column, message.c_str());
+    std::fflush(stdout);
     _reporter.error(ErrorCode::UnknownIdentifier, message, line, column);
 }
 

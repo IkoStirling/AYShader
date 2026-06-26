@@ -75,7 +75,7 @@ public:
     const std::vector<BGFXTexture>& getTextures() const { return _textures; }
 
 private:
-    void generateShaderBlock(const phoskia::MaterialDecl& material, bool isVertex);
+    void generateShaderBlock(const phoskia::MaterialDecl& material, BGFXShaderType shaderType);
     void generateProperty(const phoskia::PropertyDecl& prop);
     void generateUniform(const phoskia::UniformDecl& uniform);
     void generateTexture(const phoskia::TextureDecl& texture);
@@ -84,6 +84,7 @@ private:
 
     BGFXShaderType _shaderType = BGFXShaderType::Fragment;
     std::string _output;
+    std::string _shadingOutputVar;  // "gl_Position" | "gl_FragColor" | compute dispatch var
     std::vector<BGFXUniform> _uniforms;
     std::vector<BGFXTexture> _textures;
 };
