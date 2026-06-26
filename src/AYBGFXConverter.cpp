@@ -2,9 +2,8 @@
 
 #include "AYBGFXConverter.h"
 #include "AYAst.h"
-#include <cstdio>
-#include <iostream>
 #include <sstream>
+#include <stdexcept>
 
 namespace ayt::shader
 {
@@ -63,19 +62,28 @@ std::string AYBGFXConverter::generateSC(const phoskia::Program& ast) {
 }
 
 void AYBGFXConverter::generateShaderBlock(const phoskia::MaterialDecl& material, BGFXShaderType shaderType) {
-    std::string blockName =
-        (shaderType == BGFXShaderType::Vertex)  ? "vertex"   :
-        (shaderType == BGFXShaderType::Fragment) ? "fragment" :
-        (shaderType == BGFXShaderType::Compute)   ? "compute"  :
-                                                   "fragment";
-
-    // Set shading output variable based on shader type
-    if (shaderType == BGFXShaderType::Vertex) {
-        _shadingOutputVar = "gl_Position";
-    } else if (shaderType == BGFXShaderType::Fragment) {
-        _shadingOutputVar = "gl_FragColor";
+    // TODO(phase2-compute): Compute shader backend is not yet implemented.
+    // BGFX's `.sc` format only supports Vertex/Fragment; Compute needs an
+    // independent path (HLSL for DX11/DX12, SPIR-V for Vulkan, WGSL for
+    // WebGPU — see design.md §8). Until then, emitting a Compute shader
+    // through this converter is a hard error rather than a silent fallback.
+    std::string blockName;
+    switch (shaderType) {
+        case BGFXShaderType::Vertex:
+            blockName = "vertex";
+            _shadingOutputVar = "gl_Position";
+            break;
+        case BGFXShaderType::Fragment:
+            blockName = "fragment";
+            _shadingOutputVar = "gl_FragColor";
+            break;
+        case BGFXShaderType::Compute:
+            throw std::logic_error(
+                "AYBGFXConverter: Compute shader backend not yet implemented "
+                "(see TODO(phase2-compute) in generateShaderBlock; design.md §8).");
+        default:
+            throw std::logic_error("AYBGFXConverter: unknown BGFXShaderType.");
     }
-    // Compute: no fixed output variable; handled in generateShading
 
     _output += "[" + blockName + "]\n";
     _output += "[" + material.name + "]\n\n";
@@ -142,32 +150,15 @@ void AYBGFXConverter::generateTexture(const phoskia::TextureDecl& texture) {
 }
 
 void AYBGFXConverter::generateShading(const phoskia::ShadingFunc& shading) {
+    // TODO(phase2-compute): see generateShaderBlock — Compute path throws
+    // before reaching here, but keep the guard so future refactors that
+    // route Compute through this function still trip the same TODO.
     if (_shaderType == BGFXShaderType::Compute) {
-        _output += "\nvoid main() {\n";
-        for (const auto& stmt : shading.body) {
-            if (auto let = dynamic_cast<const phoskia::LetStmt*>(stmt.get())) {
-                _output += "    let " + let->name + " = ";
-                generateExpr(*let->initializer);
-                _output += ";\n";
-            } else if (auto ret = dynamic_cast<const phoskia::ReturnStmt*>(stmt.get())) {
-                // Compute shader return: emit as raw expression (assignment to shared variable
-                // or dispatches handled externally). Phase 2 will define compute-specific ABI.
-                _output += "    ";
-                if (ret->value) {
-                    generateExpr(*ret->value);
-                }
-                _output += ";\n";
-            } else if (auto expr = dynamic_cast<const phoskia::ExprStmt*>(stmt.get())) {
-                _output += "    ";
-                generateExpr(*expr->expr);
-                _output += ";\n";
-            }
-        }
-        _output += "}\n";
-        return;
+        throw std::logic_error(
+            "AYBGFXConverter: Compute shader generation not yet implemented "
+            "(see TODO(phase2-compute) in generateShading; design.md §8).");
     }
 
-    // Vertex / Fragment
     _output += "\nvoid main() {\n";
     for (const auto& stmt : shading.body) {
         if (auto let = dynamic_cast<const phoskia::LetStmt*>(stmt.get())) {

@@ -46,7 +46,7 @@ void Lexer::scanToken(std::vector<Token>& out) {
         case '{': makeToken(out, TokenType::LeftBrace, 1); break;
         case '}': makeToken(out, TokenType::RightBrace, 1); break;
         case '[': makeToken(out, TokenType::LeftBracket, 1); break;
-        case ']': std::cerr << "[scanToken] ] -> TokenType::RightBracket int=" << static_cast<int>(TokenType::RightBracket) << "\n"; makeToken(out, TokenType::RightBracket, 1); break;
+        case ']': makeToken(out, TokenType::RightBracket, 1); break;
         case ',': makeToken(out, TokenType::Comma, 1); break;
         case ':': makeToken(out, TokenType::Colon, 1); break;
         case ';': makeToken(out, TokenType::Semicolon, 1); break;
@@ -100,10 +100,6 @@ Token Lexer::makeToken(std::vector<Token>& out, TokenType type, int length) {
 }
 
 TokenType Lexer::identifierType(const std::string& lexeme) {
-    if (lexeme == "variant") {
-        std::cerr << "[identifierType] variant -> TokenType::Variant int="
-                  << static_cast<int>(TokenType::Variant) << "\n";
-    }
     static const std::unordered_map<std::string, TokenType> keywords = {
         {"material", TokenType::Material},
         {"property", TokenType::Property},
@@ -176,7 +172,6 @@ Token Lexer::identifier(std::vector<Token>& out) {
     token.line = _line;
     token.column = _column - static_cast<int>(token.lexeme.length()) + 1;
     out.push_back(token);
-    std::cerr << "[identifier] pushed lexeme='" << token.lexeme << "' at index=" << (out.size()-1) << "\n";
     return token;
 }
 

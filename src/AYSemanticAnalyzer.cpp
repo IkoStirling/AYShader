@@ -2,7 +2,7 @@
 
 #include "AYSemanticAnalyzer.h"
 #include "AYBuiltinFunctions.h"
-#include <cstdio>
+#include <iostream>
 
 namespace ayt::shader::phoskia
 {
@@ -171,9 +171,10 @@ std::shared_ptr<Type> AYSemanticAnalyzer::analyzeExpr(const Expr& expr) {
 }
 
 void AYSemanticAnalyzer::error(const std::string& message, int line, int column) {
-    std::printf("[SemanticAnalyzer] error at line=%d col=%d: %s\n",
-                line, column, message.c_str());
-    std::fflush(stdout);
+    // DEBUG: retained — surfaces the semantic-error reporting path that the
+    // Phase 1 F-group fix depends on (see AYPhoskia::runPipeline).
+    std::cerr << "[SemanticAnalyzer] error at line=" << line
+              << " col=" << column << ": " << message << "\n";
     _reporter.error(ErrorCode::UnknownIdentifier, message, line, column);
 }
 

@@ -2,6 +2,7 @@
 
 #include "AYPhoskia.h"
 #include "AYBGFXConverter.h"
+#include <iostream>
 
 namespace ayt::shader::phoskia
 {
@@ -46,14 +47,12 @@ std::unique_ptr<Program> Compiler::parse(const std::vector<Token>& tokens) {
 std::shared_ptr<TypeEnvironment> Compiler::analyzeSemantics(Program& program) {
     AYSemanticAnalyzer analyzer(*_typeEnv);
     analyzer.analyze(program);
-    std::printf("[Compiler::analyzeSemantics] analyzer.errors().size()=%zu\n",
-                analyzer.errors().size());
-    std::fflush(stdout);
+    // DEBUG: retained — surfaces semantic-error propagation in the global
+    // reporter for error-recovery tests in Phase 2 #1.
+    std::cerr << "[Compiler::analyzeSemantics] analyzer.errors().size()="
+              << analyzer.errors().size() << "\n";
     // Bubble analyzer errors back through the global reporter.
     for (const auto& e : analyzer.errors()) {
-        std::printf("[Compiler::analyzeSemantics] pushing error: %s\n",
-                    e.message.c_str());
-        std::fflush(stdout);
         _errorReporter.error(e.code, e.message, e.line, e.column);
     }
     return _typeEnv;
@@ -84,19 +83,15 @@ CompileResult Compiler::runPipeline(const std::string& source, const std::string
         return result;
     }
     // Forward parser diagnostics into the compiler-wide reporter.
-    std::printf("[Compiler::runPipeline] parser.errors().size()=%zu\n",
-                parser.errors().size());
-    std::fflush(stdout);
+    // DEBUG: retained — surfaces parser-error propagation for error-recovery
+    // tests in Phase 2 #1.
+    std::cerr << "[Compiler::runPipeline] parser.errors().size()="
+              << parser.errors().size() << "\n";
     for (const auto& e : parser.errors()) {
-        std::printf("[Compiler::runPipeline] parser error: %s at line=%d col=%d\n",
-                    e.message.c_str(), e.line, e.column);
-        std::fflush(stdout);
         _errorReporter.error(e.code, e.message, e.line, e.column);
     }
     result.ast = std::move(ast);
     if (hasErrors()) {
-        std::printf("[Compiler::runPipeline] hasErrors after parser, returning early\n");
-        std::fflush(stdout);
         result.errors = _errorReporter.errors();
         return result;
     }
@@ -127,12 +122,13 @@ CompileResult Compiler::runPipeline(const std::string& source, const std::string
     }
 
     auto backend = it->second();
-    std::printf("[Compiler::runPipeline] about to call backend->convert\n");
-    std::fflush(stdout);
+    // DEBUG: retained — confirms backend dispatch happens on the success path
+    // for end-to-end compile tests in Phase 1.
+    std::cerr << "[Compiler::runPipeline] dispatching backend '"
+              << backendName << "'\n";
     auto backendResult = backend->convert(*result.ast);
-    std::printf("[Compiler::runPipeline] backend->convert done, success=%d\n",
-                backendResult.success ? 1 : 0);
-    std::fflush(stdout);
+    std::cerr << "[Compiler::runPipeline] backend returned success="
+              << (backendResult.success ? 1 : 0) << "\n";
     result.output = std::move(backendResult.output);
     // Promote backend string errors to CompilerError entries.
     for (const auto& msg : backendResult.errors) {
@@ -142,14 +138,17 @@ CompileResult Compiler::runPipeline(const std::string& source, const std::string
                            backendResult.warnings.begin(),
                            backendResult.warnings.end());
     result.success = backendResult.success;
-    std::printf("[runPipeline] about to return result, output.size=%zu, success=%d\n",
-                result.output.size(), result.success ? 1 : 0);
-    std::fflush(stdout);
+    // DEBUG: retained — the SSO-move proxy corruption diagnostic at this
+    // exact return site caught the original _Myproxy crash (see design.md
+    // §6.5). Do not remove until CompileResult is confirmed safe to return
+    // by value across many production runs.
+    std::cerr << "[runPipeline] about to return result, output.size="
+              << result.output.size() << ", success="
+              << (result.success ? 1 : 0) << "\n";
     try {
         return result;
     } catch (...) {
-        std::printf("[runPipeline] exception during return result\n");
-        std::fflush(stdout);
+        std::cerr << "[runPipeline] exception during return result\n";
         throw;
     }
 }

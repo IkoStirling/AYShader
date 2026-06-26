@@ -80,20 +80,18 @@ std::unique_ptr<Program> Parser::parse() {
     auto program = std::make_unique<Program>(std::vector<StmtPtr>{});
     while (!isAtEnd()) {
         size_t before = _current;
-        std::cerr << "[parse] before=" << before
-                  << " curType=" << tokenTypeName(current().type)
-                  << " lexeme='" << current().lexeme << "'\n";
         if (auto stmt = parseStatement()) {
             program->declarations.push_back(std::move(stmt));
         } else {
             // Error recovery: skip to next statement boundary
             advance();
         }
-        std::cerr << "[parse] after=" << _current
-                  << " curType=" << tokenTypeName(current().type)
-                  << " lexeme='" << current().lexeme << "'\n";
         if (_current == before) {
-            std::cerr << "[parse] STUCK — force advancing\n";
+            // DEBUG: panic-mode signal — retained until error recovery
+            // tests in Phase 2 #1 confirm this never fires on valid input.
+            std::cerr << "[parse] STUCK at _current=" << _current
+                      << " curType=" << tokenTypeName(current().type)
+                      << " lexeme='" << current().lexeme << "' — force advancing\n";
             advance();
         }
     }
@@ -101,9 +99,6 @@ std::unique_ptr<Program> Parser::parse() {
 }
 
 std::unique_ptr<Stmt> Parser::parseStatement() {
-    std::cerr << "[parseStatement] entry _current=" << _current
-              << " curType=" << tokenTypeName(current().type)
-              << " lexeme='" << current().lexeme << "'\n";
     if (match(TokenType::Material)) {
         return parseMaterialDecl();
     }
@@ -144,18 +139,11 @@ std::unique_ptr<Expr> Parser::parseExpression() {
 }
 
 std::unique_ptr<Expr> Parser::parseBinary(int precedence) {
-    std::cerr << "[parseBinary] entry precedence=" << precedence
-              << " _current=" << _current
-              << " curType=" << tokenTypeName(current().type) << "\n";
     auto left = parseUnary();
 
     while (!isAtEnd()) {
         TokenType op = current().type;
         int nextPrecedence = getPrecedence(op);
-        std::cerr << "[parseBinary.loop] _current=" << _current
-                  << " curType=" << tokenTypeName(op)
-                  << " prec=" << nextPrecedence
-                  << " vs base=" << precedence << "\n";
         if (nextPrecedence <= precedence) break;
 
         // Capture the operator token BEFORE advancing. The recursive
@@ -164,13 +152,8 @@ std::unique_ptr<Expr> Parser::parseBinary(int precedence) {
         // at the operator — it points at the operand that followed. We must
         // snapshot the operator here while `_current` is still on it.
         Token opTok = current();
-        std::cerr << "[parseBinary] capturing opTok _current=" << _current
-                  << " opTok.type=" << tokenTypeName(opTok.type)
-                  << " opTok.lexeme='" << opTok.lexeme << "'\n";
         advance();
         auto right = parseBinary(nextPrecedence);
-        std::cerr << "[parseBinary] constructing BinaryExpr with op.type="
-                  << tokenTypeName(opTok.type) << "\n";
         left = std::make_unique<BinaryExpr>(std::move(left), opTok, std::move(right));
     }
 
@@ -187,13 +170,10 @@ std::unique_ptr<Expr> Parser::parseUnary() {
 }
 
 std::unique_ptr<Expr> Parser::parseCall() {
-    std::cerr << "[parseCall] entry _current=" << _current
-              << " curType=" << tokenTypeName(current().type) << "\n";
     auto expr = parsePrimary();
 
     while (true) {
         if (match(TokenType::LeftParen)) {
-            std::cerr << "[parseCall] saw ( _current=" << _current << "\n";
             std::vector<ExprPtr> args;
             if (!check(TokenType::RightParen)) {
                 do {
@@ -218,9 +198,6 @@ std::unique_ptr<Expr> Parser::parseCall() {
 }
 
 std::unique_ptr<Expr> Parser::parsePrimary() {
-    std::cerr << "[parsePrimary] entry _current=" << _current
-              << " curType=" << tokenTypeName(current().type)
-              << " lexeme='" << current().lexeme << "'\n";
     if (match(TokenType::FloatLiteral)) {
         Token token = previous();
         try {
@@ -279,14 +256,11 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
 }
 
 std::unique_ptr<Stmt> Parser::parseMaterialDecl() {
-    std::cerr << "[parseMaterialDecl] entry _current=" << _current << "\n";
     Token name = consume(TokenType::Identifier, "Expected material name");
     consume(TokenType::LeftBrace, "Expected '{' before material body");
 
     std::vector<StmtPtr> declarations;
     while (!check(TokenType::RightBrace) && !isAtEnd()) {
-        std::cerr << "[parseMaterialDecl.loop] _current=" << _current
-                  << " curType=" << tokenTypeName(current().type) << "\n";
         size_t before = _current;
         if (auto stmt = parseStatement()) {
             declarations.push_back(std::move(stmt));
@@ -294,7 +268,10 @@ std::unique_ptr<Stmt> Parser::parseMaterialDecl() {
             advance();
         }
         if (_current == before) {
-            std::cerr << "[parseMaterialDecl.loop] STUCK — force advancing\n";
+            // DEBUG: panic-mode signal (paired with parse() top-level guard).
+            std::cerr << "[parseMaterialDecl.loop] STUCK at _current=" << _current
+                      << " curType=" << tokenTypeName(current().type)
+                      << " lexeme='" << current().lexeme << "' — force advancing\n";
             advance();  // panic-mode safety net
         }
     }
@@ -304,17 +281,10 @@ std::unique_ptr<Stmt> Parser::parseMaterialDecl() {
 }
 
 std::unique_ptr<Stmt> Parser::parsePropertyDecl() {
-    std::cerr << "[parsePropertyDecl] entry _current=" << _current << "\n";
     Token name = consume(TokenType::Identifier, "Expected property name");
-    std::cerr << "[parsePropertyDecl] after name _current=" << _current << "\n";
     consume(TokenType::Equal, "Expected '=' after property name");
-    std::cerr << "[parsePropertyDecl] before expr _current=" << _current
-              << " curType=" << tokenTypeName(current().type) << "\n";
     auto initializer = parseExpression();
-    std::cerr << "[parsePropertyDecl] after expr _current=" << _current
-              << " curType=" << tokenTypeName(current().type) << "\n";
     match(TokenType::Semicolon);  // ';' is optional (Python-like)
-    std::cerr << "[parsePropertyDecl] after ; _current=" << _current << "\n";
     return std::make_unique<PropertyDecl>(name.lexeme, std::move(initializer));
 }
 
