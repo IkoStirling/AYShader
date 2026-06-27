@@ -37,7 +37,10 @@ private:
     std::unique_ptr<Stmt> parsePropertyDecl();
     std::unique_ptr<Stmt> parseUniformDecl();
     std::unique_ptr<Stmt> parseTextureDecl();
-    std::unique_ptr<Stmt> parseShadingFunc();
+    std::unique_ptr<Stmt> parseVertexFunc();
+    std::unique_ptr<Stmt> parseFragmentFunc();
+    std::unique_ptr<Stmt> parseShaderParam(ShaderParam::Direction dir);
+    std::unique_ptr<Stmt> parseShaderBlockBody(std::vector<StmtPtr>& params, bool allowOut);
     std::unique_ptr<Stmt> parseVariantAttribute();
 
     std::unique_ptr<Stmt> parseLetStmt();
@@ -61,6 +64,12 @@ private:
     // Identifier (design.md §11.1) and this helper collapses back to a
     // plain consume(Identifier, ...).
     Token consumeTypeName(const std::string& message);
+
+    // Phase 1: consume an Identifier OR any Phoskia semantic / io keyword
+    // (position / normal / color / texcoord / in / out) as a name. This
+    // is needed because those tokens are reserved at the lexer level but
+    // frequently re-used as identifier names (e.g. `property color = ...`).
+    Token consumeName(const std::string& message);
 
     int getPrecedence(TokenType op);
 

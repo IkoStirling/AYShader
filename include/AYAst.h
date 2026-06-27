@@ -42,8 +42,20 @@ class MaterialDecl;
 class PropertyDecl;
 class UniformDecl;
 class TextureDecl;
-class ShadingFunc;
+class VertexFunc;
+class FragmentFunc;
+class ShaderParam;
 class VariantAttribute;
+
+// Phoskia semantic types (used by ShaderParam) — replaces bgfx
+// POSITION/NORMAL/COLOR0/TEXCOORD0 from the programmer's perspective.
+// Mapping to bgfx semantic slots lives in the converter.
+enum class PhoskiaSemantic : uint8_t {
+    Position,
+    Normal,
+    Color,
+    Texcoord,
+};
 
 // (2) AstNode base — must come BEFORE any class derives from it.
 class AstNode {
@@ -208,10 +220,41 @@ public:
     std::string name;
 };
 
-class ShadingFunc : public Stmt {
+// Parameter declaration inside vertex { } or fragment { }.
+// `in`  → input attribute (vertex) or input varying (fragment)
+// `out` → output varying (vertex only; fragment has no out)
+class ShaderParam : public Stmt {
 public:
-    ShadingFunc(std::vector<StmtPtr> body) : body(std::move(body)) {}
+    enum class Direction { In, Out };
+    ShaderParam(Direction dir, const std::string& name, PhoskiaSemantic semantic,
+                ExprPtr defaultValue)
+        : dir(dir), name(name), semantic(semantic),
+          defaultValue(std::move(defaultValue)) {}
     void accept(AstVisitor& visitor) override;
+    Direction dir;
+    std::string name;
+    PhoskiaSemantic semantic;
+    // Only meaningful for `out` params; ignored for `in`.
+    ExprPtr defaultValue;
+};
+
+class VertexFunc : public Stmt {
+public:
+    VertexFunc(std::vector<StmtPtr> params, std::vector<StmtPtr> body)
+        : params(std::move(params)), body(std::move(body)) {}
+    void accept(AstVisitor& visitor) override;
+    // In / Out param declarations in declaration order.
+    std::vector<StmtPtr> params;
+    std::vector<StmtPtr> body;
+};
+
+class FragmentFunc : public Stmt {
+public:
+    FragmentFunc(std::vector<StmtPtr> inputs, std::vector<StmtPtr> body)
+        : inputs(std::move(inputs)), body(std::move(body)) {}
+    void accept(AstVisitor& visitor) override;
+    // Only `in` params — fragments have no outputs.
+    std::vector<StmtPtr> inputs;
     std::vector<StmtPtr> body;
 };
 
@@ -239,7 +282,9 @@ public:
     virtual void visit(PropertyDecl& node) = 0;
     virtual void visit(UniformDecl& node) = 0;
     virtual void visit(TextureDecl& node) = 0;
-    virtual void visit(ShadingFunc& node) = 0;
+    virtual void visit(ShaderParam& node) = 0;
+    virtual void visit(VertexFunc& node) = 0;
+    virtual void visit(FragmentFunc& node) = 0;
 
     virtual void visit(BinaryExpr& node) = 0;
     virtual void visit(UnaryExpr& node) = 0;
@@ -275,7 +320,9 @@ inline void MaterialDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void PropertyDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void UniformDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void TextureDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
-inline void ShadingFunc::accept(AstVisitor& visitor) { visitor.visit(*this); }
+inline void ShaderParam::accept(AstVisitor& visitor) { visitor.visit(*this); }
+inline void VertexFunc::accept(AstVisitor& visitor) { visitor.visit(*this); }
+inline void FragmentFunc::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void VariantAttribute::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void Program::accept(AstVisitor& visitor) { visitor.visit(*this); }
 

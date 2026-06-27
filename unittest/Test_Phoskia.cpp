@@ -1,5 +1,6 @@
 // ============================================================
 // AYShader Compiler (AYPhoskia) End-to-End Unit Tests
+// (Phase 1 closure — vertex/fragment syntax)
 // ============================================================
 
 #include "AYPhoskia.h"
@@ -16,9 +17,8 @@ TEST_CASE(compile_minimal_unlit) {
     const char* src = R"(
         material Unlit {
             property color = vec4(1.0, 0.0, 0.0, 1.0)
-            shading {
-                return color
-            }
+            vertex { return vec4(0.0, 0.0, 0.0, 1.0) }
+            fragment { return color }
         }
     )";
     auto result = compiler.compile(src);
@@ -28,8 +28,9 @@ TEST_CASE(compile_minimal_unlit) {
 }
 
 TEST_CASE(compile_empty_material) {
+    // Must include both blocks now — the converter rejects otherwise.
     Compiler compiler;
-    auto result = compiler.compile("material X { }");
+    auto result = compiler.compile("material X { vertex { } fragment { } }");
     CHECK(result.success);
     CHECK(!result.output.empty());
 }
@@ -37,8 +38,16 @@ TEST_CASE(compile_empty_material) {
 TEST_CASE(compile_multiple_materials) {
     Compiler compiler;
     const char* src = R"(
-        material A { property a = 1.0; }
-        material B { property b = 2.0; }
+        material A {
+            property a = 1.0
+            vertex { return vec4(0.0) }
+            fragment { return vec4(1.0, 0.0, 0.0, 1.0) }
+        }
+        material B {
+            property b = 2.0
+            vertex { return vec4(1.0) }
+            fragment { return vec4(0.0, 1.0, 0.0, 1.0) }
+        }
     )";
     auto result = compiler.compile(src);
     CHECK(result.success);
@@ -49,35 +58,30 @@ TEST_CASE(compile_multiple_materials) {
 
 TEST_CASE(default_backend_is_registered) {
     Compiler compiler;
-    // Compile without specifying backend should use default (bgfx)
-    auto result = compiler.compile("material X { }");
+    auto result = compiler.compile(
+        "material X { vertex { return vec4(0.0) } "
+        "fragment { return vec4(1.0) } }");
     CHECK(result.success);
 }
 
 TEST_CASE(compile_to_unknown_backend_fails) {
     Compiler compiler;
-    auto result = compiler.compileToBackend("material X { }", "hlsl");
+    auto result = compiler.compileToBackend(
+        "material X { vertex { return vec4(0.0) } "
+        "fragment { return vec4(1.0) } }", "hlsl");
     CHECK(!result.success);
     CHECK(!result.errors.empty());
 }
 
 TEST_CASE(register_custom_backend) {
     Compiler compiler;
-    bool factoryCalled = false;
-    compiler.registerBackend("noop", [&]() {
-        factoryCalled = true;
-        // Return a converter that just produces empty output.
-        // We don't have a generic no-op converter in tests; use a
-        // minimal stub by going through compileToBackend path.
-        // Trick: we can't easily construct a converter here without
-        // an implementation, so register a lambda that returns nullptr
-        // is also not allowed. So just verify the registration succeeded.
+    compiler.registerBackend("noop", []() {
         return std::unique_ptr<ayt::shader::IAYBackendConverter>(nullptr);
     });
-    (void)factoryCalled;  // Won't be called because convert() returns null
-    // compileToBackend will hit "Unknown backend" path (or fail inside the converter)
-    // — we don't assert a specific behavior here, just that registration compiles.
-    CHECK(true);
+    auto result = compiler.compileToBackend(
+        "material X { vertex { } fragment { } }", "noop");
+    // nullptr backend fails inside convert(), which surfaces as an error.
+    CHECK(!result.success);
 }
 
 // ===== Compilation options =====
@@ -93,8 +97,9 @@ TEST_CASE(options_can_be_customized) {
     opts.enableTypeInference = true;
     opts.enableSemanticAnalysis = false;
     Compiler compiler(opts);
-    // Will fail because "myBackend" is not registered
-    auto result = compiler.compile("material X { }");
+    auto result = compiler.compile(
+        "material X { vertex { return vec4(0.0) } "
+        "fragment { return vec4(1.0) } }");
     CHECK(!result.success);
 }
 
@@ -103,7 +108,8 @@ TEST_CASE(options_can_be_customized) {
 TEST_CASE(tokenize_phase) {
     Compiler compiler;
     std::vector<Token> tokens;
-    compiler.tokenize("material X { }", tokens);
+    compiler.tokenize(
+        "material X { vertex { } fragment { } }", tokens);
     CHECK(!tokens.empty());
     CHECK(tokens.back().type == TokenType::EndOfFile);
 }
@@ -111,7 +117,8 @@ TEST_CASE(tokenize_phase) {
 TEST_CASE(parse_phase) {
     Compiler compiler;
     std::vector<Token> tokens;
-    compiler.tokenize("material X { }", tokens);
+    compiler.tokenize(
+        "material X { vertex { } fragment { } }", tokens);
     auto ast = compiler.parse(tokens);
     CHECK(ast != nullptr);
     CHECK(ast->declarations.size() == 1);
@@ -120,21 +127,32 @@ TEST_CASE(parse_phase) {
 // ===== Error handling =====
 
 TEST_CASE(lex_error_propagated) {
-    // '&' alone is an Unknown token — but our parser currently does
-    // not abort on it; it reports through Parser::error if it appears
-    // in a position that expects something specific. Use a clearly
-    // invalid construct to trigger an error.
     Compiler compiler;
-    auto result = compiler.compile("material { }");  // missing name
-    // Parser should report a missing-identifier error
+    // missing material name → parser reports a missing-identifier error.
+    auto result = compiler.compile("material { vertex { } fragment { } }");
     CHECK(!result.errors.empty());
 }
 
 TEST_CASE(parse_error_propagated) {
     Compiler compiler;
-    // missing closing brace
-    auto result = compiler.compile("material X { property a = 1.0; ");
+    auto result = compiler.compile(
+        "material X { vertex { return vec4(0.0); "
+        "fragment { return vec4(1.0) }");  // missing '}'
     CHECK(!result.errors.empty());
+}
+
+TEST_CASE(missing_vertex_block_causes_error) {
+    Compiler compiler;
+    auto result = compiler.compile(
+        "material X { fragment { return vec4(1.0) } }");
+    CHECK(!result.success);
+}
+
+TEST_CASE(missing_fragment_block_causes_error) {
+    Compiler compiler;
+    auto result = compiler.compile(
+        "material X { vertex { return vec4(0.0) } }");
+    CHECK(!result.success);
 }
 
 // ===== Realistic Phoskia snippet =====
@@ -146,36 +164,46 @@ TEST_CASE(compile_pbr_like_material) {
             texture2d albedoMap
             uniform vec3 cameraPos
 
-            property baseColor = sample(albedoMap, uv)
+            vertex {
+                in pos : position
+                in nrm : normal
+                in uv  : texcoord
+                out worldNormal : normal = vec3(0.0, 0.0, 1.0)
+                out uvCoord     : texcoord = vec2(0.0, 0.0)
+                let wpos = vec4(pos, 1.0)
+                return wpos
+            }
 
-            shading {
+            fragment {
+                in worldNormal : normal
+                in uvCoord     : texcoord
+                let baseColor = sample(albedoMap, uvCoord)
                 let N = normalize(worldNormal)
-                let V = normalize(cameraPos - worldPos)
+                let V = normalize(cameraPos)
                 let NdotV = max(dot(N, V), 0.0)
                 return vec4(baseColor.rgb * NdotV, 1.0)
             }
         }
     )";
     auto result = compiler.compile(src);
-    // Phase 1: semantic analysis may flag undefined identifiers like
-    // 'worldNormal', 'worldPos', 'uv', 'sample'. Accept either: no
-    // errors means semantics is lenient; errors are reported but
-    // the compile should still produce output for the BGFX backend.
-    // We assert: backend conversion always runs, output is non-empty.
+    // Semantic analysis may flag incomplete uniform set; we accept that
+    // and only assert the three-piece output is produced.
     CHECK(!result.output.empty());
+    CHECK(result.output.find("varying.def.sc") != std::string::npos);
 }
 
 TEST_CASE(compile_with_if_else) {
     Compiler compiler;
     const char* src = R"(
         material X {
-            shading {
-                if (x > 0.0) {
-                    return 1.0
+            vertex {
+                if (true) {
+                    return vec4(1.0)
                 } else {
-                    return 0.0
+                    return vec4(0.0)
                 }
             }
+            fragment { return vec4(1.0) }
         }
     )";
     auto result = compiler.compile(src);
@@ -186,11 +214,13 @@ TEST_CASE(compile_with_for_loop) {
     Compiler compiler;
     const char* src = R"(
         material X {
-            shading {
+            vertex {
                 for (i in items) {
-                    return i
+                    let j = i
                 }
+                return vec4(0.0)
             }
+            fragment { return vec4(1.0) }
         }
     )";
     auto result = compiler.compile(src);

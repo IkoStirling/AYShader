@@ -1,226 +1,466 @@
 // AYBGFXConverter.cpp - BGFX backend converter implementation
+//
+// Converts a Phoskia material into three bgfx .sc files:
+//   vs_<Material>.sc  — vertex shader source
+//   fs_<Material>.sc  — fragment shader source
+//   varying.def.sc    — shared varying/attribute semantic bindings
+//
+// These three files are then passed to bgfx's shaderc.exe (twice — once
+// with --type vertex for vs_, once with --type fragment --varyingdef for
+// fs_) to produce the binary shader programs bgfx::createProgram consumes.
 
 #include "AYBGFXConverter.h"
 #include "AYAst.h"
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace ayt::shader
 {
 
+namespace {
+
+// PhoskiaSemantic → bgfx semantic binding table. bgfx examples use these
+// exact mappings (POSITION/NORMAL/COLOR0/TEXCOORD0) for the first slot of
+// each kind; the converter writes varying.def.sc from this table.
+//
+// Phase 1: each semantic appears at most once per block. Phase 2 will
+// introduce texcoord0..7 / color0..1 / tangent / binormal.
+struct PhoskiaSemanticInfo {
+    const char* bgfxSemantic;   // POSITION / NORMAL / COLOR0 / TEXCOORD0
+    const char* attrName;       // a_position / a_normal / ...
+    const char* varyingName;    // v_position / v_normal / ...
+    const char* glslType;       // vec3 / vec4 / vec2
+    const char* defaultExpr;    // vec3(0.0, 0.0, 0.0) etc.
+};
+
+const std::unordered_map<phoskia::PhoskiaSemantic, PhoskiaSemanticInfo>&
+semanticTable() {
+    static const std::unordered_map<phoskia::PhoskiaSemantic, PhoskiaSemanticInfo> table = {
+        {phoskia::PhoskiaSemantic::Position, {"POSITION",  "a_position",  "v_position",  "vec3", "vec3(0.0, 0.0, 0.0)"}},
+        {phoskia::PhoskiaSemantic::Normal,   {"NORMAL",    "a_normal",    "v_normal",    "vec3", "vec3(0.0, 0.0, 1.0)"}},
+        {phoskia::PhoskiaSemantic::Color,    {"COLOR0",    "a_color0",    "v_color0",    "vec4", "vec4(1.0, 0.0, 0.0, 1.0)"}},
+        {phoskia::PhoskiaSemantic::Texcoord, {"TEXCOORD0", "a_texcoord0", "v_texcoord0", "vec2", "vec2(0.0, 0.0)"}},
+    };
+    return table;
+}
+
+// Forward decl of helper used by emit* functions.
+void emitExpr(std::ostringstream& out, const phoskia::Expr& e);
+
+// RenameContext maps a Phoskia identifier to its bgfx-side counterpart.
+// Built per-shader-block from the in/out ShaderParam declarations: the
+// Phoskia name (`pos`, `uv`, ...) becomes the bgfx attr/varying name
+// (`a_position`, `v_texcoord0`, ...). The converter passes the context
+// into emitExpr so identifiers are rewritten on the fly — Phoskia source
+// stays bgfx-agnostic.
+struct RenameContext {
+    std::unordered_map<std::string, std::string> map;
+    bool contains(const std::string& k) const { return map.find(k) != map.end(); }
+    const std::string& lookup(const std::string& k) const {
+        auto it = map.find(k);
+        return it == map.end() ? k : it->second;
+    }
+};
+
+void emitExpr(std::ostringstream& out, const phoskia::Expr& e,
+              const RenameContext& ctx);
+
+void emitStmt(std::ostringstream& out, const phoskia::Stmt& s,
+              const RenameContext& ctx, const char* outputVar);
+
+void emitStmt(std::ostringstream& out, const phoskia::Stmt& s,
+              const RenameContext& ctx) {
+    emitStmt(out, s, ctx, nullptr);
+}
+
+void emitStmt(std::ostringstream& out, const phoskia::Stmt& s,
+              const RenameContext& ctx, const char* outputVar) {
+    if (auto let = dynamic_cast<const phoskia::LetStmt*>(&s)) {
+        out << "    " << let->name << " = ";
+        if (let->initializer) emitExpr(out, *let->initializer, ctx);
+        out << ";\n";
+    } else if (auto ret = dynamic_cast<const phoskia::ReturnStmt*>(&s)) {
+        out << "    ";
+        // Phoskia source: `return <vec4-expr>`. The compiler implicitly
+        // binds the return value to the block's output slot — `gl_Position`
+        // for vertex, `gl_FragColor` for fragment. User source never
+        // references these identifiers directly.
+        if (outputVar) out << outputVar << " = ";
+        if (ret->value) emitExpr(out, *ret->value, ctx);
+        out << ";\n";
+    } else if (auto es = dynamic_cast<const phoskia::ExprStmt*>(&s)) {
+        if (es->expr) {
+            out << "    ";
+            emitExpr(out, *es->expr, ctx);
+            out << ";\n";
+        }
+    }
+    // ShaderParam / IfStmt / ForStmt at the body level should not appear
+    // (they live in the params/inputs vector before body). Ignore if seen.
+}
+
+void emitExpr(std::ostringstream& out, const phoskia::Expr& e,
+              const RenameContext& ctx) {
+    if (auto bin = dynamic_cast<const phoskia::BinaryExpr*>(&e)) {
+        emitExpr(out, *bin->left, ctx);
+        out << " " << bin->op.lexeme << " ";
+        emitExpr(out, *bin->right, ctx);
+    } else if (auto un = dynamic_cast<const phoskia::UnaryExpr*>(&e)) {
+        out << un->op.lexeme;
+        emitExpr(out, *un->operand, ctx);
+    } else if (auto call = dynamic_cast<const phoskia::CallExpr*>(&e)) {
+        // Builtin mapping: Phoskia's `sample(tex, uv)` → bgfx `texture2D(tex, uv)`.
+        if (auto callee = dynamic_cast<const phoskia::IdentifierExpr*>(call->callee.get())) {
+            if (callee->name == "sample") {
+                out << "texture2D";
+            } else {
+                out << callee->name;
+            }
+        } else {
+            emitExpr(out, *call->callee, ctx);
+        }
+        out << "(";
+        for (size_t i = 0; i < call->args.size(); ++i) {
+            if (i > 0) out << ", ";
+            emitExpr(out, *call->args[i], ctx);
+        }
+        out << ")";
+    } else if (auto ident = dynamic_cast<const phoskia::IdentifierExpr*>(&e)) {
+        // Apply rename map for in-param identifiers (Phoskia → bgfx).
+        out << ctx.lookup(ident->name);
+    } else if (auto lit = dynamic_cast<const phoskia::LiteralExpr*>(&e)) {
+        std::visit([&out](auto&& arg) {
+            using T = std::decay_t<decltype(arg)>;
+            if constexpr (std::is_same_v<T, std::monostate>) {
+                out << "0";
+            } else if constexpr (std::is_same_v<T, bool>) {
+                out << (arg ? "true" : "false");
+            } else if constexpr (std::is_same_v<T, float>) {
+                // Emit with a trailing ".0" if integral so GLSL parses as float.
+                // The integral case must rebuild from the int form — std::ostream
+                // would otherwise drop the decimal (e.g. `1.0f` → "1").
+                if (arg == static_cast<float>(static_cast<int>(arg))) {
+                    out << static_cast<int>(arg) << ".0";
+                } else {
+                    out << arg;
+                }
+            } else if constexpr (std::is_same_v<T, int>) {
+                out << arg;
+            } else if constexpr (std::is_same_v<T, std::string>) {
+                out << "\"" << arg << "\"";
+            }
+        }, lit->value);
+    } else if (auto mem = dynamic_cast<const phoskia::MemberExpr*>(&e)) {
+        emitExpr(out, *mem->object, ctx);
+        out << "." << mem->member;
+    } else if (auto idx = dynamic_cast<const phoskia::IndexExpr*>(&e)) {
+        emitExpr(out, *idx->object, ctx);
+        out << "[";
+        emitExpr(out, *idx->index, ctx);
+        out << "]";
+    }
+}
+
+const phoskia::ShaderParam* findInParam(const std::vector<phoskia::StmtPtr>& params,
+                                        phoskia::PhoskiaSemantic sem) {
+    for (const auto& s : params) {
+        auto* p = dynamic_cast<const phoskia::ShaderParam*>(s.get());
+        if (p && p->dir == phoskia::ShaderParam::Direction::In && p->semantic == sem) {
+            return p;
+        }
+    }
+    return nullptr;
+}
+
+const phoskia::ShaderParam* findOutParam(const std::vector<phoskia::StmtPtr>& params,
+                                         phoskia::PhoskiaSemantic sem) {
+    for (const auto& s : params) {
+        auto* p = dynamic_cast<const phoskia::ShaderParam*>(s.get());
+        if (p && p->dir == phoskia::ShaderParam::Direction::Out && p->semantic == sem) {
+            return p;
+        }
+    }
+    return nullptr;
+}
+
+void emitPropertyUniform(std::ostream& out, const phoskia::PropertyDecl& prop) {
+    // Properties default to vec4 — the converter emits the literal
+    // initializer via the generic emitter, preserving the user's shape
+    // (e.g. `vec4(1.0, 0.5, 0.25, 1.0)` for a constructor). The result
+    // is a GLSL-constructible uniform initializer that compiles under
+    // GLSL 1.20, ESSL, HLSL, Metal, and SPIR-V alike. The previous
+    // "flatten vec4(...) → 1.0, 0.5, 0.25, 1.0" form was a Phase 1
+    // mis-fix that only GLSL 1.20 accepts; removed.
+    out << "uniform vec4 " << prop.name << " = ";
+    if (prop.initializer) {
+        std::ostringstream tmp;
+        RenameContext empty;  // properties don't reference in/out params
+        emitExpr(tmp, *prop.initializer, empty);
+        out << tmp.str();
+    } else {
+        out << "0.0";
+    }
+    out << ";\n";
+}
+
+} // namespace
+
+// --------------------------------------------------------------------------
+// Top-level conversion
+// --------------------------------------------------------------------------
+
 BGFXConvertResult AYBGFXConverter::convertBGFX(const phoskia::Program& ast) {
     BGFXConvertResult result;
-    result.shaderType = _shaderType;
+    result.success = true;
 
     try {
-        result.output = generateSC(ast);
-        result.uniforms = _uniforms;
-        result.textures = _textures;
-        result.success = true;
+        for (const auto& decl : ast.declarations) {
+            if (auto mat = dynamic_cast<const phoskia::MaterialDecl*>(decl.get())) {
+                result.materialFiles.push_back(convertMaterial(*mat));
+            }
+        }
     } catch (const std::exception& e) {
         result.errors.push_back(e.what());
+        result.success = false;
     } catch (...) {
-        result.errors.push_back("Unknown exception during generateSC");
+        result.errors.push_back("Unknown exception during BGFX conversion");
+        result.success = false;
     }
 
+    result.uniforms = _uniforms;
+    result.textures = _textures;
     return result;
 }
 
 ConvertResult AYBGFXConverter::convert(const phoskia::Program& ast) {
     ConvertResult result;
-    auto bgfxResult = convertBGFX(ast);
-    result.success = bgfxResult.success;
-    result.output = bgfxResult.output;
-    result.errors = bgfxResult.errors;
-    // Forward BGFX uniform / texture info to the generic result.
-    for (const auto& u : bgfxResult.uniforms) {
+    auto bgfx = convertBGFX(ast);
+    result.success = bgfx.success;
+    result.errors = bgfx.errors;
+    std::ostringstream oss;
+    for (size_t i = 0; i < bgfx.materialFiles.size(); ++i) {
+        const auto& f = bgfx.materialFiles[i];
+        oss << "// === material " << i << " varying.def.sc ===\n"
+            << f.varyingDef
+            << "\n// === material " << i << " vs ===\n"
+            << f.vs
+            << "\n// === material " << i << " fs ===\n"
+            << f.fs
+            << "\n";
+    }
+    result.output = oss.str();
+    result.uniforms.reserve(bgfx.uniforms.size());
+    for (const auto& u : bgfx.uniforms) {
         result.uniforms.emplace_back(u.name, u.type);
     }
-    for (const auto& t : bgfxResult.textures) {
-        result.textures.emplace_back(t.name, t.binding);
+    result.textures.reserve(bgfx.textures.size());
+    for (const auto& t : bgfx.textures) {
+        BackendTextureInfo bti;
+        bti.name = t.name;
+        bti.binding = t.binding;
+        result.textures.push_back(bti);
     }
     return result;
 }
 
-std::string AYBGFXConverter::generateSC(const phoskia::Program& ast) {
-    _output = std::string();
+// --------------------------------------------------------------------------
+// Per-material conversion
+// --------------------------------------------------------------------------
+
+BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::MaterialDecl& mat) {
+    _uniformDecls.clear();
+    _textureDecls.clear();
+    _propertyUniforms.clear();
+    auto uniformSave = _uniforms;
+    auto textureSave = _textures;
     _uniforms.clear();
     _textures.clear();
 
-    // BGFX .sc header
-    _output += "// Generated by AYShader/Phoskia\n";
-    _output += "// Target: BGFX .sc format\n\n";
+    // First pass: material-level declarations.
+    const phoskia::VertexFunc*   vf = nullptr;
+    const phoskia::FragmentFunc* ff = nullptr;
+    for (const auto& d : mat.declarations) {
+        if (auto u = dynamic_cast<const phoskia::UniformDecl*>(d.get())) {
+            _uniformDecls += "uniform " + u->type + " " + u->name + ";\n";
+            BGFXUniform bu; bu.name = u->name; bu.type = u->type;
+            _uniforms.push_back(std::move(bu));
+        } else if (auto t = dynamic_cast<const phoskia::TextureDecl*>(d.get())) {
+            uint8_t slot = static_cast<uint8_t>(_textures.size());
+            _textureDecls += "SAMPLER2D(" + t->name + ", " + std::to_string(slot) + ");\n";
+            BGFXTexture bt; bt.name = t->name; bt.binding = slot;
+            _textures.push_back(std::move(bt));
+        } else if (auto p = dynamic_cast<const phoskia::PropertyDecl*>(d.get())) {
+            std::ostringstream tmp;
+            emitPropertyUniform(tmp, *p);
+            _propertyUniforms += tmp.str();
+            BGFXUniform bu; bu.name = p->name; bu.type = "vec4";
+            _uniforms.push_back(std::move(bu));
+        } else if (auto v = dynamic_cast<const phoskia::VertexFunc*>(d.get())) {
+            vf = v;
+        } else if (auto f = dynamic_cast<const phoskia::FragmentFunc*>(d.get())) {
+            ff = f;
+        }
+        // VariantAttribute: silently ignored for now (Phase 2 #ifdef expansion).
+    }
 
-    // Process all material declarations
-    for (const auto& decl : ast.declarations) {
-        if (auto material = dynamic_cast<const phoskia::MaterialDecl*>(decl.get())) {
-            generateShaderBlock(*material, _shaderType);
+    if (!vf) {
+        _uniforms = std::move(uniformSave);
+        _textures = std::move(textureSave);
+        throw std::logic_error("Material '" + mat.name + "' is missing a 'vertex' block");
+    }
+    if (!ff) {
+        _uniforms = std::move(uniformSave);
+        _textures = std::move(textureSave);
+        throw std::logic_error("Material '" + mat.name + "' is missing a 'fragment' block");
+    }
+
+    const auto& tbl = semanticTable();
+
+    // Build rename maps for vs and fs bodies.
+    RenameContext vsCtx;
+    for (const auto& s : vf->params) {
+        if (auto* p = dynamic_cast<const phoskia::ShaderParam*>(s.get())) {
+            const auto& info = tbl.at(p->semantic);
+            const char* bgfxName = (p->dir == phoskia::ShaderParam::Direction::In)
+                                       ? info.attrName : info.varyingName;
+            vsCtx.map[p->name] = bgfxName;
+        }
+    }
+    RenameContext fsCtx;
+    for (const auto& s : ff->inputs) {
+        if (auto* p = dynamic_cast<const phoskia::ShaderParam*>(s.get())) {
+            const auto& info = tbl.at(p->semantic);
+            fsCtx.map[p->name] = info.varyingName;
         }
     }
 
-    return _output;
-}
-
-void AYBGFXConverter::generateShaderBlock(const phoskia::MaterialDecl& material, BGFXShaderType shaderType) {
-    // TODO(phase2-compute): Compute shader backend is not yet implemented.
-    // BGFX's `.sc` format only supports Vertex/Fragment; Compute needs an
-    // independent path (HLSL for DX11/DX12, SPIR-V for Vulkan, WGSL for
-    // WebGPU — see design.md §8). Until then, emitting a Compute shader
-    // through this converter is a hard error rather than a silent fallback.
-    std::string blockName;
-    switch (shaderType) {
-        case BGFXShaderType::Vertex:
-            blockName = "vertex";
-            _shadingOutputVar = "gl_Position";
-            break;
-        case BGFXShaderType::Fragment:
-            blockName = "fragment";
-            _shadingOutputVar = "gl_FragColor";
-            break;
-        case BGFXShaderType::Compute:
-            throw std::logic_error(
-                "AYBGFXConverter: Compute shader backend not yet implemented "
-                "(see TODO(phase2-compute) in generateShaderBlock; design.md §8).");
-        default:
-            throw std::logic_error("AYBGFXConverter: unknown BGFXShaderType.");
+    // ---- varying.def.sc
+    // bgfx canonical layout (matches examples/01-cubes/varying.def.sc):
+    //   vec4 v_color0    : COLOR0    = vec4(1.0, 0.0, 0.0, 1.0);
+    //
+    //   vec3 a_position  : POSITION;
+    //   vec4 a_color0    : COLOR0;
+    // i.e. each line is "<type> <name>(pad to 11) : <semantic>(pad to 9) = <default>;"
+    // or "<type> <name>(pad to 11) : <semantic>;" for plain attributes. The
+    // 11/9 column widths match the bgfx examples; if a name or semantic
+    // exceeds the column width the row naturally aligns further right
+    // without breaking parsing.
+    constexpr size_t kNameWidth = 12;
+    constexpr size_t kSemanticWidth = 10;
+    auto pad = [](const std::string& s, size_t w) {
+        return s.size() < w ? s + std::string(w - s.size(), ' ') : s + " ";
+    };
+    std::ostringstream vdef;
+    std::vector<phoskia::PhoskiaSemantic> writtenVaryings;
+    auto writeVarying = [&](phoskia::PhoskiaSemantic sem) {
+        for (auto s : writtenVaryings) if (s == sem) return;
+        writtenVaryings.push_back(sem);
+        const auto& info = tbl.at(sem);
+        vdef << info.glslType << " " << pad(info.varyingName, kNameWidth)
+             << ": " << pad(info.bgfxSemantic, kSemanticWidth)
+             << "= " << info.defaultExpr << ";\n";
+    };
+    for (const auto& s : vf->params) {
+        if (auto* p = dynamic_cast<const phoskia::ShaderParam*>(s.get())) {
+            if (p->dir == phoskia::ShaderParam::Direction::Out) writeVarying(p->semantic);
+        }
     }
-
-    _output += "[" + blockName + "]\n";
-    _output += "[" + material.name + "]\n\n";
-
-    // First pass: collect uniforms, textures
-    for (const auto& item : material.declarations) {
-        if (auto uniform = dynamic_cast<const phoskia::UniformDecl*>(item.get())) {
-            generateUniform(*uniform);
-        } else if (auto texture = dynamic_cast<const phoskia::TextureDecl*>(item.get())) {
-            generateTexture(*texture);
+    for (const auto& s : ff->inputs) {
+        if (auto* p = dynamic_cast<const phoskia::ShaderParam*>(s.get())) {
+            if (p->dir == phoskia::ShaderParam::Direction::In) writeVarying(p->semantic);
+        }
+    }
+    for (const auto& s : vf->params) {
+        if (auto* p = dynamic_cast<const phoskia::ShaderParam*>(s.get())) {
+            if (p->dir == phoskia::ShaderParam::Direction::In) {
+                const auto& info = tbl.at(p->semantic);
+                vdef << info.glslType << " " << pad(info.attrName, kNameWidth)
+                     << ": " << info.bgfxSemantic << ";\n";
+            }
         }
     }
 
-    // Second pass: generate code
-    for (const auto& item : material.declarations) {
-        if (auto prop = dynamic_cast<const phoskia::PropertyDecl*>(item.get())) {
-            generateProperty(*prop);
-        } else if (auto shading = dynamic_cast<const phoskia::ShadingFunc*>(item.get())) {
-            generateShading(*shading);
+    // ---- vs_<Material>.sc
+    std::ostringstream vs;
+    {
+        vs << "$input";
+        bool first = true;
+        for (const auto& s : vf->params) {
+            if (auto* p = dynamic_cast<const phoskia::ShaderParam*>(s.get())) {
+                if (p->dir != phoskia::ShaderParam::Direction::In) continue;
+                const auto& info = tbl.at(p->semantic);
+                vs << (first ? " " : ", ") << info.attrName;
+                first = false;
+            }
         }
+        vs << "\n";
     }
+    {
+        vs << "$output";
+        bool first = true;
+        for (const auto& s : vf->params) {
+            if (auto* p = dynamic_cast<const phoskia::ShaderParam*>(s.get())) {
+                if (p->dir != phoskia::ShaderParam::Direction::Out) continue;
+                const auto& info = tbl.at(p->semantic);
+                vs << (first ? " " : ", ") << info.varyingName;
+                first = false;
+            }
+        }
+        vs << "\n";
+    }
+    vs << "\n#include \"common.sh\"\n\n"
+       << _uniformDecls
+       << _propertyUniforms
+       << "\nvoid main()\n{\n";
+    for (const auto& stmt : vf->body) emitStmt(vs, *stmt, vsCtx, "gl_Position");
+    vs << "}\n";
 
-    _output += "[" + blockName + "]\n\n";
+    // ---- fs_<Material>.sc
+    std::ostringstream fs;
+    {
+        fs << "$input";
+        bool first = true;
+        for (const auto& s : ff->inputs) {
+            if (auto* p = dynamic_cast<const phoskia::ShaderParam*>(s.get())) {
+                if (p->dir != phoskia::ShaderParam::Direction::In) continue;
+                const auto& info = tbl.at(p->semantic);
+                fs << (first ? " " : ", ") << info.varyingName;
+                first = false;
+            }
+        }
+        fs << "\n";
+    }
+    fs << "\n#include \"common.sh\"\n\n"
+       << _uniformDecls
+       << _propertyUniforms
+       << _textureDecls
+       << "\nvoid main()\n{\n";
+    for (const auto& stmt : ff->body) emitStmt(fs, *stmt, fsCtx, "gl_FragColor");
+    fs << "}\n";
+
+    BGFXShaderFiles out{vs.str(), fs.str(), vdef.str()};
+
+    _uniforms.insert(_uniforms.begin(), uniformSave.begin(), uniformSave.end());
+    _textures.insert(_textures.begin(), textureSave.begin(), textureSave.end());
+    return out;
 }
 
 void AYBGFXConverter::generateProperty(const phoskia::PropertyDecl& prop) {
-    // Property becomes a uniform in BGFX
-    _output += "uniform vec4 " + prop.name + " = ";
-
-    if (auto lit = dynamic_cast<const phoskia::LiteralExpr*>(prop.initializer.get())) {
-        std::visit([this](auto&& arg) {
-            using T = std::decay_t<decltype(arg)>;
-            if constexpr (std::is_same_v<T, float>) {
-                _output += std::to_string(arg);
-            } else if constexpr (std::is_same_v<T, int>) {
-                _output += std::to_string(arg);
-            } else if constexpr (std::is_same_v<T, bool>) {
-                _output += arg ? "1.0" : "0.0";
-            }
-        }, lit->value);
-    } else {
-        _output += "0.0";
-    }
-
-    _output += ";\n";
-}
-
-void AYBGFXConverter::generateUniform(const phoskia::UniformDecl& uniform) {
-    BGFXUniform u;
-    u.name = uniform.name;
-    u.type = uniform.type;
-    _uniforms.push_back(u);
-
-    _output += "uniform " + uniform.type + " " + uniform.name + ";\n";
-}
-
-void AYBGFXConverter::generateTexture(const phoskia::TextureDecl& texture) {
-    BGFXTexture t;
-    t.name = texture.name;
-    t.binding = static_cast<uint8_t>(_textures.size());
-    _textures.push_back(t);
-
-    _output += "texture2d " + texture.name + ";\n";
-}
-
-void AYBGFXConverter::generateShading(const phoskia::ShadingFunc& shading) {
-    // TODO(phase2-compute): see generateShaderBlock — Compute path throws
-    // before reaching here, but keep the guard so future refactors that
-    // route Compute through this function still trip the same TODO.
-    if (_shaderType == BGFXShaderType::Compute) {
-        throw std::logic_error(
-            "AYBGFXConverter: Compute shader generation not yet implemented "
-            "(see TODO(phase2-compute) in generateShading; design.md §8).");
-    }
-
-    _output += "\nvoid main() {\n";
-    for (const auto& stmt : shading.body) {
-        if (auto let = dynamic_cast<const phoskia::LetStmt*>(stmt.get())) {
-            _output += "    let " + let->name + " = ";
-            generateExpr(*let->initializer);
-            _output += ";\n";
-        } else if (auto ret = dynamic_cast<const phoskia::ReturnStmt*>(stmt.get())) {
-            _output += "    " + _shadingOutputVar + " = ";
-            if (ret->value) {
-                generateExpr(*ret->value);
-            }
-            _output += ";\n";
-        } else if (auto expr = dynamic_cast<const phoskia::ExprStmt*>(stmt.get())) {
-            _output += "    ";
-            generateExpr(*expr->expr);
-            _output += ";\n";
-        }
-    }
-    _output += "}\n";
+    // Used only when called outside convertMaterial; convertMaterial does
+    // its own property emission via emitPropertyUniform().
+    std::ostringstream tmp;
+    emitPropertyUniform(tmp, prop);
+    _propertyUniforms += tmp.str();
+    BGFXUniform bu; bu.name = prop.name; bu.type = "vec4";
+    _uniforms.push_back(std::move(bu));
 }
 
 void AYBGFXConverter::generateExpr(const phoskia::Expr& expr) {
-    if (auto binary = dynamic_cast<const phoskia::BinaryExpr*>(&expr)) {
-        generateExpr(*binary->left);
-        _output += " " + binary->op.lexeme + " ";
-        generateExpr(*binary->right);
-    } else if (auto unary = dynamic_cast<const phoskia::UnaryExpr*>(&expr)) {
-        _output += unary->op.lexeme;
-        generateExpr(*unary->operand);
-    } else if (auto call = dynamic_cast<const phoskia::CallExpr*>(&expr)) {
-        if (auto callee = dynamic_cast<const phoskia::IdentifierExpr*>(call->callee.get())) {
-            _output += callee->name + "(";
-        } else {
-            _output += "(";
-        }
-        for (size_t i = 0; i < call->args.size(); ++i) {
-            if (i > 0) _output += ", ";
-            generateExpr(*call->args[i]);
-        }
-        _output += ")";
-    } else if (auto id = dynamic_cast<const phoskia::IdentifierExpr*>(&expr)) {
-        _output += id->name;
-    } else if (auto lit = dynamic_cast<const phoskia::LiteralExpr*>(&expr)) {
-        std::visit([this](auto&& arg) {
-            using T = std::decay_t<decltype(arg)>;
-            if constexpr (std::is_same_v<T, float>) {
-                _output += std::to_string(arg);
-            } else if constexpr (std::is_same_v<T, int>) {
-                _output += std::to_string(arg);
-            } else if constexpr (std::is_same_v<T, bool>) {
-                _output += arg ? "true" : "false";
-            }
-        }, lit->value);
-    } else if (auto member = dynamic_cast<const phoskia::MemberExpr*>(&expr)) {
-        generateExpr(*member->object);
-        _output += "." + member->member;
-    } else if (auto index = dynamic_cast<const phoskia::IndexExpr*>(&expr)) {
-        generateExpr(*index->object);
-        _output += "[";
-        generateExpr(*index->index);
-        _output += "]";
-    }
+    std::ostringstream tmp;
+    RenameContext empty;
+    emitExpr(tmp, expr, empty);
+    _uniformDecls += tmp.str();  // best-effort scratch, not actually used
 }
 
 } // namespace ayt::shader

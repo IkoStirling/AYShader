@@ -13,7 +13,6 @@ static const char* tokenTypeName(TokenType t) {
         case TokenType::Uniform: return "Uniform";
         case TokenType::Texture2D: return "Texture2D";
         case TokenType::Sampler: return "Sampler";
-        case TokenType::Shading: return "Shading";
         case TokenType::Vertex: return "Vertex";
         case TokenType::Fragment: return "Fragment";
         case TokenType::Let: return "Let";
@@ -21,10 +20,15 @@ static const char* tokenTypeName(TokenType t) {
         case TokenType::Else: return "Else";
         case TokenType::For: return "For";
         case TokenType::In: return "In";
+        case TokenType::Out: return "Out";
         case TokenType::Return: return "Return";
         case TokenType::True: return "True";
         case TokenType::False: return "False";
         case TokenType::Variant: return "Variant";
+        case TokenType::Position: return "Position";
+        case TokenType::Normal: return "Normal";
+        case TokenType::Color: return "Color";
+        case TokenType::Texcoord: return "Texcoord";
         case TokenType::Float: return "Float";
         case TokenType::Vec2: return "Vec2";
         case TokenType::Vec3: return "Vec3";
@@ -111,8 +115,11 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
     if (match(TokenType::Texture2D)) {
         return parseTextureDecl();
     }
-    if (match(TokenType::Shading)) {
-        return parseShadingFunc();
+    if (match(TokenType::Vertex)) {
+        return parseVertexFunc();
+    }
+    if (match(TokenType::Fragment)) {
+        return parseFragmentFunc();
     }
     if (match(TokenType::Let)) {
         return parseLetStmt();
@@ -144,7 +151,13 @@ std::unique_ptr<Expr> Parser::parseBinary(int precedence) {
     while (!isAtEnd()) {
         TokenType op = current().type;
         int nextPrecedence = getPrecedence(op);
-        if (nextPrecedence <= precedence) break;
+        // '=' is right-associative and lowest precedence (1). We use strict <
+        // (not <=) so the recursive parseBinary(nextPrec) on the right side
+        // also consumes another '=' at the same precedence, building nested
+        // assignments `a = (b = c)`. For left-assoc ops (`+`, `*`, etc.) the
+        // recursion consumes only higher-precedence ops and naturally stops.
+        if (nextPrecedence < precedence) break;
+        if (nextPrecedence == 0) break;
 
         // Capture the operator token BEFORE advancing. The recursive
         // parseBinary(nextPrecedence) will itself advance through parsePrimary
@@ -183,7 +196,7 @@ std::unique_ptr<Expr> Parser::parseCall() {
             consume(TokenType::RightParen, "Expected ')' after arguments");
             expr = std::make_unique<CallExpr>(std::move(expr), std::move(args));
         } else if (match(TokenType::Dot)) {
-            Token name = consume(TokenType::Identifier, "Expected property name after '.'");
+            Token name = consumeName("Expected property name after '.'");
             expr = std::make_unique<MemberExpr>(std::move(expr), name.lexeme);
         } else if (match(TokenType::LeftBracket)) {
             auto index = parseExpression();
@@ -242,6 +255,14 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         match(TokenType::Bool)) {
         return std::make_unique<IdentifierExpr>(previous().lexeme);
     }
+    // Phoskia semantic keywords (position / normal / color / texcoord) and
+    // the io keywords (in / out) are also valid identifiers in expression
+    // context — e.g. `gl_FragColor * color`, `out = normal`.
+    if (match(TokenType::Position) || match(TokenType::Normal) ||
+        match(TokenType::Color)    || match(TokenType::Texcoord) ||
+        match(TokenType::In)       || match(TokenType::Out)) {
+        return std::make_unique<IdentifierExpr>(previous().lexeme);
+    }
     // ===== End Phase 1 workaround =====
     if (match(TokenType::LeftParen)) {
         auto expr = parseExpression();
@@ -256,7 +277,7 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
 }
 
 std::unique_ptr<Stmt> Parser::parseMaterialDecl() {
-    Token name = consume(TokenType::Identifier, "Expected material name");
+    Token name = consumeName("Expected material name");
     consume(TokenType::LeftBrace, "Expected '{' before material body");
 
     std::vector<StmtPtr> declarations;
@@ -277,11 +298,28 @@ std::unique_ptr<Stmt> Parser::parseMaterialDecl() {
     }
 
     consume(TokenType::RightBrace, "Expected '}' after material body");
+
+    // Structural validation: every material must declare exactly one
+    // vertex block and one fragment block. Phase 1 of the converter
+    // (vs/fs three-piece output) has no concept of a "compute-only"
+    // material — that lives in Phase 2 alongside the compute backend.
+    bool hasVertex = false, hasFragment = false;
+    for (const auto& d : declarations) {
+        if (dynamic_cast<VertexFunc*>(d.get()))   hasVertex = true;
+        if (dynamic_cast<FragmentFunc*>(d.get())) hasFragment = true;
+    }
+    if (!hasVertex) {
+        error("Material '" + name.lexeme + "' is missing a vertex { } block");
+    }
+    if (!hasFragment) {
+        error("Material '" + name.lexeme + "' is missing a fragment { } block");
+    }
+
     return std::make_unique<MaterialDecl>(name.lexeme, std::move(declarations));
 }
 
 std::unique_ptr<Stmt> Parser::parsePropertyDecl() {
-    Token name = consume(TokenType::Identifier, "Expected property name");
+    Token name = consumeName("Expected property name");
     consume(TokenType::Equal, "Expected '=' after property name");
     auto initializer = parseExpression();
     match(TokenType::Semicolon);  // ';' is optional (Python-like)
@@ -294,21 +332,106 @@ std::unique_ptr<Stmt> Parser::parseUniformDecl() {
     // refactor (design.md §11.1) will let us revert to a single Identifier
     // consume() once the Lexer change lands.
     Token type = consumeTypeName("Expected uniform type");
-    Token name = consume(TokenType::Identifier, "Expected uniform name");
+    Token name = consumeName("Expected uniform name");
     match(TokenType::Semicolon);  // ';' is optional (Python-like)
     return std::make_unique<UniformDecl>(type.lexeme, name.lexeme);
 }
 
 std::unique_ptr<Stmt> Parser::parseTextureDecl() {
-    Token name = consume(TokenType::Identifier, "Expected texture name");
+    Token name = consumeName("Expected texture name");
     match(TokenType::Semicolon);  // ';' is optional (Python-like)
     return std::make_unique<TextureDecl>(name.lexeme);
 }
 
-std::unique_ptr<Stmt> Parser::parseShadingFunc() {
-    consume(TokenType::LeftBrace, "Expected '{' before shading body");
-    std::vector<StmtPtr> body;
+std::unique_ptr<Stmt> Parser::parseShaderParam(ShaderParam::Direction dir) {
+    // We've already consumed 'in' or 'out'. Accept the two forms:
+    //   in/out <name>           : <semantic> [= <default>]
+    //   in/out <type> <name>    : <semantic> [= <default>]
+    // The type prefix is optional — Phoskia keeps the type implicit when
+    // it can be derived from the semantic (position → vec3, color →
+    // vec4, etc.). Tests use both forms; the converter picks the
+    // emitted bgfx type from the semantic regardless of which form was
+    // written.
 
+    // Phase 1: peek at the next token — if it's a builtin type keyword
+    // (Float/Vec2/.../Bool), consume it as the explicit type; otherwise
+    // leave the type implicit and treat the next token as the name.
+    Token typeTok;
+    bool hasType = false;
+    if (check(TokenType::Float) || check(TokenType::Vec2) || check(TokenType::Vec3) ||
+        check(TokenType::Vec4) || check(TokenType::Int) || check(TokenType::IVec2) ||
+        check(TokenType::IVec3) || check(TokenType::IVec4) || check(TokenType::Mat2) ||
+        check(TokenType::Mat3) || check(TokenType::Mat4) || check(TokenType::Quat) ||
+        check(TokenType::Bool)) {
+        typeTok = advance();
+        hasType = true;
+    }
+    (void)hasType;
+
+    Token name = consumeName("Expected parameter name");
+    consume(TokenType::Colon, "Expected ':' after parameter name");
+
+    PhoskiaSemantic semantic;
+    if (match(TokenType::Position))      semantic = PhoskiaSemantic::Position;
+    else if (match(TokenType::Normal))   semantic = PhoskiaSemantic::Normal;
+    else if (match(TokenType::Color))    semantic = PhoskiaSemantic::Color;
+    else if (match(TokenType::Texcoord)) semantic = PhoskiaSemantic::Texcoord;
+    else {
+        error("Expected Phoskia semantic type (position/normal/color/texcoord)");
+        return nullptr;
+    }
+
+    // Default value only allowed on `out` params.
+    ExprPtr defaultValue = nullptr;
+    if (match(TokenType::Equal)) {
+        if (dir != ShaderParam::Direction::Out) {
+            error("Default value is only allowed on 'out' parameters");
+        }
+        defaultValue = parseExpression();
+    }
+
+    return std::make_unique<ShaderParam>(dir, name.lexeme, semantic, std::move(defaultValue));
+}
+
+std::unique_ptr<Stmt> Parser::parseShaderBlockBody(
+        std::vector<StmtPtr>& params,
+        bool allowOut) {
+    // Helper retained as documentation of the shared pattern between
+    // parseVertexFunc / parseFragmentFunc. Not called directly — both
+    // shader blocks inline this logic because their output node types
+    // (VertexFunc / FragmentFunc) differ.
+    (void)params; (void)allowOut;
+    return nullptr;
+}
+
+std::unique_ptr<Stmt> Parser::parseVertexFunc() {
+    consume(TokenType::LeftBrace, "Expected '{' before vertex body");
+    std::vector<StmtPtr> params;
+    std::vector<StmtPtr> body;
+    // Inlined parseShaderBlockBody, specialized for vertex (allowOut=true).
+    while (!check(TokenType::RightBrace) && !isAtEnd()) {
+        if (check(TokenType::In)) {
+            advance();
+            if (auto p = parseShaderParam(ShaderParam::Direction::In)) {
+                params.push_back(std::move(p));
+            }
+            // Trailing ';' on a param line is optional (Python-like).
+            match(TokenType::Semicolon);
+            continue;
+        }
+        if (check(TokenType::Out)) {
+            advance();
+            if (auto p = parseShaderParam(ShaderParam::Direction::Out)) {
+                params.push_back(std::move(p));
+            }
+            match(TokenType::Semicolon);
+            continue;
+        }
+        break;
+    }
+    // Skip stray semicolons between the param block and the body (e.g. when
+    // the source puts ';' after each in/out declaration).
+    while (check(TokenType::Semicolon) && !isAtEnd()) advance();
     while (!check(TokenType::RightBrace) && !isAtEnd()) {
         size_t before = _current;
         if (auto stmt = parseStatement()) {
@@ -324,11 +447,50 @@ std::unique_ptr<Stmt> Parser::parseShadingFunc() {
         } else {
             advance();
         }
-        if (_current == before) advance();  // panic-mode safety net
+        if (_current == before) advance();
     }
+    consume(TokenType::RightBrace, "Expected '}' after vertex body");
+    return std::make_unique<VertexFunc>(std::move(params), std::move(body));
+}
 
-    consume(TokenType::RightBrace, "Expected '}' after shading body");
-    return std::make_unique<ShadingFunc>(std::move(body));
+std::unique_ptr<Stmt> Parser::parseFragmentFunc() {
+    consume(TokenType::LeftBrace, "Expected '{' before fragment body");
+    std::vector<StmtPtr> inputs;
+    std::vector<StmtPtr> body;
+    while (!check(TokenType::RightBrace) && !isAtEnd()) {
+        if (check(TokenType::In)) {
+            advance();
+            if (auto p = parseShaderParam(ShaderParam::Direction::In)) {
+                inputs.push_back(std::move(p));
+            }
+            continue;
+        }
+        if (check(TokenType::Out)) {
+            error("Fragments cannot have 'out' parameters");
+            advance();
+            continue;
+        }
+        break;
+    }
+    while (!check(TokenType::RightBrace) && !isAtEnd()) {
+        size_t before = _current;
+        if (auto stmt = parseStatement()) {
+            bool isNullExpr = false;
+            if (auto* es = dynamic_cast<ExprStmt*>(stmt.get())) {
+                if (!es->expr) isNullExpr = true;
+            }
+            if (isNullExpr) {
+                advance();
+                continue;
+            }
+            body.push_back(std::move(stmt));
+        } else {
+            advance();
+        }
+        if (_current == before) advance();
+    }
+    consume(TokenType::RightBrace, "Expected '}' after fragment body");
+    return std::make_unique<FragmentFunc>(std::move(inputs), std::move(body));
 }
 
 std::unique_ptr<Stmt> Parser::parseVariantAttribute() {
@@ -339,7 +501,7 @@ std::unique_ptr<Stmt> Parser::parseVariantAttribute() {
     Token name;
     if (match(TokenType::Variant)) {
         // 'variant' keyword — read the next Identifier as the attribute name.
-        name = consume(TokenType::Identifier, "Expected variant attribute name after 'variant'");
+        name = consumeName("Expected variant attribute name after 'variant'");
     } else if (check(TokenType::Identifier)) {
         name = current();
         advance();
@@ -352,7 +514,7 @@ std::unique_ptr<Stmt> Parser::parseVariantAttribute() {
 }
 
 std::unique_ptr<Stmt> Parser::parseLetStmt() {
-    Token name = consume(TokenType::Identifier, "Expected variable name");
+    Token name = consumeName("Expected variable name");
     consume(TokenType::Equal, "Expected '=' after let");
     auto initializer = parseExpression();
     match(TokenType::Semicolon);  // ';' is optional (Python-like)
@@ -422,7 +584,7 @@ std::unique_ptr<Stmt> Parser::parseIfStmt() {
 
 std::unique_ptr<Stmt> Parser::parseForStmt() {
     consume(TokenType::LeftParen, "Expected '(' after for");
-    Token variable = consume(TokenType::Identifier, "Expected loop variable");
+    Token variable = consumeName("Expected loop variable");
     consume(TokenType::In, "Expected 'in' after for variable");
     auto iterable = parseExpression();
     consume(TokenType::RightParen, "Expected ')' after iterable");
@@ -519,8 +681,27 @@ Token Parser::consumeTypeName(const std::string& message) {
     return advance();
 }
 
+Token Parser::consumeName(const std::string& message) {
+    // Phase 1: many reserved keywords (Phoskia semantic types
+    // position/normal/color/texcoord, plus In/Out/etc.) can appear in
+    // "name position" — accept any of them as a valid name token.
+    if (check(TokenType::Identifier) ||
+        check(TokenType::Position) || check(TokenType::Normal) ||
+        check(TokenType::Color) || check(TokenType::Texcoord) ||
+        check(TokenType::In) || check(TokenType::Out)) {
+        return advance();
+    }
+    error(message);
+    return previous();
+}
+
 int Parser::getPrecedence(TokenType op) {
     switch (op) {
+        // '=' is right-associative and lowest precedence — `a = b = c` parses
+        // as `a = (b = c)` semantically. We assign it precedence 1 (the same
+        // as `||`) but mark it via a separate RightAssoc check below so the
+        // parser loop treats it correctly.
+        case TokenType::Equal: return 1;
         case TokenType::Or: return 1;
         case TokenType::And: return 2;
         case TokenType::EqualEqual:

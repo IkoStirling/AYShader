@@ -22,7 +22,6 @@ enum class TokenType : uint8_t {
     Uniform,
     Texture2D,
     Sampler,
-    Shading,
     Vertex,
     Fragment,
     Let,
@@ -30,10 +29,18 @@ enum class TokenType : uint8_t {
     Else,
     For,
     In,
+    Out,
     Return,
     True,
     False,
     Variant,
+
+    // Phoskia semantic types (replaces bgfx POSITION/NORMAL/COLOR0/TEXCOORD0
+    // for in/out parameter declarations inside vertex/fragment blocks).
+    Position,
+    Normal,
+    Color,
+    Texcoord,
 
     // Types
     Float,

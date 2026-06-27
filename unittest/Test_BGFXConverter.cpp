@@ -1,25 +1,51 @@
 // ============================================================
-// AYShader BGFX Backend Converter Unit Tests
+// AYShader BGFX Backend Converter Unit Tests (Phase 1 closure)
 // ============================================================
+//
+// Tests AYBGFXConverter::convertMaterial(), which emits the three-piece
+// output a frontend feeds to bgfx shaderc: vs_*.sc, fs_*.sc, and the
+// shared varying.def.sc.
 
 #include "AYPhoskia.h"
 #include "AYBGFXConverter.h"
+#include "AYLexer.h"
+#include "AYParser.h"
+#include "AYAst.h"
 #include "AYTest.h"
+#include <stdexcept>
 
 using namespace ayt::shader;
 using namespace ayt::shader::phoskia;
 
 TEST_SUITE(BGFXConverterTests)
 
-// ===== Direct AST construction for testing =====
+// ===== Helpers =====
 
-static std::unique_ptr<Program> buildMaterial(const std::string& name) {
-    auto prog = std::make_unique<Program>(std::vector<StmtPtr>{});
-    auto mat = std::make_unique<MaterialDecl>(
-        name,
-        std::vector<StmtPtr>{});
-    prog->declarations.push_back(std::move(mat));
-    return prog;
+// End-to-end: source → AST → first material's three-piece set.
+static BGFXShaderFiles compileFirstMaterial(const std::string& src) {
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    auto ast = parser.parse();
+    AYBGFXConverter conv;
+    BGFXConvertResult res = conv.convertBGFX(*ast);
+    if (!res.success) {
+        throw std::runtime_error("convertBGFX failed: " +
+            (res.errors.empty() ? std::string("?") : res.errors.front()));
+    }
+    if (res.materialFiles.empty()) {
+        throw std::runtime_error("convertBGFX produced no materials");
+    }
+    return res.materialFiles.front();
+}
+
+static std::unique_ptr<Program> parseProgram(const std::string& src) {
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    return parser.parse();
 }
 
 // ===== Platform / extension =====
@@ -30,280 +56,224 @@ TEST_CASE(platform_is_bgfx) {
     CHECK(std::string(conv.targetExtension()) == ".sc");
 }
 
-// ===== Empty / minimal material =====
+// ===== Three-piece set: empty material =====
 
-TEST_CASE(empty_material_produces_block) {
-    AYBGFXConverter conv;
-    auto prog = buildMaterial("Unlit");
-    conv.setShaderType(BGFXShaderType::Fragment);
-
-    auto result = conv.convert(*prog);
-    CHECK(result.success);
-    CHECK(!result.output.empty());
-    // Should contain the material name as block identifier
-    CHECK(result.output.find("[Unlit]") != std::string::npos);
-    CHECK(result.output.find("[fragment]") != std::string::npos);
-}
-
-TEST_CASE(vertex_shader_type) {
-    AYBGFXConverter conv;
-    conv.setShaderType(BGFXShaderType::Vertex);
-    auto prog = buildMaterial("X");
-    auto result = conv.convert(*prog);
-    CHECK(result.success);
-    CHECK(result.output.find("[vertex]") != std::string::npos);
-}
-
-// ===== Uniform emission =====
-
-TEST_CASE(uniform_emitted_in_output) {
-    AYBGFXConverter conv;
-    auto prog = std::make_unique<Program>(std::vector<StmtPtr>{});
-    auto mat = std::make_unique<MaterialDecl>("PBR", std::vector<StmtPtr>{});
-    mat->declarations.push_back(
-        std::make_unique<UniformDecl>("mat4", "modelMatrix"));
-    mat->declarations.push_back(
-        std::make_unique<UniformDecl>("vec3", "cameraPos"));
-    prog->declarations.push_back(std::move(mat));
-
-    auto result = conv.convert(*prog);
-    CHECK(result.success);
-    CHECK(result.output.find("uniform mat4 modelMatrix") != std::string::npos);
-    CHECK(result.output.find("uniform vec3 cameraPos") != std::string::npos);
-    CHECK(result.uniforms.size() == 2);
-    CHECK(result.uniforms[0].name == "modelMatrix");
-    CHECK(result.uniforms[0].type == "mat4");
-    CHECK(result.uniforms[1].name == "cameraPos");
-}
-
-// ===== Texture emission =====
-
-TEST_CASE(texture_emitted_with_binding) {
-    AYBGFXConverter conv;
-    auto prog = std::make_unique<Program>(std::vector<StmtPtr>{});
-    auto mat = std::make_unique<MaterialDecl>("PBR", std::vector<StmtPtr>{});
-    mat->declarations.push_back(std::make_unique<TextureDecl>("albedoMap"));
-    mat->declarations.push_back(std::make_unique<TextureDecl>("normalMap"));
-    prog->declarations.push_back(std::move(mat));
-
-    auto result = conv.convert(*prog);
-    CHECK(result.success);
-    CHECK(result.output.find("texture2d albedoMap") != std::string::npos);
-    CHECK(result.output.find("texture2d normalMap") != std::string::npos);
-    CHECK(result.textures.size() == 2);
-    CHECK(result.textures[0].name == "albedoMap");
-    CHECK(result.textures[0].binding == 0);
-    CHECK(result.textures[1].name == "normalMap");
-    CHECK(result.textures[1].binding == 1);
-}
-
-// ===== Property emission =====
-
-TEST_CASE(property_float_literal) {
-    AYBGFXConverter conv;
-    auto prog = std::make_unique<Program>(std::vector<StmtPtr>{});
-    auto mat = std::make_unique<MaterialDecl>("X", std::vector<StmtPtr>{});
-    auto prop = std::make_unique<PropertyDecl>(
-        "intensity",
-        std::make_unique<LiteralExpr>(0.5f));
-    mat->declarations.push_back(std::move(prop));
-    prog->declarations.push_back(std::move(mat));
-
-    auto result = conv.convert(*prog);
-    CHECK(result.success);
-    CHECK(result.output.find("uniform vec4 intensity = 0.5") != std::string::npos);
-}
-
-TEST_CASE(property_bool_literal_emits_float) {
-    AYBGFXConverter conv;
-    auto prog = std::make_unique<Program>(std::vector<StmtPtr>{});
-    auto mat = std::make_unique<MaterialDecl>("X", std::vector<StmtPtr>{});
-    auto prop = std::make_unique<PropertyDecl>(
-        "flag",
-        std::make_unique<LiteralExpr>(true));
-    mat->declarations.push_back(std::move(prop));
-    prog->declarations.push_back(std::move(mat));
-
-    auto result = conv.convert(*prog);
-    CHECK(result.success);
-    CHECK(result.output.find("1.0") != std::string::npos);
-}
-
-// ===== Shading function emission =====
-
-TEST_CASE(shading_emits_main) {
-    AYBGFXConverter conv;
-    auto prog = std::make_unique<Program>(std::vector<StmtPtr>{});
-    auto mat = std::make_unique<MaterialDecl>("X", std::vector<StmtPtr>{});
-    auto shading = std::make_unique<ShadingFunc>(std::vector<StmtPtr>{});
-    shading->body.push_back(std::make_unique<ReturnStmt>(
-        std::make_unique<IdentifierExpr>("color")));
-    mat->declarations.push_back(std::move(shading));
-    prog->declarations.push_back(std::move(mat));
-
-    auto result = conv.convert(*prog);
-    CHECK(result.success);
-    CHECK(result.output.find("void main()") != std::string::npos);
-    CHECK(result.output.find("gl_FragColor = color") != std::string::npos);
-}
-
-TEST_CASE(shading_let_emission) {
-    AYBGFXConverter conv;
-    auto prog = std::make_unique<Program>(std::vector<StmtPtr>{});
-    auto mat = std::make_unique<MaterialDecl>("X", std::vector<StmtPtr>{});
-    auto shading = std::make_unique<ShadingFunc>(std::vector<StmtPtr>{});
-    shading->body.push_back(std::make_unique<LetStmt>(
-        "x",
-        std::make_unique<LiteralExpr>(1.0f)));
-    shading->body.push_back(std::make_unique<ReturnStmt>(
-        std::make_unique<IdentifierExpr>("x")));
-    mat->declarations.push_back(std::move(shading));
-    prog->declarations.push_back(std::move(mat));
-
-    auto result = conv.convert(*prog);
-    CHECK(result.success);
-    CHECK(result.output.find("let x = 1") != std::string::npos);
-    CHECK(result.output.find("gl_FragColor = x") != std::string::npos);
-}
-
-// ===== Binary expression emission =====
-
-TEST_CASE(binary_expression_in_return) {
-    AYBGFXConverter conv;
-    auto prog = std::make_unique<Program>(std::vector<StmtPtr>{});
-    auto mat = std::make_unique<MaterialDecl>("X", std::vector<StmtPtr>{});
-    auto shading = std::make_unique<ShadingFunc>(std::vector<StmtPtr>{});
-
-    auto lhs = std::make_unique<IdentifierExpr>("a");
-    auto rhs = std::make_unique<IdentifierExpr>("b");
-    Token plus;
-    plus.type = TokenType::Plus;
-    plus.lexeme = "+";
-    auto bin = std::make_unique<BinaryExpr>(std::move(lhs), plus, std::move(rhs));
-    shading->body.push_back(std::make_unique<ReturnStmt>(std::move(bin)));
-    mat->declarations.push_back(std::move(shading));
-    prog->declarations.push_back(std::move(mat));
-
-    auto result = conv.convert(*prog);
-    CHECK(result.success);
-    CHECK(result.output.find("a + b") != std::string::npos);
-}
-
-TEST_CASE(call_expression_in_return) {
-    AYBGFXConverter conv;
-    auto prog = std::make_unique<Program>(std::vector<StmtPtr>{});
-    auto mat = std::make_unique<MaterialDecl>("X", std::vector<StmtPtr>{});
-    auto shading = std::make_unique<ShadingFunc>(std::vector<StmtPtr>{});
-
-    auto arg = std::make_unique<IdentifierExpr>("v");
-    std::vector<ExprPtr> args;
-    args.push_back(std::move(arg));
-    auto call = std::make_unique<CallExpr>(
-        std::make_unique<IdentifierExpr>("normalize"),
-        std::move(args));
-    shading->body.push_back(std::make_unique<ReturnStmt>(std::move(call)));
-    mat->declarations.push_back(std::move(shading));
-    prog->declarations.push_back(std::move(mat));
-
-    auto result = conv.convert(*prog);
-    CHECK(result.success);
-    CHECK(result.output.find("normalize(v)") != std::string::npos);
-}
-
-TEST_CASE(member_expression_in_return) {
-    AYBGFXConverter conv;
-    auto prog = std::make_unique<Program>(std::vector<StmtPtr>{});
-    auto mat = std::make_unique<MaterialDecl>("X", std::vector<StmtPtr>{});
-    auto shading = std::make_unique<ShadingFunc>(std::vector<StmtPtr>{});
-
-    auto member = std::make_unique<MemberExpr>(
-        std::make_unique<IdentifierExpr>("v"), "xyz");
-    shading->body.push_back(std::make_unique<ReturnStmt>(std::move(member)));
-    mat->declarations.push_back(std::move(shading));
-    prog->declarations.push_back(std::move(mat));
-
-    auto result = conv.convert(*prog);
-    CHECK(result.success);
-    CHECK(result.output.find("v.xyz") != std::string::npos);
-}
-
-TEST_CASE(index_expression_in_return) {
-    AYBGFXConverter conv;
-    auto prog = std::make_unique<Program>(std::vector<StmtPtr>{});
-    auto mat = std::make_unique<MaterialDecl>("X", std::vector<StmtPtr>{});
-    auto shading = std::make_unique<ShadingFunc>(std::vector<StmtPtr>{});
-
-    auto idx = std::make_unique<IndexExpr>(
-        std::make_unique<IdentifierExpr>("arr"),
-        std::make_unique<LiteralExpr>(0));
-    shading->body.push_back(std::make_unique<ReturnStmt>(std::move(idx)));
-    mat->declarations.push_back(std::move(shading));
-    prog->declarations.push_back(std::move(mat));
-
-    auto result = conv.convert(*prog);
-    CHECK(result.success);
-    CHECK(result.output.find("arr[0]") != std::string::npos);
-}
-
-TEST_CASE(unary_expression_in_return) {
-    AYBGFXConverter conv;
-    auto prog = std::make_unique<Program>(std::vector<StmtPtr>{});
-    auto mat = std::make_unique<MaterialDecl>("X", std::vector<StmtPtr>{});
-    auto shading = std::make_unique<ShadingFunc>(std::vector<StmtPtr>{});
-
-    Token minus;
-    minus.type = TokenType::Minus;
-    minus.lexeme = "-";
-    auto un = std::make_unique<UnaryExpr>(minus, std::make_unique<IdentifierExpr>("x"));
-    shading->body.push_back(std::make_unique<ReturnStmt>(std::move(un)));
-    mat->declarations.push_back(std::move(shading));
-    prog->declarations.push_back(std::move(mat));
-
-    auto result = conv.convert(*prog);
-    CHECK(result.success);
-    CHECK(result.output.find("-x") != std::string::npos);
-}
-
-// ===== Compiler args =====
-
-TEST_CASE(compiler_args_fragment) {
-    AYBGFXConverter conv;
-    conv.setShaderType(BGFXShaderType::Fragment);
-    auto args = conv.getCompilerArgs();
-    CHECK(args.size() == 4);
-    CHECK(std::string(args[0]) == "-p");
-    CHECK(std::string(args[1]) == "vulkan");
-    CHECK(std::string(args[2]) == "--type");
-    CHECK(std::string(args[3]) == "fragment");
-}
-
-TEST_CASE(compiler_args_vertex) {
-    AYBGFXConverter conv;
-    conv.setShaderType(BGFXShaderType::Vertex);
-    auto args = conv.getCompilerArgs();
-    CHECK(args.size() == 4);
-    CHECK(std::string(args[3]) == "vertex");
-}
-
-// ===== End-to-end: source -> .sc =====
-
-TEST_CASE(end_to_end_minimal_unlit) {
-    Compiler compiler;
+TEST_CASE(empty_material_produces_three_pieces) {
     const char* src = R"(
         material Unlit {
-            property color = vec4(1.0, 0.0, 0.0, 1.0)
-            shading {
-                return color
+            vertex { return vec4(0.0, 0.0, 0.0, 1.0) }
+            fragment { return vec4(1.0, 0.0, 0.0, 1.0) }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    // No in/out declarations on either block → no attributes or varyings
+    // need to be registered in varying.def.sc. The file is still emitted
+    // (empty string) so downstream shaderc invocations are deterministic.
+    CHECK(!files.vs.empty());
+    CHECK(!files.fs.empty());
+    CHECK(files.varyingDef.empty());
+}
+
+// ===== vs content: $input / $output / uniforms / body =====
+
+TEST_CASE(vertex_emits_input_output) {
+    const char* src = R"(
+        material X {
+            vertex {
+                in  pos : position
+                in  nrm : normal
+                out clr : color = vec4(1.0, 0.0, 0.0, 1.0)
+                return vec4(pos, 1.0)
             }
+            fragment { in clr : color; return clr }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    CHECK(files.vs.find("$input a_position, a_normal") != std::string::npos);
+    CHECK(files.vs.find("$output v_color0") != std::string::npos);
+    CHECK(files.vs.find("#include \"common.sh\"") != std::string::npos);
+    CHECK(files.vs.find("gl_Position = vec4(a_position, 1.0)") != std::string::npos);
+}
+
+// ===== fs content: $input / uniforms / textures / body =====
+
+TEST_CASE(fragment_emits_input_textures) {
+    const char* src = R"(
+        material PBR {
+            texture2d albedoMap
+            vertex {
+                in pos : position
+                in uv  : texcoord
+                return vec4(pos, 1.0)
+            }
+            fragment {
+                in uv : texcoord
+                return texture2D(albedoMap, uv)
+            }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    CHECK(files.fs.find("$input v_texcoord0") != std::string::npos);
+    CHECK(files.fs.find("SAMPLER2D(albedoMap, 0)") != std::string::npos);
+    CHECK(files.fs.find("texture2D(albedoMap, v_texcoord0)") != std::string::npos);
+}
+
+// ===== varying.def.sc content =====
+
+TEST_CASE(varying_def_emits_all_bindings) {
+    const char* src = R"(
+        material X {
+            vertex {
+                in  pos : position
+                in  nrm : normal
+                in  uv  : texcoord
+                out clr : color = vec4(1.0, 0.0, 0.0, 1.0)
+                out uv2 : texcoord = vec2(0.0, 0.0)
+                return vec4(pos, 1.0)
+            }
+            fragment {
+                in clr : color
+                in uv2 : texcoord
+                return clr
+            }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    // Attributes
+    CHECK(files.varyingDef.find("a_position  : POSITION") != std::string::npos);
+    CHECK(files.varyingDef.find("a_normal    : NORMAL") != std::string::npos);
+    CHECK(files.varyingDef.find("a_texcoord0 : TEXCOORD0") != std::string::npos);
+    // Varyings (with default values from the table).
+    CHECK(files.varyingDef.find("v_color0    : COLOR0    = vec4(1.0, 0.0, 0.0, 1.0)") != std::string::npos);
+    CHECK(files.varyingDef.find("v_texcoord0 : TEXCOORD0 = vec2(0.0, 0.0)") != std::string::npos);
+}
+
+// ===== Uniforms =====
+
+TEST_CASE(uniforms_emitted_in_both_vs_and_fs) {
+    const char* src = R"(
+        material X {
+            uniform vec4 u_time
+            uniform mat4 u_modelViewProj
+            vertex {
+                return u_modelViewProj * vec4(0.0, 0.0, 0.0, 1.0)
+            }
+            fragment {
+                return vec4(u_time)
+            }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    CHECK(files.vs.find("uniform vec4 u_time") != std::string::npos);
+    CHECK(files.vs.find("uniform mat4 u_modelViewProj") != std::string::npos);
+    CHECK(files.fs.find("uniform vec4 u_time") != std::string::npos);
+}
+
+// ===== Properties become uniforms =====
+
+TEST_CASE(properties_become_uniforms) {
+    const char* src = R"(
+        material X {
+            property tint = vec4(1.0, 0.5, 0.25, 1.0)
+            vertex { return vec4(0.0) }
+            fragment { return tint }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    CHECK(files.fs.find("uniform vec4 tint = vec4(1.0, 0.5, 0.25, 1.0)") != std::string::npos);
+}
+
+// ===== builtin: sample() → texture2D() =====
+
+TEST_CASE(sample_builtin_maps_to_texture2D) {
+    const char* src = R"(
+        material X {
+            texture2d tex
+            vertex { return vec4(0.0) }
+            fragment {
+                in uv : texcoord
+                return sample(tex, uv)
+            }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    CHECK(files.fs.find("texture2D(tex, v_texcoord0)") != std::string::npos);
+    CHECK(files.fs.find("sample(") == std::string::npos);
+}
+
+// ===== Structural validation: missing vertex/fragment surfaces as error =====
+//
+// In Phase 1 closure the parser rejects a material missing vertex or
+// fragment at parse time (parseMaterialDecl records an error). The
+// converter therefore never sees an incomplete material — but we keep
+// a converter-level guard for direct AST injection paths (Phase 2
+// compute-only materials). Replaced by parser-level error checks above.
+
+TEST_CASE(compute_throws_not_implemented) {
+    // Phase 1: with parser-level structural validation, a program
+    // lacking a vertex/fragment fails to parse cleanly. The compiler
+    // pipeline surfaces that as a parser error and never reaches the
+    // converter. We assert the failure mode end-to-end here.
+    Lexer lexer("material X { fragment { return vec4(1.0) } }");
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    auto ast = parser.parse();
+    CHECK(parser.hasErrors());
+    // Even if the AST is partial, the converter must still refuse to
+    // emit silently — a malformed material cannot yield valid bgfx code.
+    AYBGFXConverter conv;
+    auto res = conv.convertBGFX(*ast);
+    CHECK(!res.success);
+    CHECK(!res.errors.empty());
+}
+
+// ===== Multiple materials =====
+
+TEST_CASE(multiple_materials_each_get_three_pieces) {
+    const char* src = R"(
+        material A {
+            vertex { return vec4(0.0) }
+            fragment { return vec4(1.0, 0.0, 0.0, 1.0) }
+        }
+        material B {
+            vertex { return vec4(1.0) }
+            fragment { return vec4(0.0, 1.0, 0.0, 1.0) }
+        }
+    )";
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    auto ast = parser.parse();
+    AYBGFXConverter conv;
+    auto res = conv.convertBGFX(*ast);
+    CHECK(res.success);
+    CHECK(res.materialFiles.size() == 2);
+    CHECK(!res.materialFiles[0].vs.empty());
+    CHECK(!res.materialFiles[1].vs.empty());
+    // First material's fs should reflect its color (red), second (green).
+    CHECK(res.materialFiles[0].fs.find("1.0, 0.0, 0.0, 1.0") != std::string::npos);
+    CHECK(res.materialFiles[1].fs.find("0.0, 1.0, 0.0, 1.0") != std::string::npos);
+}
+
+// ===== End-to-end via Compiler =====
+
+TEST_CASE(compiler_emits_three_pieces) {
+    ayt::shader::phoskia::Compiler compiler;
+    const char* src = R"(
+        material Unlit {
+            vertex { return vec4(0.0, 0.0, 0.0, 1.0) }
+            fragment { return vec4(1.0, 0.0, 0.0, 1.0) }
         }
     )";
     auto result = compiler.compile(src);
     CHECK(result.success);
-    // Output should be BGFX .sc content
-    CHECK(result.output.find("[fragment]") != std::string::npos);
-    CHECK(result.output.find("[Unlit]") != std::string::npos);
-    CHECK(result.output.find("void main()") != std::string::npos);
-    CHECK(result.output.find("color") != std::string::npos);
+    // The generic .output is a concatenated stream of the three files
+    // with fences; the structured form lives in the per-material uniforms/textures.
+    CHECK(!result.output.empty());
+    CHECK(result.output.find("varying.def.sc") != std::string::npos);
+    CHECK(result.output.find("$input") != std::string::npos);
 }
 
 TEST_SUITE_END

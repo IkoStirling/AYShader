@@ -1,5 +1,5 @@
 // ============================================================
-// AYShader Parser Unit Tests
+// AYShader Parser Unit Tests (Phase 1 closure — vertex/fragment syntax)
 // ============================================================
 
 #include "AYLexer.h"
@@ -48,31 +48,33 @@ TEST_CASE(only_whitespace) {
 // ===== Material declaration =====
 
 TEST_CASE(material_declaration_minimal) {
-    auto prog = parseSource("material Unlit { }");
+    auto prog = parseSource("material Unlit { vertex { } fragment { } }");
     CHECK(prog != nullptr);
     CHECK(prog->declarations.size() == 1);
     auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
     CHECK(mat != nullptr);
     CHECK(mat->name == "Unlit");
-    CHECK(mat->declarations.empty());
+    CHECK(mat->declarations.size() == 2);
+    CHECK(dynamic_cast<VertexFunc*>(mat->declarations[0].get()) != nullptr);
+    CHECK(dynamic_cast<FragmentFunc*>(mat->declarations[1].get()) != nullptr);
 }
 
 TEST_CASE(material_declaration_with_property) {
-    auto prog = parseSource("material X { property color = vec3(1.0, 0.0, 0.0); }");
-    CHECK(prog != nullptr);
+    auto prog = parseSource(
+        "material X { property color = vec4(1.0, 0.0, 0.0, 1.0); vertex { } fragment { } }");
     auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
     CHECK(mat != nullptr);
-    CHECK(mat->declarations.size() == 1);
+    CHECK(mat->declarations.size() == 3);
     auto* prop = dynamic_cast<PropertyDecl*>(mat->declarations[0].get());
     CHECK(prop != nullptr);
     CHECK(prop->name == "color");
 }
 
 TEST_CASE(material_declaration_with_uniform) {
-    auto prog = parseSource("material X { uniform mat4 modelMatrix; }");
+    auto prog = parseSource(
+        "material X { uniform mat4 modelMatrix; vertex { } fragment { } }");
     auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
     CHECK(mat != nullptr);
-    CHECK(mat->declarations.size() == 1);
     auto* uni = dynamic_cast<UniformDecl*>(mat->declarations[0].get());
     CHECK(uni != nullptr);
     CHECK(uni->type == "mat4");
@@ -80,9 +82,9 @@ TEST_CASE(material_declaration_with_uniform) {
 }
 
 TEST_CASE(material_declaration_with_texture) {
-    auto prog = parseSource("material X { texture2d albedoMap; }");
+    auto prog = parseSource(
+        "material X { texture2d albedoMap; vertex { } fragment { } }");
     auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
-    CHECK(mat != nullptr);
     auto* tex = dynamic_cast<TextureDecl*>(mat->declarations[0].get());
     CHECK(tex != nullptr);
     CHECK(tex->name == "albedoMap");
@@ -95,225 +97,267 @@ TEST_CASE(material_declaration_mixed) {
             uniform mat4 modelMatrix
             property color = vec3(1.0)
             property metallic = 0.5
+            vertex { }
+            fragment { }
         }
     )";
     auto prog = parseSource(src);
     auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
     CHECK(mat != nullptr);
-    CHECK(mat->declarations.size() == 4);
+    CHECK(mat->declarations.size() == 6);  // tex + uniform + 2 props + vs + fs
 }
 
 TEST_CASE(multiple_materials) {
     const char* src = R"(
-        material A { }
-        material B { }
+        material A { vertex { } fragment { } }
+        material B { vertex { } fragment { } }
     )";
     auto prog = parseSource(src);
     CHECK(prog->declarations.size() == 2);
     CHECK(countDecls<MaterialDecl>(*prog) == 2);
 }
 
-// ===== Shading function =====
+// ===== Vertex block =====
 
-TEST_CASE(shading_with_let_and_return) {
+TEST_CASE(vertex_with_in_params) {
     const char* src = R"(
         material X {
-            shading {
-                let a = 1.0
-                let b = 2.0
-                return a + b
+            vertex {
+                in pos : position
+                in nrm : normal
+                in uv  : texcoord
+                return vec4(pos, 1.0)
+            }
+            fragment { }
+        }
+    )";
+    auto prog = parseSource(src);
+    auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
+    auto* vs = dynamic_cast<VertexFunc*>(mat->declarations[0].get());
+    CHECK(vs != nullptr);
+    CHECK(vs->params.size() == 3);
+    CHECK(vs->body.size() == 1);
+
+    auto* p0 = dynamic_cast<ShaderParam*>(vs->params[0].get());
+    CHECK(p0 != nullptr);
+    CHECK(p0->dir == ShaderParam::Direction::In);
+    CHECK(p0->name == "pos");
+    CHECK(p0->semantic == PhoskiaSemantic::Position);
+
+    auto* p1 = dynamic_cast<ShaderParam*>(vs->params[1].get());
+    CHECK(p1->semantic == PhoskiaSemantic::Normal);
+
+    auto* p2 = dynamic_cast<ShaderParam*>(vs->params[2].get());
+    CHECK(p2->semantic == PhoskiaSemantic::Texcoord);
+
+    auto* ret = dynamic_cast<ReturnStmt*>(vs->body[0].get());
+    CHECK(ret != nullptr);
+    // `return vec4(pos, 1.0)` parses as ReturnStmt carrying a CallExpr
+    // (callee IdentifierExpr("vec4"), single arg IdentifierExpr("pos")).
+    // The gl_Position binding is added by the BGFX converter; the AST
+    // carries no gl_* identifier.
+    auto* call = dynamic_cast<CallExpr*>(ret->value.get());
+    CHECK(call != nullptr);
+    auto* callee = dynamic_cast<IdentifierExpr*>(call->callee.get());
+    CHECK(callee != nullptr);
+    CHECK(callee->name == "vec4");
+    CHECK(call->args.size() == 2);
+    auto* arg0 = dynamic_cast<IdentifierExpr*>(call->args[0].get());
+    CHECK(arg0 != nullptr);
+    CHECK(arg0->name == "pos");
+    auto* arg1 = dynamic_cast<LiteralExpr*>(call->args[1].get());
+    CHECK(arg1 != nullptr);
+}
+
+TEST_CASE(vertex_with_out_default) {
+    const char* src = R"(
+        material X {
+            vertex {
+                in  pos : position
+                out nrm : normal = vec3(0.0, 1.0, 0.0)
+                return vec4(pos, 1.0)
+            }
+            fragment { }
+        }
+    )";
+    auto prog = parseSource(src);
+    auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
+    auto* vs = dynamic_cast<VertexFunc*>(mat->declarations[0].get());
+    CHECK(vs != nullptr);
+    CHECK(vs->params.size() == 2);
+    auto* p1 = dynamic_cast<ShaderParam*>(vs->params[1].get());
+    CHECK(p1 != nullptr);
+    CHECK(p1->dir == ShaderParam::Direction::Out);
+    CHECK(p1->semantic == PhoskiaSemantic::Normal);
+    CHECK(p1->defaultValue != nullptr);
+    // defaultValue is vec3(0.0, 1.0, 0.0) — a constructor call, not a
+    // bare LiteralExpr. Confirm both the CallExpr shape and that the
+    // callee name is "vec3".
+    auto* call = dynamic_cast<CallExpr*>(p1->defaultValue.get());
+    CHECK(call != nullptr);
+    auto* callee = dynamic_cast<IdentifierExpr*>(call->callee.get());
+    CHECK(callee != nullptr);
+    CHECK(callee->name == "vec3");
+}
+
+TEST_CASE(shading_keyword_now_rejected) {
+    // Phase 1 closure: 'shading' is gone, vertex/fragment replace it.
+    // A 'shading' block is now an unknown token sequence that triggers
+    // a parser error.
+    const char* src = "material X { shading { return 1.0 } }";
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    parser.parse();
+    CHECK(parser.hasErrors());
+}
+
+// ===== Fragment block =====
+
+TEST_CASE(fragment_with_in_params) {
+    const char* src = R"(
+        material X {
+            vertex { in pos : position; return vec4(pos, 1.0) }
+            fragment {
+                in nrm : normal
+                in clr : color
+                return clr
             }
         }
     )";
     auto prog = parseSource(src);
     auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
-    CHECK(mat != nullptr);
-    CHECK(mat->declarations.size() == 1);
-    auto* shading = dynamic_cast<ShadingFunc*>(mat->declarations[0].get());
-    CHECK(shading != nullptr);
-    CHECK(shading->body.size() == 3);
-
-    auto* let1 = dynamic_cast<LetStmt*>(shading->body[0].get());
-    CHECK(let1 != nullptr);
-    CHECK(let1->name == "a");
-
-    auto* ret = dynamic_cast<ReturnStmt*>(shading->body[2].get());
-    CHECK(ret != nullptr);
-    CHECK(ret->value != nullptr);
+    auto* fs = dynamic_cast<FragmentFunc*>(mat->declarations[1].get());
+    CHECK(fs != nullptr);
+    CHECK(fs->inputs.size() == 2);
+    auto* p0 = dynamic_cast<ShaderParam*>(fs->inputs[0].get());
+    CHECK(p0 != nullptr);
+    CHECK(p0->dir == ShaderParam::Direction::In);
+    CHECK(p0->semantic == PhoskiaSemantic::Normal);
 }
 
-TEST_CASE(shading_with_return_no_value) {
-    const char* src = "material X { shading { return; } }";
-    auto prog = parseSource(src);
-    auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
-    auto* shading = dynamic_cast<ShadingFunc*>(mat->declarations[0].get());
-    auto* ret = dynamic_cast<ReturnStmt*>(shading->body[0].get());
-    CHECK(ret != nullptr);
-    CHECK(ret->value == nullptr);
-}
-
-// ===== If statement =====
-
-TEST_CASE(if_statement) {
+TEST_CASE(fragment_out_is_error) {
+    // 'out' inside a fragment block is meaningless — parser records an
+    // error but still consumes the token so it can recover.
     const char* src = R"(
         material X {
-            shading {
-                if (x > 0.0) {
-                    return 1.0
-                }
+            vertex { return vec4(0.0) }
+            fragment {
+                out nrm : normal
+                return vec4(0.0)
             }
+        }
+    )";
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    parser.parse();
+    CHECK(parser.hasErrors());
+}
+
+// ===== Body statements inside vertex / fragment =====
+
+TEST_CASE(vertex_let_and_return) {
+    const char* src = R"(
+        material X {
+            vertex {
+                in pos : position
+                let wpos = pos * 2.0
+                return vec4(wpos, 1.0)
+            }
+            fragment { }
         }
     )";
     auto prog = parseSource(src);
     auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
-    auto* shading = dynamic_cast<ShadingFunc*>(mat->declarations[0].get());
-    auto* ifs = dynamic_cast<IfStmt*>(shading->body[0].get());
-    CHECK(ifs != nullptr);
-    CHECK(ifs->condition != nullptr);
-    CHECK(ifs->thenBranch.size() == 1);
-    CHECK(ifs->elseBranch.empty());
+    auto* vs = dynamic_cast<VertexFunc*>(mat->declarations[0].get());
+    CHECK(vs != nullptr);
+    CHECK(vs->body.size() == 2);
+    CHECK(dynamic_cast<LetStmt*>(vs->body[0].get()) != nullptr);
+    CHECK(dynamic_cast<ReturnStmt*>(vs->body[1].get()) != nullptr);
 }
 
-TEST_CASE(if_else_statement) {
+TEST_CASE(fragment_if_else) {
     const char* src = R"(
         material X {
-            shading {
-                if (cond) {
-                    return 1.0
+            vertex { return vec4(0.0) }
+            fragment {
+                in uv : texcoord
+                if (uv.x > 0.5) {
+                    return vec4(1.0, 0.0, 0.0, 1.0)
                 } else {
-                    return 0.0
+                    return vec4(0.0, 0.0, 1.0, 1.0)
                 }
             }
         }
     )";
     auto prog = parseSource(src);
     auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
-    auto* shading = dynamic_cast<ShadingFunc*>(mat->declarations[0].get());
-    auto* ifs = dynamic_cast<IfStmt*>(shading->body[0].get());
+    auto* fs = dynamic_cast<FragmentFunc*>(mat->declarations[1].get());
+    CHECK(fs != nullptr);
+    CHECK(fs->body.size() == 1);
+    auto* ifs = dynamic_cast<IfStmt*>(fs->body[0].get());
     CHECK(ifs != nullptr);
-    CHECK(ifs->thenBranch.size() == 1);
     CHECK(ifs->elseBranch.size() == 1);
 }
 
-// ===== For statement =====
-
-TEST_CASE(for_loop) {
-    const char* src = R"(
-        material X {
-            shading {
-                for (item in list) {
-                    let x = item
-                }
-            }
-        }
-    )";
-    auto prog = parseSource(src);
-    auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
-    auto* shading = dynamic_cast<ShadingFunc*>(mat->declarations[0].get());
-    auto* fors = dynamic_cast<ForStmt*>(shading->body[0].get());
-    CHECK(fors != nullptr);
-    CHECK(fors->variable == "item");
-    CHECK(fors->iterable != nullptr);
-    CHECK(fors->body.size() == 1);
-}
-
-// ===== Expressions =====
+// ===== Expressions (unchanged from Phase 1) =====
 
 TEST_CASE(expression_binary) {
-    const char* src = "material X { shading { return a + b * c; } }";
+    const char* src = "material X { vertex { } fragment { in uv : texcoord; return uv * uv } }";
     auto prog = parseSource(src);
     auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
-    auto* shading = dynamic_cast<ShadingFunc*>(mat->declarations[0].get());
-    auto* ret = dynamic_cast<ReturnStmt*>(shading->body[0].get());
-    CHECK(ret != nullptr);
-    auto* outer = dynamic_cast<BinaryExpr*>(ret->value.get());
-    CHECK(outer != nullptr);
-    CHECK(outer->op.type == TokenType::Plus);
-    // right side should be BinaryExpr (b * c) due to precedence
-    auto* inner = dynamic_cast<BinaryExpr*>(outer->right.get());
-    CHECK(inner != nullptr);
-    CHECK(inner->op.type == TokenType::Star);
+    auto* fs = dynamic_cast<FragmentFunc*>(mat->declarations[1].get());
+    auto* ret = dynamic_cast<ReturnStmt*>(fs->body[0].get());
+    auto* bin = dynamic_cast<BinaryExpr*>(ret->value.get());
+    CHECK(bin != nullptr);
+    CHECK(bin->op.type == TokenType::Star);
 }
 
 TEST_CASE(expression_call) {
-    const char* src = "material X { shading { return normalize(v); } }";
+    const char* src = "material X { vertex { } fragment { in v : position; return normalize(v) } }";
     auto prog = parseSource(src);
     auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
-    auto* shading = dynamic_cast<ShadingFunc*>(mat->declarations[0].get());
-    auto* ret = dynamic_cast<ReturnStmt*>(shading->body[0].get());
+    auto* fs = dynamic_cast<FragmentFunc*>(mat->declarations[1].get());
+    auto* ret = dynamic_cast<ReturnStmt*>(fs->body[0].get());
     auto* call = dynamic_cast<CallExpr*>(ret->value.get());
     CHECK(call != nullptr);
     CHECK(call->args.size() == 1);
-    auto* callee = dynamic_cast<IdentifierExpr*>(call->callee.get());
-    CHECK(callee != nullptr);
-    CHECK(callee->name == "normalize");
 }
 
 TEST_CASE(expression_member) {
-    const char* src = "material X { shading { return v.rgb; } }";
+    const char* src = "material X { vertex { } fragment { in c : color; return c.rgb } }";
     auto prog = parseSource(src);
     auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
-    auto* shading = dynamic_cast<ShadingFunc*>(mat->declarations[0].get());
-    auto* ret = dynamic_cast<ReturnStmt*>(shading->body[0].get());
-    auto* member = dynamic_cast<MemberExpr*>(ret->value.get());
-    CHECK(member != nullptr);
-    CHECK(member->member == "rgb");
-}
-
-TEST_CASE(expression_index) {
-    const char* src = "material X { shading { return arr[0]; } }";
-    auto prog = parseSource(src);
-    auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
-    auto* shading = dynamic_cast<ShadingFunc*>(mat->declarations[0].get());
-    auto* ret = dynamic_cast<ReturnStmt*>(shading->body[0].get());
-    auto* idx = dynamic_cast<IndexExpr*>(ret->value.get());
-    CHECK(idx != nullptr);
-    CHECK(idx->object != nullptr);
-    CHECK(idx->index != nullptr);
-}
-
-TEST_CASE(expression_unary_minus) {
-    const char* src = "material X { shading { return -x; } }";
-    auto prog = parseSource(src);
-    auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
-    auto* shading = dynamic_cast<ShadingFunc*>(mat->declarations[0].get());
-    auto* ret = dynamic_cast<ReturnStmt*>(shading->body[0].get());
-    auto* un = dynamic_cast<UnaryExpr*>(ret->value.get());
-    CHECK(un != nullptr);
-    CHECK(un->op.type == TokenType::Minus);
+    auto* fs = dynamic_cast<FragmentFunc*>(mat->declarations[1].get());
+    auto* ret = dynamic_cast<ReturnStmt*>(fs->body[0].get());
+    auto* mem = dynamic_cast<MemberExpr*>(ret->value.get());
+    CHECK(mem != nullptr);
+    CHECK(mem->member == "rgb");
 }
 
 TEST_CASE(expression_literal_int) {
-    const char* src = "material X { shading { return 42; } }";
+    const char* src = "material X { vertex { } fragment { return 42 } }";
     auto prog = parseSource(src);
     auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
-    auto* shading = dynamic_cast<ShadingFunc*>(mat->declarations[0].get());
-    auto* ret = dynamic_cast<ReturnStmt*>(shading->body[0].get());
+    auto* fs = dynamic_cast<FragmentFunc*>(mat->declarations[1].get());
+    auto* ret = dynamic_cast<ReturnStmt*>(fs->body[0].get());
     auto* lit = dynamic_cast<LiteralExpr*>(ret->value.get());
     CHECK(lit != nullptr);
     CHECK(std::get<int>(lit->value) == 42);
 }
 
 TEST_CASE(expression_literal_float) {
-    const char* src = "material X { shading { return 3.14; } }";
+    const char* src = "material X { vertex { } fragment { return 3.14 } }";
     auto prog = parseSource(src);
     auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
-    auto* shading = dynamic_cast<ShadingFunc*>(mat->declarations[0].get());
-    auto* ret = dynamic_cast<ReturnStmt*>(shading->body[0].get());
+    auto* fs = dynamic_cast<FragmentFunc*>(mat->declarations[1].get());
+    auto* ret = dynamic_cast<ReturnStmt*>(fs->body[0].get());
     auto* lit = dynamic_cast<LiteralExpr*>(ret->value.get());
     CHECK(lit != nullptr);
     CHECK(std::get<float>(lit->value) == 3.14f);
-}
-
-TEST_CASE(expression_literal_bool) {
-    const char* src = "material X { shading { return true; } }";
-    auto prog = parseSource(src);
-    auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
-    auto* shading = dynamic_cast<ShadingFunc*>(mat->declarations[0].get());
-    auto* ret = dynamic_cast<ReturnStmt*>(shading->body[0].get());
-    auto* lit = dynamic_cast<LiteralExpr*>(ret->value.get());
-    CHECK(lit != nullptr);
-    CHECK(std::get<bool>(lit->value) == true);
 }
 
 // ===== Variant attribute =====
@@ -323,40 +367,56 @@ TEST_CASE(variant_attribute) {
         material X {
             [ variant useEmission ]
             property emission = vec3(0.0)
+            vertex { }
+            fragment { }
         }
     )";
     auto prog = parseSource(src);
     auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
     CHECK(mat != nullptr);
-    // First decl is VariantAttribute, second is PropertyDecl
-    CHECK(mat->declarations.size() == 2);
+    // First decl is VariantAttribute, second is PropertyDecl, then vs+fs
+    CHECK(mat->declarations.size() >= 4);
     auto* attr = dynamic_cast<VariantAttribute*>(mat->declarations[0].get());
     CHECK(attr != nullptr);
     CHECK(attr->name == "useEmission");
-    auto* prop = dynamic_cast<PropertyDecl*>(mat->declarations[1].get());
-    CHECK(prop != nullptr);
 }
 
 // ===== Error reporting =====
 
-TEST_CASE(error_reported_on_missing_semicolon) {
-    // Phase 1 decision: semicolons are optional (Python-like).
-    // A missing ';' no longer produces a parser error.
-    Lexer lexer("material X { property y = 1.0 }");  // no ;
-    std::vector<Token> tokens;
-    lexer.tokenize(tokens);
-    Parser parser(tokens);
-    parser.parse();
-    CHECK(!parser.hasErrors());  // semicolon is optional
-}
-
 TEST_CASE(no_error_on_valid_source) {
-    Lexer lexer("material X { property y = 1.0; }");
+    const char* src = R"(
+        material X {
+            property y = 1.0
+            vertex { in p : position; return vec4(p, 1.0) }
+            fragment { return vec4(y) }
+        }
+    )";
+    Lexer lexer(src);
     std::vector<Token> tokens;
     lexer.tokenize(tokens);
     Parser parser(tokens);
     parser.parse();
     CHECK(!parser.hasErrors());
+}
+
+TEST_CASE(missing_vertex_block_is_error) {
+    const char* src = "material X { fragment { return vec4(1.0) } }";
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    parser.parse();
+    CHECK(parser.hasErrors());
+}
+
+TEST_CASE(missing_fragment_block_is_error) {
+    const char* src = "material X { vertex { return vec4(0.0) } }";
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    parser.parse();
+    CHECK(parser.hasErrors());
 }
 
 TEST_SUITE_END

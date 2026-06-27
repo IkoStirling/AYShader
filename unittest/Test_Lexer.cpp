@@ -49,25 +49,27 @@ TEST_CASE(keyword_texture2d) {
     CHECK(tokens[0].type == TokenType::Texture2D);
 }
 
-TEST_CASE(keyword_shading) {
-    Lexer lexer("shading");
+TEST_CASE(keyword_vertex_fragment) {
+    Lexer lexer("vertex fragment");
     std::vector<Token> tokens;
     lexer.tokenize(tokens);
-    CHECK(tokens.size() == 2);
-    CHECK(tokens[0].type == TokenType::Shading);
+    CHECK(tokens.size() == 3);
+    CHECK(tokens[0].type == TokenType::Vertex);
+    CHECK(tokens[1].type == TokenType::Fragment);
 }
 
-TEST_CASE(keyword_let_return_if_else_for_in) {
-    Lexer lexer("let return if else for in");
+TEST_CASE(keyword_let_return_if_else_for_in_out) {
+    Lexer lexer("let return if else for in out");
     std::vector<Token> tokens;
     lexer.tokenize(tokens);
-    CHECK(tokens.size() == 7);  // 6 keywords + EOF
+    CHECK(tokens.size() == 8);  // 7 keywords + EOF
     CHECK(tokens[0].type == TokenType::Let);
     CHECK(tokens[1].type == TokenType::Return);
     CHECK(tokens[2].type == TokenType::If);
     CHECK(tokens[3].type == TokenType::Else);
     CHECK(tokens[4].type == TokenType::For);
     CHECK(tokens[5].type == TokenType::In);
+    CHECK(tokens[6].type == TokenType::Out);
 }
 
 TEST_CASE(keyword_true_false) {
@@ -99,6 +101,19 @@ TEST_CASE(keyword_types) {
     CHECK(tokens[10].type == TokenType::Mat4);
     CHECK(tokens[11].type == TokenType::Quat);
     CHECK(tokens[12].type == TokenType::Bool);
+}
+
+// ===== Phoskia semantic keywords =====
+
+TEST_CASE(keyword_phoskia_semantics) {
+    Lexer lexer("position normal color texcoord");
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    CHECK(tokens.size() == 5);  // 4 + EOF
+    CHECK(tokens[0].type == TokenType::Position);
+    CHECK(tokens[1].type == TokenType::Normal);
+    CHECK(tokens[2].type == TokenType::Color);
+    CHECK(tokens[3].type == TokenType::Texcoord);
 }
 
 // ===== Operator recognition =====
@@ -342,10 +357,13 @@ TEST_CASE(realistic_material_declaration) {
             texture2d albedoMap
             uniform vec3 cameraPos
             property color = vec3(1.0, 0.5, 0.25)
-            shading {
-                let N = normalize(vec3(0.0, 1.0, 0.0))
-                return color * N
+            vertex {
+                in pos : position
+                in nrm : normal
+                let N = normalize(nrm)
+                return vec4(pos, 1.0)
             }
+            fragment { return color * N }
         }
     )";
     Lexer lexer(src);
@@ -355,16 +373,19 @@ TEST_CASE(realistic_material_declaration) {
     CHECK(tokens.size() > 30);
     CHECK(tokens.back().type == TokenType::EndOfFile);
     // Specific checks
-    bool foundMaterial = false, foundProperty = false, foundShading = false, foundReturn = false;
+    bool foundMaterial = false, foundProperty = false, foundVertex = false,
+         foundFragment = false, foundReturn = false;
     for (const auto& t : tokens) {
         if (t.type == TokenType::Material) foundMaterial = true;
         if (t.type == TokenType::Property) foundProperty = true;
-        if (t.type == TokenType::Shading) foundShading = true;
+        if (t.type == TokenType::Vertex) foundVertex = true;
+        if (t.type == TokenType::Fragment) foundFragment = true;
         if (t.type == TokenType::Return) foundReturn = true;
     }
     CHECK(foundMaterial);
     CHECK(foundProperty);
-    CHECK(foundShading);
+    CHECK(foundVertex);
+    CHECK(foundFragment);
     CHECK(foundReturn);
 }
 

@@ -196,7 +196,10 @@ src/
 ```phoskia
 material Unlit {
     property color = vec4(1.0, 0.0, 0.0, 1.0)
-    shading {
+    vertex {
+        return vec4(0.0, 0.0, 0.0, 1.0)
+    }
+    fragment {
         return color
     }
 }
@@ -209,16 +212,54 @@ material PBR {
     texture2d albedoMap
     uniform vec3 cameraPos
 
-    property baseColor = sample(albedoMap, uv)
+    vertex {
+        in  pos    : position
+        in  nrm    : normal
+        in  uv     : texcoord
+        in  clr    : color
+        out worldNormal : normal = vec3(0.0, 0.0, 1.0)
+        out baseColor   : color  = vec4(1.0, 0.0, 0.0, 1.0)
+        out uvCoord     : texcoord = vec2(0.0, 0.0)
 
-    shading {
+        let wpos = mul(u_modelViewProj, vec4(pos, 1.0))
+        return wpos
+    }
+
+    fragment {
+        in  worldNormal : normal
+        in  baseColor   : color
+        in  uvCoord     : texcoord
+
         let N = normalize(worldNormal)
-        let L = normalize(lightDir)
+        let L = normalize(cameraPos)
         let NdotL = max(dot(N, L), 0.0)
         return vec4(baseColor.rgb * NdotL, 1.0)
     }
 }
 ```
+
+### 6.1 块（vertex / fragment）
+
+Phoskia 把每个 material 拆成**两个独立的 shader block**：`vertex { }` 和 `fragment { }`。
+每个 block 内部以 `in / out` 声明开头（可选），随后是 statement 列表（`let`、`return`、`if`、`for` 等）。
+
+**vertex / fragment 块的 return 语义。** `vertex { }` 里的 `return <expr>` 应当返回一个 vec4，后端 converter 会隐式把它绑定到 `gl_Position`（写入 `vs_*.sc`）。`fragment { }` 里的 `return <expr>` 应当返回一个 vec4，后端 converter 隐式绑定到 `gl_FragColor`（写入 `fs_*.sc`）。Phoskia 源码**绝不直接引用** `gl_Position` 或 `gl_FragColor`——这两个名字是 bgfx / GLSL 层的实现细节，对应"vertex 输出槽"和"fragment 输出槽"，由 converter 注入。
+
+### 6.2 in / out 参数语义（Phoskia 抽象）
+
+`in / out` 后跟的"语义类型"是 Phoskia 自己定义的 4 个关键字，**完全脱离 bgfx 概念**：
+
+| Phoskia 关键字 | 含义 | GLSL 类型 | 默认值 |
+|---|---|---|---|
+| `position` | 顶点位置 / 世界空间位置 | `vec3` | `vec3(0.0, 0.0, 0.0)` |
+| `normal`   | 法线                  | `vec3` | `vec3(0.0, 0.0, 1.0)` |
+| `color`    | 顶点颜色 / 输出色     | `vec4` | `vec4(1.0, 0.0, 0.0, 1.0)` |
+| `texcoord` | 纹理坐标              | `vec2` | `vec2(0.0, 0.0)` |
+
+**Phoskia 程序员写的标识符（`pos` / `nrm` / `worldNormal` 等）是自由命名**，与 bgfx semantic 不直接挂钩。
+后端 converter 负责把 Phoskia 语义映射到具体的 bgfx `a_*` / `v_*` 名字与硬件 semantic 槽位（POSITION / NORMAL / COLOR0 / TEXCOORD0）。
+
+**Phase 1 限制**：每个语义类别在一个 block 内最多出现 1 次。Phase 2 引入 `texcoord0..7` / `color0..1` / `tangent` 等扩展槽位。
 
 Variant 宏：
 
@@ -227,11 +268,12 @@ material PBR {
     #[variant useEmission]
     property emission = vec3(0.0)
 
-    shading {
-        let result = lighting()
+    fragment {
+        in baseColor : color
+        let result = baseColor.rgb
         #[variant useEmission]
         result = result + emission
-        return result
+        return vec4(result, 1.0)
     }
 }
 ```
@@ -302,14 +344,33 @@ Phoskia 的语法控制在以下 5 个文件里。**改一个语法特性需要�
 
 ## 8. 后端与多平台（Phase 2+）
 
-### BGFX `.sc` 格式支持的 Shader 类型
+### 8.1 BGFX 三件套（vs / fs / varying.def.sc）
 
-BGFX `.sc` 格式**仅支持 Vertex / Fragment shader**。`BGFXShaderType` 枚举定义如下：
+每个 Phoskia material 经 `AYBGFXConverter` 转换后产出**三个 .sc 源码文件**，由 `shaderc` 单独编译为 `.bin`：
+
+| 文件 | 内容 | shaderc 调用 |
+|---|---|---|
+| `vs_<Material>.sc` | vertex shader（含 `$input` / `$output` / uniforms / body） | `--type vertex` |
+| `fs_<Material>.sc` | fragment shader（含 `$input` / uniforms / textures / body） | `--type fragment --varyingdef varying.def.sc` |
+| `varying.def.sc` | varying/attribute 的 bgfx semantic binding（POS / NORMAL / COLOR0 / TEXCOORD0 等） | 被 shaderc 引用 |
+
+**bgfx semantic 映射（converter 内部硬编码表）**：
+
+| Phoskia 关键字 | bgfx semantic | 类型 | `a_*` 名字 | `v_*` 名字 |
+|---|---|---|---|---|
+| `position` | POSITION | `vec3` | `a_position` | `v_position` |
+| `normal`   | NORMAL   | `vec3` | `a_normal`   | `v_normal`   |
+| `color`    | COLOR0   | `vec4` | `a_color0`   | `v_color0`   |
+| `texcoord` | TEXCOORD0| `vec2` | `a_texcoord0`| `v_texcoord0`|
+
+`shaderc` 不识别 `[section]` 风格的 marker——所有 metadata 都通过 `$input` / `$output` 指令（从 Phoskia 的 `in`/`out` 声明转换）和 `varying.def.sc` 表达。
+
+### 8.2 BGFXShaderType（保留用于 compile 调度）
 
 ```cpp
 enum class BGFXShaderType {
-    Vertex,   // → gl_Position =
-    Fragment, // → gl_FragColor =
+    Vertex,   // converter 隐式绑定 `return <expr>` → gl_Position
+    Fragment, // converter 隐式绑定 `return <expr>` → gl_FragColor
     Compute,  // Phase 2+ — 无固定输出变量，raw dispatch
     Ray       // Phase 3+ — 独立路径
 };
@@ -324,10 +385,71 @@ enum class BGFXShaderType {
 
 | Shader 类型 | 现状 | Phase 2 | Phase 3 |
 |---|---|---|---|
-| Vertex | `.sc` 生成 `gl_Position =` | 完善 `gl_Position` 语义 | 多后端 |
-| Fragment | `.sc` 生成 `gl_FragColor =` | 完善 PBR/光照 | 多后端 |
+| Vertex | converter 隐式绑定 `return <expr>` → `gl_Position` | 完善 `gl_Position` 语义 | 多后端 |
+| Fragment | converter 隐式绑定 `return <expr>` → `gl_FragColor` | 完善 PBR/光照 | 多后端 |
 | Compute | BGFX 不支持 `.sc` | DX11/HLSL compute 生成 | SPIR-V / WGSL |
 | Ray | 不支持 | — | 独立架构 |
+
+### 8.3 shaderc 集成方式（路线对比）
+
+`AYBGFXConverter` 只产出 `.sc` 文本。**从 `.sc` 到 `.bin` 的 shader 编译**有三条路线，复杂度与解耦程度递增：
+
+**路线 A — 外部 shaderc.exe（Phase 1 采用）**
+
+`bgfx` 发布的独立 CLI 工具（`thirdParty/bgfx-install/<config>/bin/shaderc.exe`）。调用方（游戏构建脚本 / CI / 工具）spawn 进程传 `--type` / `--platform` / `-p` 等参数。
+
+- ✅ 解耦：AYShader 不依赖 shaderc 工具链，shader 编译可以独立升级 bgfx 版本
+- ✅ 零额外链接：shaderc.exe 单独 vendored ~2 MB
+- ✅ bgfx 官方分发，已处理所有 transitive deps（DXC、glslang、glsl-optimizer、Metal tools）
+- ❌ spawn 进程开销（通常仅 build / load time，不在 hot path）
+- ❌ Windows 上 Windows ↔ POSIX 路径转换坑
+
+**路线 B — 链接 shaderc C++ API（已具备，但 Phase 1 未采用）**
+
+`bgfx/tools/shaderc/shaderc.h` 暴露 in-process API：
+
+```cpp
+#include "shaderc.h"  // bgfx/tools/shaderc/
+
+bgfx::Options opts;
+opts.platform = "windows";
+opts.profile = "120";
+opts.shaderType = 'v';  // vertex
+opts.inputFilePath = "...";
+
+bgfx::compileGLSLShader(opts, /*version*/0, codeString, &writer, &msgWriter);
+```
+
+可直接调 `bgfx::compileGLSLShader` / `compileHLSLShader` / `compileMetalShader` / `compileSPIRVShader` / `compileDxilShader` / `compileWgslShader`，写到 `bx::WriterI`（内存 buffer 即可）。
+
+- ✅ in-process，无 spawn 开销
+- ✅ 编译错误可以直接以 `CompilerError` 形式上报
+- ❌ 需链接 `bx` + `glsl-optimizer` + 可选 `glslang` / DXC 动态库
+- ❌ 拉进 ~30+ 头文件 + glsl-optimizer 编译产物（即使不用 GLSL 优化也要链接符号）
+- ❌ bgfx 升级时 shaderc 内部 ABI 变动需要同步
+
+**路线 C — 多 backend 直调原生 API（Phase 3 目标）**
+
+绕开 bgfx 的 `.sc` 抽象，每个 backend 直接调平台 native compiler：
+
+| Backend | 编译入口 |
+|---|---|
+| DX11 | `D3DCompile()` (d3dcompiler.dll) |
+| DX12 | DXC (`DxcCreateInstance`) |
+| Vulkan | glslang + SPIRV-Tools → SPIR-V bytecode |
+| Metal | `metal` CLI → metallib / 直接调 Metal API |
+| WebGPU | naga / tint → WGSL |
+
+- ✅ 极致性能（DXC 编译比 glslang → DXC 两步少一次 IR 翻译）
+- ✅ 摆脱 bgfx `.sc` 抽象（部分平台已不推荐 .sc）
+- ❌ 工作量大：每 backend 独立代码、独立的 attribute/varying 处理
+- ❌ 跨 backend 的 type/builtin 同步成本
+
+**Phase 1 决策与未来迁移**
+
+- Phase 1 / Phase 2 走路线 A。`Test_ShaderCompile` 已用 `_popen` 验证跨平台矩阵（windows / linux / osx / android / ios / asm.js / orbis × GLSL 1.20 / ESSL 3.20 / Metal / SPIR-V 大部分组合）。
+- 路线 B 升级门槛低（仅需把 `thirdParty/bgfx/tools/shaderc/` + `bx/` 纳入 CMake），适合"想脱 spawn 但仍用 bgfx 编译栈"的中间阶段。
+- 路线 C 是 Phase 3 长期目标。
 
 ### 新增后端步骤
 
@@ -370,7 +492,6 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
                       | <uniform_decl>
                       | <texture_decl>
                       | <sampler_decl>
-                      | <shading_func>
                       | <vertex_func>
                       | <fragment_func>
                       | <variant_attribute>
@@ -385,11 +506,19 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 
 <sampler_decl>      ::= "sampler" <identifier> "=" <expression> ";"
 
-<shading_func>      ::= "shading" "{" <statement_list> "}"
+<vertex_func>       ::= "vertex" "{" <param_decl_list> <statement_list> "}"
 
-<vertex_func>       ::= "vertex" "{" <statement_list> "}"
+<fragment_func>     ::= "fragment" "{" <param_decl_list> <statement_list> "}"
 
-<fragment_func>     ::= "fragment" "{" <statement_list> "}"
+<param_decl_list>   ::= <param_decl>*
+                       | <param_decl>* <statement_list>   ; first statement may follow param decls without separator
+
+<param_decl>        ::= <io_keyword> <identifier> ":" <phoskia_semantic> [ "=" <expression> ]
+
+<io_keyword>        ::= "in"
+                      | "out"
+
+<phoskia_semantic>  ::= "position" | "normal" | "color" | "texcoord"
 
 <statement_list>    ::= <statement>
                        | <statement_list> <statement>
@@ -463,7 +592,8 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 
 ## 11. 实现优先级
 
-### Phase 1: 最小可编译 ✅ 进行中
+### Phase 1: 最小可编译 ✅ 完成
+
 - [x] 词法分析器 (`AYLexer`)
 - [x] 语法分析器 (`AYParser`)
 - [x] AST 节点定义 (`AYAst`)
@@ -480,7 +610,20 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 - [x] 修复 `Parser::error` 空实现
 - [x] 删除 `Token::literal` 字段（词法层职责收窄，根治 MSVC SSO 字符串 move 崩溃）
 - [x] Lexer 不做数字解析、不做字符串转义（详见 §6.5 设计原则）
-- [ ] 单元测试（端到端编译简单 `.phoskia` → `.sc`）
+- [x] 单元测试（278/278 通过：`AYLexer` / `AYParser` / `AYPhoskia` / `AYBGFXConverter` / `AYShaderCompile`）
+- [x] **Phase 1 收尾**: vertex/fragment 双块语法 + in/out Phoskia 语义 + shaderc 三件套（vs/fs/varying.def）端到端
+
+**Phase 1 交付能力**：
+- Phoskia 源码 → `.sc` 三件套 → `shaderc.exe` → `.bin` 全链路打通
+- 跨 platform 实测：windows / linux / osx / android / ios / asm.js / orbis × 主流 profile（GLSL 1.20、ESSL 3.20、Metal、SPIR-V）
+- 失败组合仅限个别 platform/profile（如 osx 不支持 SPIR-V、Windows 不支持 Metal），与 shaderc 自身能力矩阵一致
+- `shaderc.exe` 是 bgfx 发布的独立 CLI 工具，**调用方负责 spawn**——`AYBGFXConverter` 只产 `.sc` 文本
+- 单元测试默认要求 shaderc 可用，找不到时 fail loudly 并给出修复指引（CMake `-DAY_SHADER_SHADERC_PATH=...` 或环境变量 `AY_SHADER_SHADERC`）
+
+**已知 Phase 1 限制**：
+- uniform initializer `uniform vec4 x = vec4(...);` 在 GLSL 1.20 之外的目标 profile（ESSL 3.00、HLSL）不支持——需要 Phase 2 加 `targetProfile` 选项让 converter 按目标 profile 切换
+- 真正的多 backend（D3DCompile / glslang / Metal API）属于路线 C（Phase 2/3 范围）
+- 每个语义类别在 block 内最多 1 次（texcoord0..7 / color0..1 槽位扩展留 Phase 2）
 
 ### Phase 2: 完整 Phoskia 支持
 - [ ] 类型推导引擎（`TypeInference` 完整实现）
@@ -490,7 +633,7 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 - [ ] 单元测试与 golden-file 验证
 - [ ] **类型名降级重构**（与 type checker 共同推进，详见下文）
 - [ ] **Compute shader 后端**（HLSL / SPIR-V 生成路径，BGFX `.sc` 不支持 compute）
-- [ ] **Shader type 动态输出变量**（`gl_Position` / `gl_FragColor`，已完成 `_shadingOutputVar`）
+- [x] **Shader type 动态输出变量**（`gl_Position` / `gl_FragColor`，已完成 `_shadingOutputVar`）
 
 ### Phase 3: IR 与多后端
 - [ ] IR 设计实现（SSA 形式）

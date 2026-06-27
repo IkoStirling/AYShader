@@ -33,7 +33,9 @@ private:
     void analyzePropertyDecl(const PropertyDecl& decl);
     void analyzeUniformDecl(const UniformDecl& decl);
     void analyzeTextureDecl(const TextureDecl& decl);
-    void analyzeShadingFunc(const ShadingFunc& func);
+    void analyzeVertexFunc(const VertexFunc& func);
+    void analyzeFragmentFunc(const FragmentFunc& func);
+    void analyzeShaderParam(const ShaderParam& param);
     void analyzeLetStmt(const LetStmt& stmt);
     void analyzeReturnStmt(const ReturnStmt& stmt);
     void analyzeIfStmt(const IfStmt& stmt);
@@ -47,7 +49,7 @@ private:
     CompilerErrorReporter _reporter;
     std::unordered_map<std::string, std::shared_ptr<Type>> _symbols;
     std::unordered_map<std::string, std::shared_ptr<Type>> _materialProperties;
-    bool _inShadingFunc = false;
+    bool _inShaderFunc = false;
 };
 
 } // namespace ayt::shader::phoskia

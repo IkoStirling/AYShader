@@ -37,8 +37,10 @@ void AYSemanticAnalyzer::analyze(const Stmt& stmt) {
         analyzeUniformDecl(*uniform);
     } else if (auto texture = dynamic_cast<const TextureDecl*>(&stmt)) {
         analyzeTextureDecl(*texture);
-    } else if (auto shading = dynamic_cast<const ShadingFunc*>(&stmt)) {
-        analyzeShadingFunc(*shading);
+    } else if (auto vert = dynamic_cast<const VertexFunc*>(&stmt)) {
+        analyzeVertexFunc(*vert);
+    } else if (auto frag = dynamic_cast<const FragmentFunc*>(&stmt)) {
+        analyzeFragmentFunc(*frag);
     } else if (auto let = dynamic_cast<const LetStmt*>(&stmt)) {
         analyzeLetStmt(*let);
     } else if (auto ret = dynamic_cast<const ReturnStmt*>(&stmt)) {
@@ -79,13 +81,40 @@ void AYSemanticAnalyzer::analyzeTextureDecl(const TextureDecl& decl) {
     _symbols[decl.name] = BuiltinTypes::Dynamic;
 }
 
-void AYSemanticAnalyzer::analyzeShadingFunc(const ShadingFunc& func) {
+void AYSemanticAnalyzer::analyzeShaderParam(const ShaderParam& param) {
+    // Phase 1: register the param name in the local scope so the body can
+    // reference it. We treat the type as Dynamic (no type inference yet).
+    (void)param;
+    // _env.addVariable(param.name, BuiltinTypes::Dynamic);  // TODO Phase 2
+}
+
+void AYSemanticAnalyzer::analyzeVertexFunc(const VertexFunc& func) {
     _env.pushScope();
-    _inShadingFunc = true;
+    _inShaderFunc = true;
+    for (const auto& p : func.params) {
+        if (auto sp = dynamic_cast<const ShaderParam*>(p.get())) {
+            analyzeShaderParam(*sp);
+        }
+    }
     for (const auto& stmt : func.body) {
         analyze(*stmt);
     }
-    _inShadingFunc = false;
+    _inShaderFunc = false;
+    _env.popScope();
+}
+
+void AYSemanticAnalyzer::analyzeFragmentFunc(const FragmentFunc& func) {
+    _env.pushScope();
+    _inShaderFunc = true;
+    for (const auto& p : func.inputs) {
+        if (auto sp = dynamic_cast<const ShaderParam*>(p.get())) {
+            analyzeShaderParam(*sp);
+        }
+    }
+    for (const auto& stmt : func.body) {
+        analyze(*stmt);
+    }
+    _inShaderFunc = false;
     _env.popScope();
 }
 
@@ -96,8 +125,8 @@ void AYSemanticAnalyzer::analyzeLetStmt(const LetStmt& stmt) {
 }
 
 void AYSemanticAnalyzer::analyzeReturnStmt(const ReturnStmt& stmt) {
-    if (!_inShadingFunc) {
-        error("Return statement outside of shading function", 0, 0);
+    if (!_inShaderFunc) {
+        error("Return statement outside of shader block", 0, 0);
     }
     if (stmt.value) {
         analyzeExpr(*stmt.value);

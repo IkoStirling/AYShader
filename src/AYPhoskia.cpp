@@ -122,6 +122,13 @@ CompileResult Compiler::runPipeline(const std::string& source, const std::string
     }
 
     auto backend = it->second();
+    if (!backend) {
+        _errorReporter.error(ErrorCode::InvalidOperation,
+                             "Backend factory for '" + backendName +
+                             "' returned null", 0, 0);
+        result.errors = _errorReporter.errors();
+        return result;
+    }
     // DEBUG: retained — confirms backend dispatch happens on the success path
     // for end-to-end compile tests in Phase 1.
     std::cerr << "[Compiler::runPipeline] dispatching backend '"
