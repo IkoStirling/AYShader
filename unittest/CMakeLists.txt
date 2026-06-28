@@ -14,6 +14,7 @@ set(TEST_FILES
     Test_PBRFunctions.cpp
     Test_ParserRecovery.cpp
     Test_BuiltinTypes.cpp
+    Test_GoldenFiles.cpp
 )
 
 add_executable(${TEST_NAME} ${TEST_FILES})
@@ -26,6 +27,30 @@ target_link_libraries(${TEST_NAME} PRIVATE
     AYShader
     AYTest
 )
+
+# Golden-file fixtures: source .phoskia + expected .sc baselines.
+# The directory is copied verbatim into the build tree next to the
+# test binary so a relative `unittest/golden` lookup resolves both
+# during in-source builds and after `cmake --install`.
+#
+# Defined AFTER add_executable so add_dependencies can target the
+# real ${TEST_NAME} executable (CMake rejects target-level deps on
+# non-existent targets).
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/golden/.stamp
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_CURRENT_SOURCE_DIR}/golden
+        ${CMAKE_CURRENT_BINARY_DIR}/golden
+    COMMAND ${CMAKE_COMMAND} -E touch
+        ${CMAKE_CURRENT_BINARY_DIR}/golden/.stamp
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/golden
+    COMMENT "Syncing unittest/golden/ into the build tree"
+    VERBATIM
+)
+add_custom_target(ay_shader_golden_fixtures ALL
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/golden/.stamp
+)
+add_dependencies(${TEST_NAME} ay_shader_golden_fixtures)
 
 # Inject the absolute path to the bgfx shaderc binary so the
 # end-to-end test can locate it regardless of cwd. The default

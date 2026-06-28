@@ -7,6 +7,34 @@
 namespace ayt::shader::phoskia
 {
 
+namespace {
+// Follow a TypeVar chain to its root (the last TypeVar, or a concrete
+// type, or null). Detects cycles: if the chain loops back to a TypeVar
+// we've already visited, return that visited TypeVar's solution as a
+// dead-end so we don't recurse forever. Without this guard a sequence
+// of unify(TypeVar, TypeVar) calls can build an arbitrarily deep
+// chain that the recursive unify entry then walks one frame at a time
+// until the stack blows (observed on PBR `pow5 = a*a*a*a*a`).
+//
+// Defined at the top of this TU so both inferBinaryExpr (below) and
+// unify (further below) can call it without an extra forward
+// declaration.
+std::shared_ptr<Type> resolveTypeVar(std::shared_ptr<Type> t) {
+    std::shared_ptr<Type> last = t;
+    int hops = 0;
+    while (auto tv = std::dynamic_pointer_cast<TypeVar>(last)) {
+        if (!tv->hasSolution()) break;
+        auto next = tv->getSolution();
+        // Cycle detection — refuse to follow chains that loop back to
+        // a TypeVar already on the path.
+        if (next == last || next == t) return last;
+        if (++hops > 64) return last;  // belt-and-suspenders depth cap
+        last = next;
+    }
+    return last;
+}
+}  // namespace
+
 std::shared_ptr<Type> TypeInference::infer(const Expr& expr) {
     if (auto binary = dynamic_cast<const BinaryExpr*>(&expr)) {
         return inferBinaryExpr(*binary);
@@ -39,11 +67,44 @@ std::shared_ptr<Type> TypeInference::inferBinaryExpr(const BinaryExpr& expr) {
     // Check for type variables and unify
     auto resultType = newTypeVar();
 
-    // Arithmetic operations require same numeric types
+    // Arithmetic operations unify operands and bind the result. We
+    // support scalar×vector broadcasting (a Phoskia / GLSL
+    // convention — `vec3 * float` returns `vec3`). The rule:
+    //   1. If both sides have a concrete type, prefer the wider one
+    //      (vector over scalar) for the result.
+    //   2. If either side is an unresolved TypeVar, bind the result
+    //      to whichever side has a concrete type; if both are
+    //      unresolved, the result is left as a fresh TypeVar (the
+    //      BGFX converter's let-stmt inference then defaults to
+    //      float for GLSL emission).
     if (expr.op.type == TokenType::Plus || expr.op.type == TokenType::Minus ||
         expr.op.type == TokenType::Star || expr.op.type == TokenType::Slash) {
-        unify(leftType, rightType);
-        unify(resultType, leftType);
+        // Try to unify operands — success means they're the same
+        // concrete type. Failure (after path-flatten) means the two
+        // sides have different concrete types; we then pick the
+        // wider type for the result.
+        bool same = unify(leftType, rightType);
+        if (!same) {
+            // Different concrete types: pick the vector side if one
+            // exists, otherwise fall back to the left type.
+            auto lv = std::dynamic_pointer_cast<VectorType>(resolveTypeVar(leftType));
+            auto rv = std::dynamic_pointer_cast<VectorType>(resolveTypeVar(rightType));
+            if (lv)        unify(resultType, leftType);
+            else if (rv)   unify(resultType, rightType);
+            else           unify(resultType, leftType);
+        } else {
+            // Same type — bind the result to it.
+            unify(resultType, leftType);
+        }
+        // (Phase 2 Step 8 candidate fallback for unconstrained TypeVars
+        // was rolled back — `unify(TypeVar, Float)` followed by an
+        // existing `unify(resultType, leftType)` creates a TypeVar ->
+        // TypeVar -> ... cycle that the simple H-M unify here can't
+        // detect, leading to stack overflow on long arithmetic chains
+        // (e.g. PBR `pow5 = a*a*a*a*a`). The right fix is a real
+        // union-find for TypeVar identity; deferred to a follow-up
+        // step. For now, callers should ensure at least one operand
+        // has a concrete type before chaining arithmetic.)
     }
     // Comparison operations
     else if (expr.op.type == TokenType::EqualEqual || expr.op.type == TokenType::BangEqual ||
@@ -338,15 +399,21 @@ std::shared_ptr<Type> TypeInference::inferIndexExpr(const IndexExpr& expr) {
 }
 
 bool TypeInference::unify(std::shared_ptr<Type> a, std::shared_ptr<Type> b) {
-    // If both are type variables, bind them
+    // Phase 2 closing fix: resolve both sides through their TypeVar
+    // chains before deciding what to do. The previous code only
+    // walked ONE step per call (`tv->getSolution()` directly),
+    // which is fine for shallow chains but blows the stack on long
+    // arithmetic chains (5+ multiplications build a chain of 5
+    // TypeVars each pointing to the next). resolveTypeVar flattens
+    // the chain in one shot.
+    a = resolveTypeVar(a);
+    b = resolveTypeVar(b);
+    // Same-instance short-circuit (a unify a is trivially true).
+    if (a == b) return true;
+
     if (auto tvA = std::dynamic_pointer_cast<TypeVar>(a)) {
         if (auto tvB = std::dynamic_pointer_cast<TypeVar>(b)) {
-            if (tvA->hasSolution() && tvB->hasSolution()) {
-                return unify(tvA->getSolution(), tvB->getSolution());
-            }
-            if (tvA->hasSolution()) return unify(tvA->getSolution(), b);
-            if (tvB->hasSolution()) return unify(a, tvB->getSolution());
-            // Neither has solution - bind A to B
+            // Both still TypeVars — bind A to B.
             tvA->setSolution(b);
             return true;
         }
@@ -356,7 +423,7 @@ bool TypeInference::unify(std::shared_ptr<Type> a, std::shared_ptr<Type> b) {
     }
 
     if (auto tvB = std::dynamic_pointer_cast<TypeVar>(b)) {
-        if (tvB->hasSolution()) return unify(a, tvB->getSolution());
+        // b is a type variable (a is concrete), bind b to a
         tvB->setSolution(a);
         return true;
     }

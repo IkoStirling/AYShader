@@ -457,4 +457,134 @@ TEST_CASE(shaderc_compiles_material_with_texture) {
     std::filesystem::remove_all(dir);
 }
 
+// ===== Phase 2 closing: end-to-end PBR material =====
+//
+// A full Cook-Torrance PBR demo with multiple in/out params, a
+// texture2d sample, swizzle (.rgb), and the Fresnel-Schlick + GGX +
+// Smith-GGX library registered in AYBuiltinFunctions (Step 3). The
+// test asserts that the bgfx shaderc toolchain can lower the whole
+// pipeline all the way to .bin on at least one target (linux /
+// GLSL 1.20 by default).
+
+TEST_CASE(shaderc_compiles_pbr_with_ggx_and_fresnel) {
+    const std::string shaderc = shadercPath();
+    if (!fileExists(shaderc)) {
+        std::cerr << "[pbr test] FATAL: shaderc not found at '" << shaderc << "'.\n";
+        CHECK(false);
+        return;
+    }
+
+    const std::string dir = tempDir() + "/pbr";
+    std::filesystem::create_directories(dir);
+
+    // NOTE: this test exercises the FULL Phoskia -> bgfx -> shaderc
+    // pipeline including a non-trivial Cook-Torrance fragment body.
+    // The PBR math is written inline in Phoskia syntax using only
+    // builtins the BGFX converter emits verbatim to GLSL (normalize /
+    // dot / max / mix / sample). The standalone PBR functions
+    // (fresnelSchlick / distributionGGX / geometrySchlickGGX) are
+    // registered for type-checking (Step 3) but NOT yet inlined by
+    // the converter — that integration lands in a follow-up step.
+    // Once it does, this test will switch to the higher-level form.
+    const char* src = R"(
+        material PBR {
+            texture2d albedoMap
+            uniform mat4 modelViewProj
+            uniform vec3 cameraPos
+            uniform float roughness
+            uniform float metallic
+
+            vertex {
+                in pos    : position
+                in nrm    : normal
+                in uv     : texcoord
+                out worldNormal : normal = vec3(0.0, 0.0, 1.0)
+                out uvCoord     : texcoord = vec2(0.0, 0.0)
+                return vec4(pos, 1.0)
+            }
+
+            fragment {
+                in worldNormal : normal
+                in uvCoord     : texcoord
+                let N = normalize(worldNormal)
+                let V = normalize(cameraPos)
+                let baseColor = sample(albedoMap, uvCoord)
+                let NdotV = max(dot(N, V), 0.0)
+                let F0 = mix(vec3(0.04), baseColor.rgb, metallic)
+                let oneMinusNdotV = 1.0 - NdotV
+                let pow5 = oneMinusNdotV * oneMinusNdotV * oneMinusNdotV * oneMinusNdotV * oneMinusNdotV
+                let F = F0 + (vec3(1.0) - F0) * pow5
+                let r2 = roughness * roughness
+                let a2 = r2 * r2
+                let NdotV2 = NdotV * NdotV
+                let denomD = NdotV2 * (a2 - 1.0) + 1.0
+                let D = a2 / (denomD * denomD)
+                let k = (roughness + 1.0) * (roughness + 1.0) / 8.0
+                let denomG = NdotV * (1.0 - k) + k
+                let G = NdotV / denomG
+                let specular = D * G * F / max(4.0 * NdotV, 0.001)
+                let diffuse = baseColor.rgb * (vec3(1.0) - F) * (1.0 - metallic)
+                return vec4(diffuse + specular, 1.0)
+            }
+        }
+    )";
+
+    Compiler compiler;
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    auto ast = compiler.parse(tokens);
+    AYBGFXConverter conv;
+    auto bgfxRes = conv.convertBGFX(*ast);
+    CHECK(bgfxRes.success);
+    CHECK(bgfxRes.materialFiles.size() == 1);
+
+    const auto& f = bgfxRes.materialFiles.front();
+    const std::string vsPath  = dir + "/vs_PBR.sc";
+    const std::string fsPath  = dir + "/fs_PBR.sc";
+    const std::string defPath = dir + "/varying.def.sc";
+    const std::string vsBin   = dir + "/vs_PBR.bin";
+    const std::string fsBin   = dir + "/fs_PBR.bin";
+
+    std::ofstream(vsPath)  << f.vs;
+    std::ofstream(fsPath)  << f.fs;
+    std::ofstream(defPath) << f.varyingDef;
+
+    auto includes = includeDirs();
+    std::vector<std::string> vsArgs = {
+        "-f", vsPath, "-o", vsBin,
+        "--type", "vertex", "--platform", "linux", "-p", "120",
+    };
+    for (const auto& d : includes) { vsArgs.push_back("-i"); vsArgs.push_back(d); }
+    auto rvs = runShaderc(shaderc, vsArgs);
+    if (rvs.exitCode != 0) std::cerr << "[pbr test] vs failed:\n" << rvs.output;
+    CHECK(rvs.exitCode == 0);
+    if (rvs.exitCode != 0) {
+        std::filesystem::remove_all(dir);
+        return;
+    }
+
+    std::vector<std::string> fsArgs = {
+        "-f", fsPath, "-o", fsBin,
+        "--type", "fragment", "--platform", "linux", "-p", "120",
+        "--varyingdef", defPath,
+    };
+    for (const auto& d : includes) { fsArgs.push_back("-i"); fsArgs.push_back(d); }
+    auto rfs = runShaderc(shaderc, fsArgs);
+    if (rfs.exitCode != 0) std::cerr << "[pbr test] fs failed:\n" << rfs.output;
+    CHECK(rfs.exitCode == 0);
+    if (rfs.exitCode != 0) {
+        std::filesystem::remove_all(dir);
+        return;
+    }
+
+    // The .bin artifacts must be non-empty. Skipped if shaderc failed
+    // (fsBin won't exist) — that's already reported via the exitCode
+    // CHECK above.
+    CHECK(std::filesystem::file_size(vsBin) > 0);
+    CHECK(std::filesystem::file_size(fsBin) > 0);
+
+    std::filesystem::remove_all(dir);
+}
+
 TEST_SUITE_END

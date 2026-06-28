@@ -1,0 +1,21 @@
+material PBR {
+    uniform vec3 cameraPos
+    vertex {
+        in pos    : position
+        in nrm    : normal
+        in uv     : texcoord
+        out worldNormal : normal = vec3(0.0, 0.0, 1.0)
+        out uvCoord     : texcoord = vec2(0.0, 0.0)
+        let N = normalize(nrm)
+        let NdotL = max(dot(N, vec3(0.0, 1.0, 0.0)), 0.0)
+        return vec4(pos, 1.0)
+    }
+    fragment {
+        in worldNormal : normal
+        in uvCoord     : texcoord
+        let N = normalize(worldNormal)
+        let L = normalize(cameraPos)
+        let NdotL = max(dot(N, L), 0.0)
+        return vec4(vec3(NdotL), 1.0)
+    }
+}

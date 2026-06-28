@@ -1,0 +1,5 @@
+material Unlit {
+    property color = vec4(1.0, 0.0, 0.0, 1.0)
+    vertex { return vec4(0.0, 0.0, 0.0, 1.0) }
+    fragment { return color }
+}

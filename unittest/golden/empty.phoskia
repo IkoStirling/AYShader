@@ -1,0 +1,4 @@
+material Empty {
+    vertex { }
+    fragment { }
+}

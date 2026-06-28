@@ -11,6 +11,8 @@
 
 #include "AYBGFXConverter.h"
 #include "AYAst.h"
+#include "AYType.h"
+#include "AYTypeInference.h"  // Phase 2: let stmt needs GLSL type prefix.
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
@@ -19,6 +21,22 @@ namespace ayt::shader
 {
 
 namespace {
+
+// Phase 2 Step 2 / Step 8: a per-conversion TypeEnvironment for the
+// per-let type inference the converter performs when emitting GLSL.
+// The env accumulates bindings as the converter walks the body in
+// order: each `let x = ...` registers `x` with its inferred type so
+// subsequent references (`let y = x * 2.0`) see a concrete type
+// instead of a fresh TypeVar. Without this, a chain of arithmetic
+// on bare identifiers (e.g. PBR pow5 = oneMinusNdotV * ... *
+// oneMinusNdotV) would never resolve to any concrete type and the
+// let-stmt emission would lack a GLSL type prefix.
+//
+// We thread the env through emitStmt as a parameter rather than a
+// global so two consecutive convertBGFX calls (multiple materials,
+// multiple shaders per material) do not leak bindings from one
+// invocation into the next — that was the previous bug, where
+// golden-fixture ordering could change let-type resolution.
 
 // PhoskiaSemantic → bgfx semantic binding table. bgfx examples use these
 // exact mappings (POSITION/NORMAL/COLOR0/TEXCOORD0) for the first slot of
@@ -63,21 +81,89 @@ struct RenameContext {
     }
 };
 
+// Map a GLSL / Phoskia type lexeme ("float", "vec3", "mat4", "int",
+// "bool", ...) to the corresponding Phoskia Type shared_ptr. Returns
+// nullptr for unrecognized lexemes (the caller registers nothing in
+// that case — TypeInference will then treat the identifier as an
+// unresolved TypeVar).
+std::shared_ptr<phoskia::Type> phoskiaGLSLTypeToPhoskiaType(const std::string& lex) {
+    using namespace phoskia;
+    if (lex == "float")  return BuiltinTypes::Float;
+    if (lex == "int")    return BuiltinTypes::Int;
+    if (lex == "bool")   return BuiltinTypes::Bool;
+    if (lex == "vec2")   return BuiltinTypes::Vec2();
+    if (lex == "vec3")   return BuiltinTypes::Vec3();
+    if (lex == "vec4")   return BuiltinTypes::Vec4();
+    if (lex == "ivec2")  return std::make_shared<VectorType>(PrimitiveType::Int, 2);
+    if (lex == "ivec3")  return std::make_shared<VectorType>(PrimitiveType::Int, 3);
+    if (lex == "ivec4")  return std::make_shared<VectorType>(PrimitiveType::Int, 4);
+    if (lex == "mat2")   return BuiltinTypes::Mat2();
+    if (lex == "mat3")   return BuiltinTypes::Mat3();
+    if (lex == "mat4")   return BuiltinTypes::Mat4();
+    return nullptr;
+}
+
 void emitExpr(std::ostringstream& out, const phoskia::Expr& e,
               const RenameContext& ctx);
 
 void emitStmt(std::ostringstream& out, const phoskia::Stmt& s,
-              const RenameContext& ctx, const char* outputVar);
+              const RenameContext& ctx, const char* outputVar,
+              phoskia::TypeEnvironment& env);
 
 void emitStmt(std::ostringstream& out, const phoskia::Stmt& s,
-              const RenameContext& ctx) {
-    emitStmt(out, s, ctx, nullptr);
+              const RenameContext& ctx, phoskia::TypeEnvironment& env) {
+    emitStmt(out, s, ctx, nullptr, env);
 }
 
 void emitStmt(std::ostringstream& out, const phoskia::Stmt& s,
-              const RenameContext& ctx, const char* outputVar) {
+              const RenameContext& ctx) {
+    // Forward-compat overload retained only for the property / texture
+    // emitExpr paths which don't participate in the let-stmt type
+    // inference. Always uses a throwaway env.
+    phoskia::TypeEnvironment throwaway;
+    emitStmt(out, s, ctx, nullptr, throwaway);
+}
+
+void emitStmt(std::ostringstream& out, const phoskia::Stmt& s,
+              const RenameContext& ctx, const char* outputVar,
+              phoskia::TypeEnvironment& env) {
     if (auto let = dynamic_cast<const phoskia::LetStmt*>(&s)) {
-        out << "    " << let->name << " = ";
+        // GLSL (and bgfx's GLSL profile) requires an explicit type on
+        // every local declaration. We run the type-inference engine on
+        // the initializer to recover the right GLSL type, then register
+        // the binding in `env` so later statements that reference
+        // `let->name` see a concrete type instead of a fresh TypeVar
+        // (chain-of-arithmetic propagation). Phase 2 Step 2 built that
+        // engine; Step 5 made builtin constructors (vec3 / mat4)
+        // resolve through it.
+        std::string glslType;
+        std::shared_ptr<phoskia::Type> resolvedType;
+        if (let->initializer) {
+            phoskia::TypeInference inference(env);
+            auto inferred = inference.infer(*let->initializer);
+            std::shared_ptr<phoskia::Type> concrete = inferred;
+            while (auto tv = std::dynamic_pointer_cast<phoskia::TypeVar>(concrete)) {
+                if (tv->hasSolution()) concrete = tv->getSolution();
+                else break;
+            }
+            resolvedType = concrete;
+            if (auto vec = std::dynamic_pointer_cast<phoskia::VectorType>(concrete)) {
+                glslType = vec->toString();  // "vec2" / "vec3" / "vec4" / "ivec3" / ...
+            } else if (auto mat = std::dynamic_pointer_cast<phoskia::MatrixType>(concrete)) {
+                glslType = mat->toString();  // "mat2" / "mat3" / "mat4"
+            } else if (auto p = std::dynamic_pointer_cast<phoskia::PrimitiveType_>(concrete)) {
+                glslType = p->toString();   // "float" / "int" / "bool"
+            }
+        }
+        // Register the binding for subsequent statements.
+        if (resolvedType) {
+            env.addVariable(let->name, resolvedType);
+        }
+        if (!glslType.empty()) {
+            out << "    " << glslType << " " << let->name << " = ";
+        } else {
+            out << "    " << let->name << " = ";
+        }
         if (let->initializer) emitExpr(out, *let->initializer, ctx);
         out << ";\n";
     } else if (auto ret = dynamic_cast<const phoskia::ReturnStmt*>(&s)) {
@@ -312,6 +398,18 @@ BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::MaterialDecl& ma
     _uniforms.clear();
     _textures.clear();
 
+    // Per-block type environments — must be constructed BEFORE the first
+    // pass so we can register uniforms / properties / textures into
+    // them as we discover them. The let-stmt type inference in the
+    // body relies on these bindings; without them, a uniform like
+    // `uniform float roughness` referenced in `let r2 = roughness *
+    // roughness` falls back to an unresolved TypeVar and the
+    // converter emits GLSL without a type prefix.
+    phoskia::TypeEnvironment vsEnv;
+    phoskia::TypeEnvironment fsEnv;
+    RenameContext vsCtx;
+    RenameContext fsCtx;
+
     // First pass: material-level declarations.
     const phoskia::VertexFunc*   vf = nullptr;
     const phoskia::FragmentFunc* ff = nullptr;
@@ -320,17 +418,37 @@ BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::MaterialDecl& ma
             _uniformDecls += "uniform " + u->type + " " + u->name + ";\n";
             BGFXUniform bu; bu.name = u->name; bu.type = u->type;
             _uniforms.push_back(std::move(bu));
+            // Register uniform type into both envs so the let-stmt
+            // type inference in either block resolves `roughness` to
+            // float (or whichever GLSL type `u->type` maps to).
+            auto t = phoskiaGLSLTypeToPhoskiaType(u->type);
+            if (t) {
+                vsEnv.addVariable(u->name, t);
+                fsEnv.addVariable(u->name, t);
+            }
         } else if (auto t = dynamic_cast<const phoskia::TextureDecl*>(d.get())) {
             uint8_t slot = static_cast<uint8_t>(_textures.size());
             _textureDecls += "SAMPLER2D(" + t->name + ", " + std::to_string(slot) + ");\n";
             BGFXTexture bt; bt.name = t->name; bt.binding = slot;
             _textures.push_back(std::move(bt));
+            // Textures are opaque to the type system (Phase 2 Step 2
+            // deferred TextureType); register as Dynamic so lookup
+            // succeeds even though sample() body-side checks pass
+            // through the builtin registry directly.
+            vsEnv.addVariable(t->name, phoskia::BuiltinTypes::Dynamic);
+            fsEnv.addVariable(t->name, phoskia::BuiltinTypes::Dynamic);
         } else if (auto p = dynamic_cast<const phoskia::PropertyDecl*>(d.get())) {
             std::ostringstream tmp;
             emitPropertyUniform(tmp, *p);
             _propertyUniforms += tmp.str();
             BGFXUniform bu; bu.name = p->name; bu.type = "vec4";
             _uniforms.push_back(std::move(bu));
+            // Property types are recorded as vec4 in the converter
+            // (the property's initializer must resolve to vec4 per
+            // current design). Future revisions can map based on the
+            // initializer's inferred type.
+            vsEnv.addVariable(p->name, phoskia::BuiltinTypes::Vec4());
+            fsEnv.addVariable(p->name, phoskia::BuiltinTypes::Vec4());
         } else if (auto v = dynamic_cast<const phoskia::VertexFunc*>(d.get())) {
             vf = v;
         } else if (auto f = dynamic_cast<const phoskia::FragmentFunc*>(d.get())) {
@@ -354,21 +472,43 @@ BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::MaterialDecl& ma
 
     const auto& tbl = semanticTable();
 
-    // Build rename maps for vs and fs bodies.
-    RenameContext vsCtx;
+    // Populate the rename maps + already-constructed per-block
+    // TypeEnvironments with in/out params (e.g. `let N = normalize(nrm)`
+    // needs `nrm: vec3` to be a known Float anchor so the GLSL type
+    // prefix resolves).
     for (const auto& s : vf->params) {
         if (auto* p = dynamic_cast<const phoskia::ShaderParam*>(s.get())) {
             const auto& info = tbl.at(p->semantic);
             const char* bgfxName = (p->dir == phoskia::ShaderParam::Direction::In)
                                        ? info.attrName : info.varyingName;
             vsCtx.map[p->name] = bgfxName;
+            // Register both the Phoskia-side name and the bgfx-side
+            // alias so let-initializer inference can find the type
+            // regardless of which spelling a subsequent stmt uses.
+            std::shared_ptr<phoskia::Type> t;
+            const std::string& g = info.glslType;
+            if      (g == "vec2") t = phoskia::BuiltinTypes::Vec2();
+            else if (g == "vec3") t = phoskia::BuiltinTypes::Vec3();
+            else if (g == "vec4") t = phoskia::BuiltinTypes::Vec4();
+            if (t) {
+                vsEnv.addVariable(p->name, t);
+                vsEnv.addVariable(bgfxName, t);
+            }
         }
     }
-    RenameContext fsCtx;
     for (const auto& s : ff->inputs) {
         if (auto* p = dynamic_cast<const phoskia::ShaderParam*>(s.get())) {
             const auto& info = tbl.at(p->semantic);
             fsCtx.map[p->name] = info.varyingName;
+            std::shared_ptr<phoskia::Type> t;
+            const std::string& g = info.glslType;
+            if      (g == "vec2") t = phoskia::BuiltinTypes::Vec2();
+            else if (g == "vec3") t = phoskia::BuiltinTypes::Vec3();
+            else if (g == "vec4") t = phoskia::BuiltinTypes::Vec4();
+            if (t) {
+                fsEnv.addVariable(p->name, t);
+                fsEnv.addVariable(info.varyingName, t);
+            }
         }
     }
 
@@ -469,7 +609,7 @@ BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::MaterialDecl& ma
                 vs << "#else\n";
                 openVariants.push_back(va->name);
             } else {
-                emitStmt(vs, *stmt, vsCtx, "gl_Position");
+                emitStmt(vs, *stmt, vsCtx, "gl_Position", vsEnv);
             }
         }
         for (size_t i = 0; i < openVariants.size(); ++i) {
@@ -511,7 +651,7 @@ BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::MaterialDecl& ma
                 fs << "#else\n";
                 openVariants.push_back(va->name);
             } else {
-                emitStmt(fs, *stmt, fsCtx, "gl_FragColor");
+                emitStmt(fs, *stmt, fsCtx, "gl_FragColor", fsEnv);
             }
         }
         for (size_t i = 0; i < openVariants.size(); ++i) {

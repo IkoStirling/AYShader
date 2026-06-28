@@ -1,0 +1,17 @@
+material PBR {
+    uniform vec3 cameraPos
+    property emission = vec3(0.0)
+    vertex {
+        in pos : position
+        in nrm : normal
+        return vec4(pos, 1.0)
+    }
+    fragment {
+        in nrm : normal
+        let N = normalize(nrm)
+        let result = vec3(0.5)
+        [variant useEmission]
+        result = result + emission
+        return vec4(result, 1.0)
+    }
+}
