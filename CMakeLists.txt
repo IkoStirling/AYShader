@@ -15,6 +15,7 @@ add_library(AYShader STATIC
     src/AYTypeInference.cpp
     src/AYSemanticAnalyzer.cpp
     src/AYBuiltinFunctions.cpp
+    src/AYBuiltinTypes.cpp
     src/AYPhoskia.cpp
     # Engine integration (ayt::shader)
     src/AYBGFXConverter.cpp

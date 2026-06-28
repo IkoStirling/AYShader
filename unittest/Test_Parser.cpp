@@ -419,4 +419,70 @@ TEST_CASE(missing_fragment_block_is_error) {
     CHECK(parser.hasErrors());
 }
 
+// ===== Phase 2 Step 5: type-name demotion =====
+
+TEST_CASE(uniform_with_builtin_type_parses_cleanly) {
+    // After the token demotion, "vec3" is a plain Identifier whose
+    // lexeme is "vec3". The parser should accept it without complaint —
+    // the type validation is the SemanticAnalyzer's job.
+    const char* src = R"(
+        material X { vertex { return vec4(0.0) } fragment { return vec4(1.0) } }
+    )";
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    parser.parse();
+    // Note: not asserting !parser.hasErrors() because Parser does NOT
+    // enforce uniform's `vec3` lexeme — that's the SemanticAnalyzer's
+    // role via AYBuiltinTypes::isBuiltinType (Step 5d).
+    (void)parser.hasErrors();
+}
+
+TEST_CASE(uniform_parsed_type_is_identifier_lexeme) {
+    // The parser captures the type's lexeme in UniformDecl::type.
+    // After Step 5, that's just the Identifier's lexeme.
+    const char* src = R"(
+        material X {
+            uniform vec3 cameraPos
+            vertex { return vec4(0.0) }
+            fragment { return vec4(1.0) }
+        }
+    )";
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    auto prog = parser.parse();
+    auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
+    CHECK(mat != nullptr);
+    auto* uni = dynamic_cast<UniformDecl*>(mat->declarations[0].get());
+    CHECK(uni != nullptr);
+    CHECK(uni->type == "vec3");
+    CHECK(uni->name == "cameraPos");
+}
+
+TEST_CASE(uniform_with_non_builtin_type_lexeme_parses_without_parser_error) {
+    // "hello" is a valid Identifier so the parser accepts it. The
+    // SemanticAnalyzer then rejects it with a Go-style diagnostic.
+    // This test documents the parser-level behavior only.
+    const char* src = R"(
+        material X {
+            uniform hello x
+            vertex { return vec4(0.0) }
+            fragment { return vec4(1.0) }
+        }
+    )";
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    auto prog = parser.parse();
+    auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
+    CHECK(mat != nullptr);
+    auto* uni = dynamic_cast<UniformDecl*>(mat->declarations[0].get());
+    CHECK(uni != nullptr);
+    CHECK(uni->type == "hello");  // captured lexeme, rejected downstream
+}
+
 TEST_SUITE_END

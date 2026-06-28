@@ -290,4 +290,39 @@ TEST_CASE(swizzle_rgb_on_vec4_ok) {
     CHECK(t->equals(*v3));
 }
 
+// ===== Phase 2 Step 5: type-name validation via AYBuiltinTypes =====
+
+TEST_CASE(uniform_with_non_builtin_type_is_error) {
+    // After Step 5 token-demotion, "vec3" / "float" / etc. are plain
+    // Identifier tokens. The SemanticAnalyzer now validates them via
+    // AYBuiltinTypes::isBuiltinType — a typo like "vec33" surfaces a
+    // Go-style diagnostic here rather than failing inside the BGFX
+    // backend later.
+    const char* src = R"(
+        material X {
+            uniform vec33 cameraPos
+            vertex { return vec4(0.0) }
+            fragment { return vec4(1.0) }
+        }
+    )";
+    auto r = analyze(src);
+    CHECK(r.hasErrors);
+    CHECK(containsError(r.errors, "'vec33' is not a builtin type"));
+}
+
+TEST_CASE(uniform_with_builtin_type_passes_type_check) {
+    // Sanity: vec3 / float / mat4 etc. must NOT trip the
+    // isBuiltinType gate — only genuinely unknown lexemes should.
+    const char* src = R"(
+        material X {
+            uniform vec3 cameraPos
+            uniform mat4 modelViewProj
+            vertex { return vec4(0.0) }
+            fragment { return vec4(1.0) }
+        }
+    )";
+    auto r = analyze(src);
+    CHECK_FALSE(r.hasErrors);
+}
+
 TEST_SUITE_END

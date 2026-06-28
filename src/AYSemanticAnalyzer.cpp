@@ -3,6 +3,8 @@
 #include "AYSemanticAnalyzer.h"
 #include "AYTypeInference.h"  // Phase 2 Step 2: TypeInference + TypeVar for
                                // analyzePropertyDecl / analyzeExpr delegation.
+#include "AYBuiltinTypes.h"   // Phase 2 Step 5: isBuiltinType gate on
+                               // uniform / property type lexemes.
 #include "AYBuiltinFunctions.h"
 #include <iostream>
 
@@ -77,11 +79,26 @@ void AYSemanticAnalyzer::analyzePropertyDecl(const PropertyDecl& decl) {
 }
 
 void AYSemanticAnalyzer::analyzeUniformDecl(const UniformDecl& decl) {
-    // Phase 2 Step 2: try to map `decl.type` (a lexeme) to a builtin
-    // type. If we can't (Type demotion is Step 5 work, so the lexeme
-    // is currently stored as a plain string), we leave it as Dynamic.
-    // The body can still reference the uniform; type checks on uses
-    // happen via the infer engine.
+    // Phase 2 Step 5: validate `decl.type` (the lexeme captured by the
+    // parser when it consumed the uniform's type-name token) against the
+    // builtin type table. After the Step 5 token demotion, builtin type
+    // names are plain Identifier tokens — the parser accepts ANY
+    // identifier here, so a stray name like `uniform hello x;` would
+    // otherwise silently pass the parser and only blow up at the BGFX
+    // backend. We intercept it here with a Go-style diagnostic:
+    //
+    //   line N: 'hello' is not a builtin type (expected: float, vec2, ...)
+    if (!AYBuiltinTypes::isBuiltinType(decl.type)) {
+        error("line " + std::to_string(0) + ": '" + decl.type +
+              "' is not a builtin type (expected: " +
+              AYBuiltinTypes::expectedList() + ")",
+              0, 0);
+    }
+    // Even on the error path we still register the uniform so later
+    // analysis of the body doesn't crash on the dangling identifier.
+    // The body might reference the uniform and we don't want to drown
+    // the user in "undefined identifier" follow-up errors on top of
+    // the type-mismatch error.
     std::shared_ptr<Type> type = BuiltinTypes::Dynamic;
     _env.addVariable(decl.name, type);
     _symbols[decl.name] = type;

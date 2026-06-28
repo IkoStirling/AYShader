@@ -29,19 +29,6 @@ static const char* tokenTypeName(TokenType t) {
         case TokenType::Normal: return "Normal";
         case TokenType::Color: return "Color";
         case TokenType::Texcoord: return "Texcoord";
-        case TokenType::Float: return "Float";
-        case TokenType::Vec2: return "Vec2";
-        case TokenType::Vec3: return "Vec3";
-        case TokenType::Vec4: return "Vec4";
-        case TokenType::Int: return "Int";
-        case TokenType::IVec2: return "IVec2";
-        case TokenType::IVec3: return "IVec3";
-        case TokenType::IVec4: return "IVec4";
-        case TokenType::Mat2: return "Mat2";
-        case TokenType::Mat3: return "Mat3";
-        case TokenType::Mat4: return "Mat4";
-        case TokenType::Quat: return "Quat";
-        case TokenType::Bool: return "Bool";
         case TokenType::Plus: return "Plus";
         case TokenType::Minus: return "Minus";
         case TokenType::Star: return "Star";
@@ -257,30 +244,18 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
     if (match(TokenType::Identifier)) {
         return std::make_unique<IdentifierExpr>(previous().lexeme);
     }
-    // ===== Phase 1 workaround (see design.md §11.1) =====
-    // Builtin type names like `vec3`, `mat4`, `bool` are emitted by the
-    // Lexer as dedicated keywords (TokenType::Vec3, Mat4, Bool, ...). In
-    // expression context they appear as constructor calls — `vec3(1,0,0)`,
-    // `mat4()`, `bool(...)`. Without these branches parsePrimary fails and
-    // the parser spins on an ExprStmt(nullptr). Phase 2 will demote the
-    // type tokens to Identifier (Go/Swift style); these branches are then
-    // removed.
-    if (match(TokenType::Float) || match(TokenType::Vec2) || match(TokenType::Vec3) ||
-        match(TokenType::Vec4) || match(TokenType::Int) || match(TokenType::IVec2) ||
-        match(TokenType::IVec3) || match(TokenType::IVec4) || match(TokenType::Mat2) ||
-        match(TokenType::Mat3) || match(TokenType::Mat4) || match(TokenType::Quat) ||
-        match(TokenType::Bool)) {
-        return std::make_unique<IdentifierExpr>(previous().lexeme);
-    }
     // Phoskia semantic keywords (position / normal / color / texcoord) and
     // the io keywords (in / out) are also valid identifiers in expression
-    // context — e.g. `gl_FragColor * color`, `out = normal`.
+    // context — e.g. `gl_FragColor * color`, `out = normal`. Builtin type
+    // names like vec3 / float / mat4 are now plain Identifiers too (see
+    // AYToken.h / design.md §11.1 — "类型名降级重构"), so the previous
+    // 13-branch workaround for the legacy type keywords has been
+    // removed.
     if (match(TokenType::Position) || match(TokenType::Normal) ||
         match(TokenType::Color)    || match(TokenType::Texcoord) ||
         match(TokenType::In)       || match(TokenType::Out)) {
         return std::make_unique<IdentifierExpr>(previous().lexeme);
     }
-    // ===== End Phase 1 workaround =====
     if (match(TokenType::LeftParen)) {
         auto expr = parseExpression();
         consume(TokenType::RightParen, "Expected ')' after expression");
@@ -376,20 +351,12 @@ std::unique_ptr<Stmt> Parser::parseShaderParam(ShaderParam::Direction dir) {
     // emitted bgfx type from the semantic regardless of which form was
     // written.
 
-    // Phase 1: peek at the next token — if it's a builtin type keyword
-    // (Float/Vec2/.../Bool), consume it as the explicit type; otherwise
-    // leave the type implicit and treat the next token as the name.
-    Token typeTok;
-    bool hasType = false;
-    if (check(TokenType::Float) || check(TokenType::Vec2) || check(TokenType::Vec3) ||
-        check(TokenType::Vec4) || check(TokenType::Int) || check(TokenType::IVec2) ||
-        check(TokenType::IVec3) || check(TokenType::IVec4) || check(TokenType::Mat2) ||
-        check(TokenType::Mat3) || check(TokenType::Mat4) || check(TokenType::Quat) ||
-        check(TokenType::Bool)) {
-        typeTok = advance();
-        hasType = true;
-    }
-    (void)hasType;
+    // Phase 2 Step 5: the previous "peek at builtin type keyword"
+    // branch has been removed because builtin type names are now plain
+    // Identifier tokens (see AYToken.h / design.md §11.1). The
+    // converter maps PhoskiaSemantic → bgfx type, so an optional
+    // explicit type prefix in the source is redundant — we simply
+    // always treat the next identifier as the parameter name.
 
     Token name = consumeName("Expected parameter name");
     consume(TokenType::Colon, "Expected ':' after parameter name");
@@ -688,19 +655,15 @@ Token Parser::consume(TokenType type, const std::string& message) {
 }
 
 Token Parser::consumeTypeName(const std::string& message) {
-    // Accept Identifier OR any builtin type keyword. If neither, report the
-    // error and force-advance so the parser does not spin on the same token.
-    if (check(TokenType::Identifier) ||
-        check(TokenType::Float) || check(TokenType::Vec2) || check(TokenType::Vec3) ||
-        check(TokenType::Vec4) || check(TokenType::Int) || check(TokenType::IVec2) ||
-        check(TokenType::IVec3) || check(TokenType::IVec4) || check(TokenType::Mat2) ||
-        check(TokenType::Mat3) || check(TokenType::Mat4) || check(TokenType::Quat) ||
-        check(TokenType::Bool)) {
-        return advance();
-    }
+    // Phase 2 Step 5: builtin type names are now plain Identifier tokens
+    // (see AYToken.h / design.md §11.1). We just consume an Identifier
+    // and let the caller validate via AYBuiltinTypes::isBuiltinType.
+    // The retained name `consumeTypeName` (rather than inlining a
+    // consume(Identifier, ...)) keeps the call sites self-documenting.
+    if (check(TokenType::Identifier)) return advance();
     error(message);
-    // Force-advance so the loop doesn't spin (see also the safety net in
-    // parse()).
+    // Force-advance so the loop doesn't spin (see also the safety net
+    // in parse()).
     return advance();
 }
 

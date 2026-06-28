@@ -13,6 +13,7 @@ set(TEST_FILES
     Test_SemanticAnalyzer.cpp
     Test_PBRFunctions.cpp
     Test_ParserRecovery.cpp
+    Test_BuiltinTypes.cpp
 )
 
 add_executable(${TEST_NAME} ${TEST_FILES})

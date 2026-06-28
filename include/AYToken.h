@@ -42,21 +42,6 @@ enum class TokenType : uint8_t {
     Color,
     Texcoord,
 
-    // Types
-    Float,
-    Vec2,
-    Vec3,
-    Vec4,
-    Int,
-    IVec2,
-    IVec3,
-    IVec4,
-    Mat2,
-    Mat3,
-    Mat4,
-    Quat,
-    Bool,
-
     // Operators
     Plus,
     Minus,

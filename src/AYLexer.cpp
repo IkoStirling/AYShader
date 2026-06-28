@@ -131,20 +131,11 @@ TokenType Lexer::identifierType(const std::string& lexeme) {
         {"normal", TokenType::Normal},
         {"color", TokenType::Color},
         {"texcoord", TokenType::Texcoord},
-        // GLSL types
-        {"float", TokenType::Float},
-        {"vec2", TokenType::Vec2},
-        {"vec3", TokenType::Vec3},
-        {"vec4", TokenType::Vec4},
-        {"int", TokenType::Int},
-        {"ivec2", TokenType::IVec2},
-        {"ivec3", TokenType::IVec3},
-        {"ivec4", TokenType::IVec4},
-        {"mat2", TokenType::Mat2},
-        {"mat3", TokenType::Mat3},
-        {"mat4", TokenType::Mat4},
-        {"quat", TokenType::Quat},
-        {"bool", TokenType::Bool},
+        // GLSL type names are intentionally NOT keywords — they are
+        // emitted as plain Identifier tokens (lexeme = "vec3", "float",
+        // ...). Whether a given Identifier is a builtin type is decided
+        // by the parser / semantic analyzer via AYBuiltinTypes::isBuiltinType.
+        // See design.md §11.1 — "类型名降级重构".
     };
 
     auto it = keywords.find(lexeme);

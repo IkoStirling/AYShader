@@ -31,12 +31,17 @@ TEST_CASE(keyword_property) {
 }
 
 TEST_CASE(keyword_uniform) {
+    // Phase 2 Step 5: after the token-demotion refactor, "vec3" is a
+    // plain Identifier token (lexeme = "vec3"), NOT a dedicated Vec3
+    // keyword. Whether it's a builtin type is decided downstream by
+    // AYBuiltinTypes::isBuiltinType.
     Lexer lexer("uniform vec3 cameraPos");
     std::vector<Token> tokens;
     lexer.tokenize(tokens);
     CHECK(tokens.size() == 4);  // uniform + Identifier + Identifier + EOF
     CHECK(tokens[0].type == TokenType::Uniform);
-    CHECK(tokens[1].type == TokenType::Vec3);
+    CHECK(tokens[1].type == TokenType::Identifier);
+    CHECK(tokens[1].lexeme == "vec3");
     CHECK(tokens[2].type == TokenType::Identifier);
     CHECK(tokens[2].lexeme == "cameraPos");
 }
@@ -81,26 +86,29 @@ TEST_CASE(keyword_true_false) {
     CHECK(tokens[1].type == TokenType::False);
 }
 
-// ===== Type keywords =====
+// ===== Type names (Phase 2 Step 5: demoted to Identifier) =====
 
 TEST_CASE(keyword_types) {
+    // After the token-demotion refactor, every builtin type name
+    // (float / vec2 / vec3 / vec4 / int / ivec2..4 / mat2..4 / quat /
+    // bool) is a plain Identifier token whose lexeme is the type name.
+    // Whether it's a *builtin* type is decided by the parser /
+    // semantic analyzer via AYBuiltinTypes::isBuiltinType.
     Lexer lexer("float vec2 vec3 vec4 int ivec2 ivec3 ivec4 mat2 mat3 mat4 quat bool");
     std::vector<Token> tokens;
     lexer.tokenize(tokens);
     CHECK(tokens.size() == 14);
-    CHECK(tokens[0].type == TokenType::Float);
-    CHECK(tokens[1].type == TokenType::Vec2);
-    CHECK(tokens[2].type == TokenType::Vec3);
-    CHECK(tokens[3].type == TokenType::Vec4);
-    CHECK(tokens[4].type == TokenType::Int);
-    CHECK(tokens[5].type == TokenType::IVec2);
-    CHECK(tokens[6].type == TokenType::IVec3);
-    CHECK(tokens[7].type == TokenType::IVec4);
-    CHECK(tokens[8].type == TokenType::Mat2);
-    CHECK(tokens[9].type == TokenType::Mat3);
-    CHECK(tokens[10].type == TokenType::Mat4);
-    CHECK(tokens[11].type == TokenType::Quat);
-    CHECK(tokens[12].type == TokenType::Bool);
+    const char* expectedLexemes[13] = {
+        "float", "vec2", "vec3", "vec4",
+        "int",
+        "ivec2", "ivec3", "ivec4",
+        "mat2", "mat3", "mat4",
+        "quat", "bool"
+    };
+    for (size_t i = 0; i < 13; ++i) {
+        CHECK(tokens[i].type == TokenType::Identifier);
+        CHECK(tokens[i].lexeme == expectedLexemes[i]);
+    }
 }
 
 // ===== Phoskia semantic keywords =====
@@ -401,6 +409,28 @@ TEST_CASE(variant_attribute_syntax) {
     CHECK(tokens[2].type == TokenType::Identifier);
     CHECK(tokens[2].lexeme == "useEmission");
     CHECK(tokens[3].type == TokenType::RightBracket);
+}
+
+// ===== Phase 2 Step 5: token-demotion regression guard =====
+
+TEST_CASE(type_names_are_plain_identifiers) {
+    // Round-trip every builtin type name through the lexer and assert
+    // each one is a TokenType::Identifier carrying the literal name as
+    // its lexeme. No more TokenType::Vec3 / Float / Mat4 / Bool / ...
+    // — those enum values have been removed from AYToken.h.
+    const char* names[] = {
+        "float", "vec2", "vec3", "vec4",
+        "int", "ivec2", "ivec3", "ivec4",
+        "mat2", "mat3", "mat4", "quat", "bool"
+    };
+    for (const char* name : names) {
+        Lexer lexer(name);
+        std::vector<Token> tokens;
+        lexer.tokenize(tokens);
+        CHECK(tokens.size() == 2);  // Identifier + EOF
+        CHECK(tokens[0].type == TokenType::Identifier);
+        CHECK(tokens[0].lexeme == name);
+    }
 }
 
 TEST_SUITE_END
