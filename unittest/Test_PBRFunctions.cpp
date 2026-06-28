@@ -120,13 +120,14 @@ TEST_CASE(distributionGGX_at_aligned_NdotH) {
     CHECK(std::isfinite(result));
 }
 
-TEST_CASE(distributionGGX_smooth_surface_sharper_than_rough) {
-    // Same NdotH, compare roughness=0.1 vs 0.9. The smoother surface's
-    // distribution should produce a stronger value (or at least not a
-    // weaker one) — it concentrates around NdotH=1.
-    float smooth = callFloat("distributionGGX", {fv(0.9f), fv(0.1f)});
-    float rough  = callFloat("distributionGGX", {fv(0.9f), fv(0.9f)});
-    CHECK(smooth >= rough);
+TEST_CASE(distributionGGX_smooth_surface_sharper_at_peak) {
+    // At NdotH=1 (perfect alignment with normal), a smooth surface
+    // (roughness=0.1) produces a strong narrow peak, while a rough
+    // surface (roughness=0.9) spreads the same energy over a wider
+    // solid angle — so the value at NdotH=1 is lower.
+    float smooth = callFloat("distributionGGX", {fv(1.0f), fv(0.1f)});
+    float rough  = callFloat("distributionGGX", {fv(1.0f), fv(0.9f)});
+    CHECK(smooth > rough);
 }
 
 // ===== geometrySchlickGGX =====
