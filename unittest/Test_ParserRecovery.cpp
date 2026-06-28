@@ -142,11 +142,17 @@ TEST_CASE(broken_declaration_inside_material_then_valid_inner) {
 }
 
 TEST_CASE(broken_vertex_block_then_fragment_survives) {
-    // The vertex block has an unclosed '('. The parser should fail at
-    // the vertex parse but still recover and parse the fragment block.
+    // The vertex block has a stray '@' token at statement position —
+    // garbage the parser must skip via synchronize(). The fragment
+    // block that follows must still parse cleanly.
+    //
+    // (Earlier draft used a missing ';' or missing ')' which the
+    // parser silently tolerates due to Phoskia's Python-like optional
+    // semicolons and forgiving expression recovery — both did NOT
+    // trigger hasErrors.)
     const char* src = R"(
         material X {
-            vertex { in pos : position return vec4(pos, 1.0) }
+            vertex { @ return vec4(0.0) }
             fragment { return vec4(1.0) }
         }
     )";
