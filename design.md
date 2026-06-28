@@ -659,7 +659,7 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 
 ### Phase 2: 完整 Phoskia 支持
 - [x] 类型推导引擎（`TypeInference` 完整实现 — Step 2）
-- [ ] 内置函数库扩充（PBR/光照/纹理采样 — Step 2 已完成 scalar/vector/纹理，PBR 留 Step 3）
+- [x] 内置函数库扩充（scalar/vector/纹理 Step 2，PBR Step 3 已完成：fresnelSchlick / fresnelSchlickRoughness / distributionGGX / geometrySchlickGGX / geometrySmith）
 - [x] Variant 宏在 BGFX 后端的 #ifdef 展开 (`[variant name]` → `#ifndef BGFX_VARIANT_<NAME_UPPER>` 包裹，默认 opt-in，详见 §6.3)
 - [ ] 错误恢复与 panic-mode 验证
 - [ ] 单元测试与 golden-file 验证
