@@ -276,4 +276,107 @@ TEST_CASE(compiler_emits_three_pieces) {
     CHECK(result.output.find("$input") != std::string::npos);
 }
 
+// ===== Phase 2 Step 1: [variant] expands to opt-in #ifndef =====
+TEST_CASE(variant_expands_to_ifndef_in_fragment) {
+    const char* src = R"(
+        material PBR {
+            vertex {
+                return vec4(0.0)
+            }
+            fragment {
+                in baseColor : color
+                let result = baseColor.rgb
+                [variant useEmission]
+                let emission = vec3(1.0, 0.0, 0.0)
+                return vec4(result, 1.0)
+            }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    // The opt-in shape: #ifndef / #else / #endif. Without --define the
+    // emission code is skipped; with `--define BGFX_VARIANT_USE_EMISSION`
+    // shaderc selects the #else branch.
+    CHECK(files.fs.find("#ifndef BGFX_VARIANT_USE_EMISSION") != std::string::npos);
+    CHECK(files.fs.find("#else") != std::string::npos);
+    CHECK(files.fs.find("#endif") != std::string::npos);
+    // The Phoskia [variant name] itself is NOT emitted as text.
+    CHECK(files.fs.find("[variant") == std::string::npos);
+    CHECK(files.fs.find("useEmission") == std::string::npos);
+    // Statements after [variant] are still present in the #else branch.
+    // The let emission = ... line should appear inside the #else block
+    // (between #else and #endif).
+    auto elsePos = files.fs.find("#else");
+    auto endifPos = files.fs.find("#endif");
+    auto letPos = files.fs.find("emission = vec3(1.0, 0.0, 0.0)");
+    CHECK(letPos != std::string::npos);
+    CHECK(elsePos < letPos);
+    CHECK(letPos < endifPos);
+}
+
+TEST_CASE(variant_expands_to_ifndef_in_vertex) {
+    const char* src = R"(
+        material PBR {
+            vertex {
+                in pos : position
+                [variant skinning]
+                let skinned = pos
+                return vec4(skinned, 1.0)
+            }
+            fragment { return vec4(1.0) }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    CHECK(files.vs.find("#ifndef BGFX_VARIANT_SKINNING") != std::string::npos);
+    CHECK(files.vs.find("#else") != std::string::npos);
+    CHECK(files.vs.find("#endif") != std::string::npos);
+}
+
+TEST_CASE(multiple_variants_each_get_their_own_ifndef) {
+    const char* src = R"(
+        material PBR {
+            vertex {
+                return vec4(0.0)
+            }
+            fragment {
+                in baseColor : color
+                let r = baseColor.rgb
+                [variant useEmission]
+                r = r + vec3(1.0)
+                [variant useFresnel]
+                r = r * vec3(0.5)
+                return vec4(r, 1.0)
+            }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    CHECK(files.fs.find("#ifndef BGFX_VARIANT_USE_EMISSION") != std::string::npos);
+    CHECK(files.fs.find("#ifndef BGFX_VARIANT_USE_FRESNEL") != std::string::npos);
+    CHECK(files.fs.find("#else") != std::string::npos);
+    // Two distinct #ifndef blocks → two #endif blocks at least.
+    size_t endifCount = 0, pos = 0;
+    while ((pos = files.fs.find("#endif", pos)) != std::string::npos) {
+        ++endifCount;
+        ++pos;
+    }
+    CHECK(endifCount >= 2);
+}
+
+TEST_CASE(variant_macro_name_uppercases_and_replaces_special_chars) {
+    // Indirect test: variant name with mixed case + digit should still
+    // produce a valid BGFX_VARIANT_<NAME> macro.
+    const char* src = R"(
+        material M {
+            vertex {
+                return vec4(0.0)
+            }
+            fragment {
+                [variant HDR2Pass]
+                return vec4(1.0)
+            }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    CHECK(files.fs.find("#ifndef BGFX_VARIANT_HDR2PASS") != std::string::npos);
+}
+
 TEST_SUITE_END

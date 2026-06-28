@@ -198,7 +198,18 @@ std::unique_ptr<Expr> Parser::parseCall() {
         } else if (match(TokenType::Dot)) {
             Token name = consumeName("Expected property name after '.'");
             expr = std::make_unique<MemberExpr>(std::move(expr), name.lexeme);
-        } else if (match(TokenType::LeftBracket)) {
+        } else if (check(TokenType::LeftBracket)) {
+            // Lookahead: a `[` immediately followed by `variant` is the
+            // start of a `[variant name]` attribute, NOT array indexing.
+            // parseCall bails out so the enclosing parseStatement can
+            // re-dispatch on LeftBracket → parseVariantAttribute on the
+            // next iteration. This matches Phoskia's grammar where
+            // attributes are statement-level, not expression-level.
+            if (_current + 1 < _tokens.size() &&
+                _tokens[_current + 1].type == TokenType::Variant) {
+                break;
+            }
+            advance();  // consume `[`
             auto index = parseExpression();
             consume(TokenType::RightBracket, "Expected ']' after index");
             expr = std::make_unique<IndexExpr>(std::move(expr), std::move(index));
@@ -494,7 +505,7 @@ std::unique_ptr<Stmt> Parser::parseFragmentFunc() {
 }
 
 std::unique_ptr<Stmt> Parser::parseVariantAttribute() {
-    // We've already consumed '[' via match().
+    // We've already consumed '[' via match() in parseStatement.
     // Two accepted forms:
     //   [ variant <name> ]   — 'variant' keyword followed by an Identifier
     //   [ <name> ]           — bare Identifier (legacy/shorthand)

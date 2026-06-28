@@ -62,6 +62,14 @@ void Lexer::scanToken(std::vector<Token>& out) {
         case '>': makeToken(out, match('=') ? TokenType::GreaterEqual : TokenType::Greater, 1); break;
         case '&': makeToken(out, match('&') ? TokenType::And : TokenType::Unknown, 1); break;
         case '|': makeToken(out, match('|') ? TokenType::Or : TokenType::Unknown, 1); break;
+        case '#': {
+            // Phoskia doesn't use `#` in its surface syntax — swallow it
+            // silently so stray `#`s (e.g. in commented-out source) don't
+            // pollute the token stream as Unknown tokens. A genuine
+            // syntax error surfaces in the parser when the surrounding
+            // tokens don't make sense.
+            break;
+        }
         case '"': stringLiteral(out); break;
         case ' ':
         case '\r':

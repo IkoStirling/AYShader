@@ -390,8 +390,7 @@ TEST_CASE(realistic_material_declaration) {
 }
 
 TEST_CASE(variant_attribute_syntax) {
-    // '#[variant name]' - '[' is LeftBracket, 'variant' is Variant keyword,
-    // 'name' is Identifier, ']' is RightBracket
+    // Phoskia `[variant name]` syntax: 5 tokens — `[` `variant` `<name>` `]` EOF.
     Lexer lexer("[ variant useEmission ]");
     std::vector<Token> tokens;
     lexer.tokenize(tokens);

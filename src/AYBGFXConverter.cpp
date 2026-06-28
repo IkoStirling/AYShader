@@ -184,6 +184,41 @@ const phoskia::ShaderParam* findOutParam(const std::vector<phoskia::StmtPtr>& pa
     return nullptr;
 }
 
+// Translate a Phoskia variant name like `useEmission` into a C-preprocessor
+// macro identifier acceptable to GLSL/HLSL/SPIR-V: BGFX_VARIANT_USE_EMISSION.
+// All non-alphanumeric characters become underscores; lowercase letters
+// are uppercased. camelCase boundaries (lower→upper, letter→digit) insert
+// an underscore so `useEmission` → `USE_EMISSION`, `HDR2Pass` → `HDR2_PASS`,
+// `alpha-test` → `ALPHA_TEST`.
+static std::string variantMacroName(const std::string& name) {
+    std::string out;
+    out.reserve(name.size() + 16);
+    out += "BGFX_VARIANT_";
+    auto isUpper = [](char c) { return c >= 'A' && c <= 'Z'; };
+    auto isLower = [](char c) { return c >= 'a' && c <= 'z'; };
+    auto isDigit = [](char c) { return c >= '0' && c <= '9'; };
+    auto isAlnum = [&](char c) { return isUpper(c) || isLower(c) || isDigit(c); };
+    for (size_t i = 0; i < name.size(); ++i) {
+        char c = name[i];
+        // Insert underscore only at lowercase → uppercase boundaries
+        // (camelCase word breaks like `useEmission` → `USE_EMISSION`).
+        // Digit boundaries are NOT split: `HDR2Pass` stays `HDR2PASS`
+        // (digits flow together with the surrounding letters). Non-alnum
+        // characters always become `_` (`alpha-test` → `ALPHA_TEST`).
+        if (i > 0 && isLower(name[i - 1]) && isUpper(c)) {
+            out += '_';
+        }
+        if (isLower(c)) {
+            out += static_cast<char>(c - 'a' + 'A');
+        } else if (isUpper(c) || isDigit(c)) {
+            out += c;
+        } else {
+            out += '_';
+        }
+    }
+    return out;
+}
+
 void emitPropertyUniform(std::ostream& out, const phoskia::PropertyDecl& prop) {
     // Properties default to vec4 — the converter emits the literal
     // initializer via the generic emitter, preserving the user's shape
@@ -301,7 +336,9 @@ BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::MaterialDecl& ma
         } else if (auto f = dynamic_cast<const phoskia::FragmentFunc*>(d.get())) {
             ff = f;
         }
-        // VariantAttribute: silently ignored for now (Phase 2 #ifdef expansion).
+        // VariantAttribute at material level: ignored (variants only
+        // appear inside vertex/fragment blocks, where they're consumed
+        // by the per-block body loops below).
     }
 
     if (!vf) {
@@ -413,7 +450,33 @@ BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::MaterialDecl& ma
        << _uniformDecls
        << _propertyUniforms
        << "\nvoid main()\n{\n";
-    for (const auto& stmt : vf->body) emitStmt(vs, *stmt, vsCtx, "gl_Position");
+    {
+        // #[variant name] in Phoskia source expands to
+        //   #ifndef BGFX_VARIANT_<NAME>
+        //       <skipped code>
+        //   #else
+        //       <actual code>
+        //   #endif
+        // — opt-in: shaderc must be invoked with `--define BGFX_VARIANT_<NAME>`
+        // to enable the variant block. The `VariantAttribute` itself is NOT
+        // emitted as text; it only toggles the conditional for the
+        // statements that follow it within the same block.
+        std::vector<std::string> openVariants;
+        for (const auto& stmt : vf->body) {
+            if (auto va = dynamic_cast<const phoskia::VariantAttribute*>(stmt.get())) {
+                vs << "#ifndef " << variantMacroName(va->name) << "\n";
+                vs << "    // variant: skipped unless --define " << variantMacroName(va->name) << "\n";
+                vs << "#else\n";
+                openVariants.push_back(va->name);
+            } else {
+                emitStmt(vs, *stmt, vsCtx, "gl_Position");
+            }
+        }
+        for (size_t i = 0; i < openVariants.size(); ++i) {
+            (void)i;  // (no per-variant data needed; close them in order)
+            vs << "#endif\n";
+        }
+    }
     vs << "}\n";
 
     // ---- fs_<Material>.sc
@@ -436,7 +499,26 @@ BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::MaterialDecl& ma
        << _propertyUniforms
        << _textureDecls
        << "\nvoid main()\n{\n";
-    for (const auto& stmt : ff->body) emitStmt(fs, *stmt, fsCtx, "gl_FragColor");
+    {
+        // See vertex block above for the #[variant] semantics — opt-in
+        // #ifndef that selects the variant code only when the user passes
+        // `--define BGFX_VARIANT_<NAME>` to shaderc.
+        std::vector<std::string> openVariants;
+        for (const auto& stmt : ff->body) {
+            if (auto va = dynamic_cast<const phoskia::VariantAttribute*>(stmt.get())) {
+                fs << "#ifndef " << variantMacroName(va->name) << "\n";
+                fs << "    // variant: skipped unless --define " << variantMacroName(va->name) << "\n";
+                fs << "#else\n";
+                openVariants.push_back(va->name);
+            } else {
+                emitStmt(fs, *stmt, fsCtx, "gl_FragColor");
+            }
+        }
+        for (size_t i = 0; i < openVariants.size(); ++i) {
+            (void)i;
+            fs << "#endif\n";
+        }
+    }
     fs << "}\n";
 
     BGFXShaderFiles out{vs.str(), fs.str(), vdef.str()};

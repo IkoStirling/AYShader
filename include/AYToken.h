@@ -94,6 +94,8 @@ enum class TokenType : uint8_t {
 
     // Special
     EndOfFile,
+    // Catch-all for unrecognized character runs. Phoskia doesn't use `#`;
+    // the lexer silently consumes it (see `case '#'` in AYLexer.cpp).
     Unknown
 };
 

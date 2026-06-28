@@ -365,10 +365,10 @@ TEST_CASE(expression_literal_float) {
 TEST_CASE(variant_attribute) {
     const char* src = R"(
         material X {
-            [ variant useEmission ]
+            [variant useEmission]
             property emission = vec3(0.0)
-            vertex { }
-            fragment { }
+            vertex { return vec4(0.0) }
+            fragment { return vec4(1.0) }
         }
     )";
     auto prog = parseSource(src);

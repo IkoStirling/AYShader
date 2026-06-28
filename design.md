@@ -265,18 +265,38 @@ Variant 宏：
 
 ```phoskia
 material PBR {
-    #[variant useEmission]
+    [variant useEmission]
     property emission = vec3(0.0)
 
     fragment {
         in baseColor : color
         let result = baseColor.rgb
-        #[variant useEmission]
+        [variant useEmission]
         result = result + emission
         return vec4(result, 1.0)
     }
 }
 ```
+
+### 6.3 Variant 宏语义
+
+`[variant name]` 标记**可选代码段**。BGFX 后端把它展开为 C 预处理条件：
+
+```glsl
+#ifndef BGFX_VARIANT_<NAME_UPPERCASED>
+// 跳过该段（默认行为）
+#else
+<实际代码>
+#endif
+```
+
+`<NAME_UPPERCASED>` 把 `name` 中所有字母转大写、非字母数字字符替换为下划线，并在 **小写→大写边界**（camelCase 单词分界处）插入下划线。数字边界**不**插下划线——`HDR2Pass → BGFX_VARIANT_HDR2PASS`（数字紧贴字母不打断）。具体映射：`useEmission → BGFX_VARIANT_USE_EMISSION`、`HDR2Pass → BGFX_VARIANT_HDR2PASS`、`alpha-test → BGFX_VARIANT_ALPHA_TEST`、`skinning → BGFX_VARIANT_SKINNING`。
+
+**默认关闭（opt-in）**——与 bgfx 自身的 variant 系统约定一致：variant 段在编译时被 `#ifndef` 跳过，**只有调用方显式传 `--define BGFX_VARIANT_<NAME>` 给 shaderc**，变体代码才会出现在最终 shader 里。
+
+`[variant]` 在 vertex / fragment 块的 body 内任何位置都有效，可以与 `let` / `return` / `if` / `for` 等语句交错排列；多个连续 `[variant]` 形成嵌套（**第一个**先 `#ifndef`，**第二个**在内层再 `#ifndef`）。变体本身**不出现在输出文本**——它只切换后续代码的条件编译边界。
+
+**与数组下标语法的消歧**：`parseCall` 的 LeftBracket 分支在看到 `[` 时会 lookahead 下一 token——如果是 `variant` 关键字就 break 出 `parseCall`、把 `[` 留给 `parseStatement` 处理。这是必要的，因为 `let x = a.b [variant foo]` 这种链式写法里 `[variant]` 是 statement 级别的 attribute，不是 expression 级别的数组下标。
 
 完整 BNF 见 §10。
 
@@ -497,6 +517,18 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
                       | <variant_attribute>
 
 <variant_attribute> ::= "[" "variant" <identifier> "]"
+                      ; Phoskia 源码用纯 [variant ...] 形式（无 # 前缀），
+                      ; 看起来更高级。Lexer 切出 LeftBracket 作为普通 token；
+                      ; parser 在 expression 上下文里通过 lookahead
+                      ; 区分数组下标与 variant attribute（见 §6.3）。
+                      ; BGFX 后端产出: 在该节点后续所有 statement 之前写入
+                      ;   #ifndef BGFX_VARIANT_<UPPERCASE(name)>
+                      ; 在该 block 末尾或下一个 variant_attribute 之前写入
+                      ;   #else
+                      ;   <statement>*
+                      ;   #endif
+                      ;（name 中非字母数字字符替换为下划线；与 shaderc 的
+                      ;  --define BGFX_VARIANT_<NAME> 联动使用）
 
 <property_decl>     ::= "property" <identifier> "=" <expression> ";"
 
@@ -628,7 +660,7 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 ### Phase 2: 完整 Phoskia 支持
 - [ ] 类型推导引擎（`TypeInference` 完整实现）
 - [ ] 内置函数库扩充（PBR/光照/纹理采样）
-- [ ] Variant 宏在 BGFX 后端的 #ifdef 展开
+- [x] Variant 宏在 BGFX 后端的 #ifdef 展开 (`[variant name]` → `#ifndef BGFX_VARIANT_<NAME_UPPER>` 包裹，默认 opt-in，详见 §6.3)
 - [ ] 错误恢复与 panic-mode 验证
 - [ ] 单元测试与 golden-file 验证
 - [ ] **类型名降级重构**（与 type checker 共同推进，详见下文）
