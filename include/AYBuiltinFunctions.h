@@ -29,7 +29,18 @@ public:
 
     void registerFunction(const BuiltinFunction& func);
     bool hasFunction(const std::string& name) const;
+
+    // Look up a function by name only — returns the FIRST registered
+    // overload. Useful for "is this a known name?" checks; not safe for
+    // type inference because overloads may differ in arity / param types.
     const BuiltinFunction* getFunction(const std::string& name) const;
+
+    // Overload-aware lookup: returns the overload whose arity matches
+    // `argsSize`. Returns nullptr if no overload matches (caller should
+    // fall through to a type-constructor path or report a type error).
+    const BuiltinFunction* getFunctionByArity(const std::string& name,
+                                              size_t argsSize) const;
+
     std::vector<std::string> getAllFunctionNames() const;
 
     // Convenience registration
@@ -49,7 +60,7 @@ private:
     BuiltinFunctionRegistry() { registerDefaults(); }
     void registerDefaults();
 
-    std::unordered_map<std::string, BuiltinFunction> _functions;
+    std::unordered_map<std::string, std::vector<BuiltinFunction>> _functions;
 };
 
 // Math functions

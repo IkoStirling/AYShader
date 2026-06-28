@@ -60,6 +60,12 @@ private:
     std::shared_ptr<Type> inferMemberExpr(const MemberExpr& expr);
     std::shared_ptr<Type> inferIndexExpr(const IndexExpr& expr);
 
+    // Helper: infer the result of a vec/ivec/mat type constructor given
+    // its name and the arguments list. Returns nullptr if `name` doesn't
+    // look like a type constructor.
+    std::shared_ptr<Type> inferConstructor(const std::string& name,
+                                           const std::vector<ExprPtr>& args);
+
     std::shared_ptr<Type> newTypeVar(const std::string& name = "") {
         auto tv = std::make_shared<TypeVar>(name);
         _typeVars.push_back(tv);

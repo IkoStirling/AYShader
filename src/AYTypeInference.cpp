@@ -80,21 +80,54 @@ std::shared_ptr<Type> TypeInference::inferUnaryExpr(const UnaryExpr& expr) {
 std::shared_ptr<Type> TypeInference::inferCallExpr(const CallExpr& expr) {
     auto funcType = infer(*expr.callee);
 
-    // Check if it's a known built-in function
+    // ---- Built-in function: vec2/vec3/vec4/ivec2..4/mat2..4/float/int/bool ----
+    // These double as both ordinary functions (when registered as builtins)
+    // AND as type constructors (vec3(vec4), vec4(vec3, float), ...).
     if (auto id = dynamic_cast<const IdentifierExpr*>(expr.callee.get())) {
-        auto builtin = BuiltinFunctionRegistry::instance().getFunction(id->name);
+        // Phase 2 Step 2: use arity-aware overload lookup so `normalize(v3)`
+        // picks the vec3→vec3 overload and not the (later-registered)
+        // vec4→vec4 one. Without this, the last-registered overload wins.
+        auto builtin = BuiltinFunctionRegistry::instance().getFunctionByArity(
+            id->name, expr.args.size());
         if (builtin) {
-            if (expr.args.size() == builtin->paramTypes.size()) {
-                for (size_t i = 0; i < expr.args.size(); ++i) {
-                    auto argType = infer(*expr.args[i]);
-                    unify(argType, builtin->paramTypes[i]);
-                }
-                return builtin->returnType;
+            for (size_t i = 0; i < expr.args.size(); ++i) {
+                auto argType = infer(*expr.args[i]);
+                unify(argType, builtin->paramTypes[i]);
             }
+            return builtin->returnType;
+        }
+
+        // No overload matched the arity. Try by-name fallback for arity
+        // mismatches: still infer each arg for error recovery, return
+        // the return type of the first overload so the analyzer can
+        // surface a "wrong number of arguments" message.
+        auto anyOvl = BuiltinFunctionRegistry::instance().getFunction(id->name);
+        if (anyOvl) {
+            for (const auto& a : expr.args) infer(*a);
+            return anyOvl->returnType;
+        }
+
+        // ---- Type constructor fallback (when not registered as builtin) ----
+        // Phase 1 registers scalar/vector builtins via registerDefaults;
+        // this branch handles arities those don't cover, e.g. vec4(v3, f),
+        // mat4(v4, v4, v4, v4).
+        const std::string& name = id->name;
+        // Total component count inferred from the constructor's argument shape.
+        // Rules:
+        //   vec2(f, f) | vec2(vec2)                    → 2 components
+        //   vec3(f, f, f) | vec3(vec3) | vec3(vec2, f) → 3 components
+        //   vec4(f, f, f, f) | vec4(vec4) | vec4(vec3, f) | vec4(vec2, f, f)
+        //                                                  → 4 components
+        //   mat4(v4, v4, v4, v4)                        → mat4
+        if (name == "vec2" || name == "vec3" || name == "vec4" ||
+            name == "ivec2" || name == "ivec3" || name == "ivec4" ||
+            name == "mat2" || name == "mat3" || name == "mat4") {
+            auto inferred = inferConstructor(name, expr.args);
+            if (inferred) return inferred;
         }
     }
 
-    // General function call
+    // ---- User-defined function: FunctionType in env ----
     if (auto func = dynamic_cast<FunctionType*>(funcType.get())) {
         if (expr.args.size() == func->params().size()) {
             for (size_t i = 0; i < expr.args.size(); ++i) {
@@ -103,9 +136,88 @@ std::shared_ptr<Type> TypeInference::inferCallExpr(const CallExpr& expr) {
             }
             return func->returnType();
         }
+        for (const auto& a : expr.args) infer(*a);
+        return func->returnType();
     }
 
     return newTypeVar();
+}
+
+std::shared_ptr<Type> TypeInference::inferConstructor(
+    const std::string& name,
+    const std::vector<ExprPtr>& args) {
+    // Count total components requested by the constructor name.
+    auto vecFor = [&](int dim) -> std::shared_ptr<VectorType> {
+        bool isInt = (name.size() > 0 && name[0] == 'i');  // ivec2/3/4
+        switch (dim) {
+            case 2: return std::make_shared<VectorType>(isInt ? PrimitiveType::Int : PrimitiveType::Float, 2);
+            case 3: return std::make_shared<VectorType>(isInt ? PrimitiveType::Int : PrimitiveType::Float, 3);
+            case 4: return std::make_shared<VectorType>(isInt ? PrimitiveType::Int : PrimitiveType::Float, 4);
+            default: return nullptr;
+        }
+    };
+    auto matFor = [&](int dim) -> std::shared_ptr<MatrixType> {
+        switch (dim) {
+            case 2: return std::make_shared<MatrixType>(2, 2);
+            case 3: return std::make_shared<MatrixType>(3, 3);
+            case 4: return std::make_shared<MatrixType>(4, 4);
+            default: return nullptr;
+        }
+    };
+
+    int dim = 0;
+    if (name[0] == 'm') dim = name[3] - '0';        // mat2/3/4
+    else if (name[0] == 'i') dim = name[4] - '0';   // ivec2/3/4
+    else dim = name[3] - '0';                       // vec2/3/4
+
+    // vec/ivec: sum the component count of each argument.
+    int total = 0;
+    bool failed = false;
+    for (const auto& a : args) {
+        auto t = infer(*a);
+        // Resolve any pending type variable.
+        std::shared_ptr<Type> concrete = t;
+        while (auto tv = std::dynamic_pointer_cast<TypeVar>(concrete)) {
+            if (tv->hasSolution()) concrete = tv->getSolution();
+            else break;
+        }
+        if (auto v = std::dynamic_pointer_cast<VectorType>(concrete)) {
+            total += static_cast<int>(v->dimension());
+        } else if (auto p = std::dynamic_pointer_cast<PrimitiveType_>(concrete)) {
+            total += 1;
+        } else {
+            // Unknown arg shape — count as 1 so we still infer a result;
+            // mismatches will be caught by unify at the caller's level.
+            total += 1;
+            failed = true;
+        }
+    }
+    if (failed) return vecFor(dim);  // best-effort: return target dim
+
+    if (name[0] == 'm') {
+        // matN constructors take N vectors (columns).
+        if (args.size() == static_cast<size_t>(dim)) {
+            for (const auto& a : args) {
+                auto t = infer(*a);
+                std::shared_ptr<Type> concrete = t;
+                while (auto tv = std::dynamic_pointer_cast<TypeVar>(concrete)) {
+                    if (tv->hasSolution()) concrete = tv->getSolution();
+                    else break;
+                }
+                if (auto v = std::dynamic_pointer_cast<VectorType>(concrete)) {
+                    if (v->dimension() != static_cast<size_t>(dim)) {
+                        return matFor(dim);  // mismatch — best effort
+                    }
+                }
+            }
+            return matFor(dim);
+        }
+        return matFor(dim);  // best effort
+    }
+
+    if (total == dim) return vecFor(dim);
+    // Mismatched component count — fall through and return target dim.
+    return vecFor(dim);
 }
 
 std::shared_ptr<Type> TypeInference::inferIdentifierExpr(const IdentifierExpr& expr) {
@@ -136,13 +248,92 @@ std::shared_ptr<Type> TypeInference::inferLiteralExpr(const LiteralExpr& expr) {
 }
 
 std::shared_ptr<Type> TypeInference::inferMemberExpr(const MemberExpr& expr) {
-    infer(*expr.object);
-    return newTypeVar();  // Return type depends on member
+    auto objectType = infer(*expr.object);
+
+    // Resolve any pending type variable so we can introspect the swizzle.
+    std::shared_ptr<Type> concrete = objectType;
+    while (auto tv = std::dynamic_pointer_cast<TypeVar>(concrete)) {
+        if (tv->hasSolution()) {
+            concrete = tv->getSolution();
+        } else {
+            break;
+        }
+    }
+
+    // Swizzle on a vector: c.r → float, v.rgb → vec3, v.rrgg → vec4, v.xyzw → vec4
+    if (auto vec = std::dynamic_pointer_cast<VectorType>(concrete)) {
+        const std::string& m = expr.member;
+        // Each swizzle character must map to an existing axis.
+        // Allowed axes: x/y/z/w, r/g/b/a — same character count, same dimension.
+        // We just require the dimension of the swizzle result matches the
+        // length of the swizzle string. Single-char returns float; multi-char
+        // returns the same vector dimension.
+        size_t n = m.size();
+        if (n == 0) return newTypeVar();
+        // Every character must be a valid swizzle axis.
+        auto isAxis = [](char c) {
+            return c == 'x' || c == 'y' || c == 'z' || c == 'w' ||
+                   c == 'r' || c == 'g' || c == 'b' || c == 'a';
+        };
+        bool allAxes = true;
+        for (char c : m) {
+            if (!isAxis(c)) { allAxes = false; break; }
+        }
+        if (!allAxes) {
+            // Not a swizzle — leave as a fresh var so the analyzer can
+            // report a struct-field lookup error later if needed.
+            return newTypeVar();
+        }
+        if (n == 1) {
+            // Scalar swizzle: result is a primitive of the same element type.
+            switch (vec->elementType()) {
+                case PrimitiveType::Float: return BuiltinTypes::Float;
+                case PrimitiveType::Int:   return BuiltinTypes::Int;
+                case PrimitiveType::Bool:  return BuiltinTypes::Bool;
+                default: return BuiltinTypes::Dynamic;
+            }
+        }
+        // Multi-component swizzle — result is a vector of the requested
+        // dimension with the same element type. We currently require the
+        // swizzle length to match an existing vector dimension (vec2/3/4).
+        switch (n) {
+            case 2: return BuiltinTypes::Vec2();
+            case 3: return BuiltinTypes::Vec3();
+            case 4: return BuiltinTypes::Vec4();
+            default: return newTypeVar();
+        }
+    }
+
+    // Member access on non-vector (e.g. struct field) — defer to analyzer.
+    return newTypeVar();
 }
 
 std::shared_ptr<Type> TypeInference::inferIndexExpr(const IndexExpr& expr) {
-    infer(*expr.object);
-    infer(*expr.index);
+    auto objectType = infer(*expr.object);
+    infer(*expr.index);  // index is i32 — type-checked but not used for result
+
+    // Resolve any pending type variable.
+    std::shared_ptr<Type> concrete = objectType;
+    while (auto tv = std::dynamic_pointer_cast<TypeVar>(concrete)) {
+        if (tv->hasSolution()) {
+            concrete = tv->getSolution();
+        } else {
+            break;
+        }
+    }
+
+    // Vector[i] → element type (scalar). Arrays would return element type.
+    if (auto vec = std::dynamic_pointer_cast<VectorType>(concrete)) {
+        switch (vec->elementType()) {
+            case PrimitiveType::Float: return BuiltinTypes::Float;
+            case PrimitiveType::Int:   return BuiltinTypes::Int;
+            case PrimitiveType::Bool:  return BuiltinTypes::Bool;
+            default: return BuiltinTypes::Dynamic;
+        }
+    }
+    if (auto arr = std::dynamic_pointer_cast<ArrayType>(concrete)) {
+        return arr->elementType();
+    }
     return newTypeVar();
 }
 

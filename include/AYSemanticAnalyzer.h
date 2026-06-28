@@ -42,6 +42,15 @@ private:
     void analyzeForStmt(const ForStmt& stmt);
     std::shared_ptr<Type> analyzeExpr(const Expr& expr);
 
+    // Walk an expression and collect every leaf IdentifierExpr (recursing
+    // through binary/unary/call/member/index nodes, but skipping
+    // MemberExpr's `.member` string and LiteralExpr's payload). Used by
+    // analyzeExpr to surface "Undefined identifier" errors for nested
+    // references like `a + mystery` where the leaf identifier is buried
+    // inside a BinaryExpr.
+    void collectIdentifiers(const Expr& expr,
+                            std::vector<const IdentifierExpr*>& out);
+
     void error(const std::string& message, int line, int column);
     void warning(const std::string& message, int line, int column);
 

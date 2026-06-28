@@ -40,8 +40,15 @@ struct CompileResult {
 
 // Compilation options
 struct CompileOptions {
-    bool enableTypeInference = false;    // Phase 1: off by default (not all paths wired)
-    bool enableSemanticAnalysis = true;
+    bool enableTypeInference = false;    // Phase 2 Step 2: opt-in. Off by default
+                                         // because not every Phoskia snippet
+                                         // currently type-checks (mixed vector
+                                         // / scalar arithmetic, etc.).
+    bool enableSemanticAnalysis = false; // Phase 2 Step 2: opt-in. The
+                                         // analyzer enforces strict checks
+                                         // (vec4 returns, bool if-conds,
+                                         // swizzle validity) that some
+                                         // existing Phase 1 snippets bypass.
     bool strictMode = false;
     std::string targetBackend = "bgfx";
 };

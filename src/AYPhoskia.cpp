@@ -101,10 +101,71 @@ CompileResult Compiler::runPipeline(const std::string& source, const std::string
         analyzeSemantics(*result.ast);
     }
 
-    // 4) Type inference (currently piggybacks on semantic analysis; not enabled by default)
+    // 4) Type inference — Phase 2 Step 2: when enabled, walk every
+    //    material body and verify each return value has type vec4.
+    //    We use a fresh TypeInference per pipeline so the engine's
+    //    internal type-var list doesn't leak between materials.
     if (_options.enableTypeInference) {
         TypeInference inference(*_typeEnv);
-        // (Pass is best-effort in Phase 1; not all expressions are walked.)
+        // Build the builtin env the analyzer normally builds, so the
+        // engine's identifier lookup finds `vec4` / `sample` / etc.
+        for (const auto& name : BuiltinFunctionRegistry::instance().getAllFunctionNames()) {
+            auto func = BuiltinFunctionRegistry::instance().getFunction(name);
+            if (func) {
+                _typeEnv->addFunction(name,
+                    std::make_shared<FunctionType>(func->paramTypes, func->returnType));
+            }
+        }
+
+        int returnViolations = 0;
+        for (const auto& d : result.ast->declarations) {
+            auto* mat = dynamic_cast<const MaterialDecl*>(d.get());
+            if (!mat) continue;
+
+            auto checkBody = [&](const std::vector<StmtPtr>& body) {
+                for (const auto& s : body) {
+                    auto* ret = dynamic_cast<const ReturnStmt*>(s.get());
+                    if (!ret || !ret->value) continue;
+                    auto t = inference.infer(*ret->value);
+
+                    // Resolve any TypeVar wrapper.
+                    std::shared_ptr<Type> concrete = t;
+                    while (auto tv = std::dynamic_pointer_cast<TypeVar>(concrete)) {
+                        if (tv->hasSolution()) concrete = tv->getSolution();
+                        else break;
+                    }
+                    auto vec4 = BuiltinTypes::Vec4();
+                    if (concrete && !concrete->equals(*vec4)) {
+                        auto dyn = BuiltinTypes::Dynamic;
+                        bool unresolved =
+                            std::dynamic_pointer_cast<TypeVar>(concrete) != nullptr ||
+                            (dyn && concrete->equals(*dyn));
+                        if (!unresolved) {
+                            ++returnViolations;
+                            _errorReporter.error(
+                                ErrorCode::TypeMismatch,
+                                "Return type must be vec4; got " + concrete->toString(),
+                                0, 0);
+                        }
+                    }
+                }
+            };
+
+            for (const auto& inner : mat->declarations) {
+                if (auto* vs = dynamic_cast<const VertexFunc*>(inner.get())) {
+                    checkBody(vs->body);
+                } else if (auto* fs = dynamic_cast<const FragmentFunc*>(inner.get())) {
+                    checkBody(fs->body);
+                }
+            }
+        }
+
+        if (returnViolations > 0) {
+            // Don't fail the pipeline — the BGFX backend may still produce
+            // a useful output. But the diagnostics are visible in
+            // result.errors() so callers can react.
+            (void)returnViolations;
+        }
     }
 
     if (hasErrors() && !result.ast) {

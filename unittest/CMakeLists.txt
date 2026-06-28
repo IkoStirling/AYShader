@@ -9,6 +9,8 @@ set(TEST_FILES
     Test_Phoskia.cpp
     Test_BGFXConverter.cpp
     Test_ShaderCompile.cpp
+    Test_TypeInference.cpp
+    Test_SemanticAnalyzer.cpp
 )
 
 add_executable(${TEST_NAME} ${TEST_FILES})

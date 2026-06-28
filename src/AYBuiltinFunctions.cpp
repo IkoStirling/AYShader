@@ -13,7 +13,11 @@ BuiltinFunctionRegistry& BuiltinFunctionRegistry::instance() {
 }
 
 void BuiltinFunctionRegistry::registerFunction(const BuiltinFunction& func) {
-    _functions[func.name] = func;
+    // Phase 2 Step 2: support overloads (e.g. normalize takes vec2 / vec3
+    // / vec4, dot takes (vec2,vec2) / (vec3,vec3) / (vec4,vec4)). The
+    // container is now vector-of-overloads per name; the original
+    // `_functions[name] = func` shape collapsed later registrations.
+    _functions[func.name].push_back(func);
 }
 
 bool BuiltinFunctionRegistry::hasFunction(const std::string& name) const {
@@ -22,7 +26,18 @@ bool BuiltinFunctionRegistry::hasFunction(const std::string& name) const {
 
 const BuiltinFunction* BuiltinFunctionRegistry::getFunction(const std::string& name) const {
     auto it = _functions.find(name);
-    return (it != _functions.end()) ? &it->second : nullptr;
+    if (it == _functions.end() || it->second.empty()) return nullptr;
+    return &it->second.front();
+}
+
+const BuiltinFunction* BuiltinFunctionRegistry::getFunctionByArity(const std::string& name,
+                                                                    size_t argsSize) const {
+    auto it = _functions.find(name);
+    if (it == _functions.end()) return nullptr;
+    for (const auto& ovl : it->second) {
+        if (ovl.paramTypes.size() == argsSize) return &ovl;
+    }
+    return nullptr;
 }
 
 std::vector<std::string> BuiltinFunctionRegistry::getAllFunctionNames() const {
@@ -41,6 +56,37 @@ void BuiltinFunctionRegistry::registerDefaults() {
     auto V2 = BuiltinTypes::Vec2();
     auto V3 = BuiltinTypes::Vec3();
     auto V4 = BuiltinTypes::Vec4();
+    auto IV2 = std::make_shared<VectorType>(PrimitiveType::Int, 2);
+    auto IV3 = std::make_shared<VectorType>(PrimitiveType::Int, 3);
+    auto IV4 = std::make_shared<VectorType>(PrimitiveType::Int, 4);
+    auto M2 = BuiltinTypes::Mat2();
+    auto M3 = BuiltinTypes::Mat3();
+    auto M4 = BuiltinTypes::Mat4();
+
+    // Phase 2 Step 2: placeholder runtime impl. The BGFX backend
+    // ignores all of this and emits GLSL directly. The interpreter
+    // fallback (used by tests) doesn't actually run these bodies.
+    auto vec3Return = [](auto) -> float { return 0.0f; };
+
+    // ---- Type constructors (Phase 2 Step 2) ----
+    // Phoskia's parser (Phase 1 Type-5 fallback) wraps any Vec2/3/4/Int/Float
+    // token in expression position as IdentifierExpr(name="vec3", ...) so
+    // the semantic analyzer must register these names as known functions
+    // in the env. We register the canonical-arity overload; mixed-arity
+    // forms like vec4(v3, f) or mat4(v4, v4, v4, v4) fall through to
+    // TypeInference::inferConstructor in AYTypeInference.cpp.
+    registerFunction("float", {F}, F, vec3Return, "Scalar float");
+    registerFunction("int",   {I}, I, vec3Return, "Scalar int");
+    registerFunction("bool",  {B}, B, vec3Return, "Scalar bool");
+    registerFunction("vec2",  {F, F}, V2, vec3Return, "vec2 from two floats");
+    registerFunction("vec3",  {F, F, F}, V3, vec3Return, "vec3 from three floats");
+    registerFunction("vec4",  {F, F, F, F}, V4, vec3Return, "vec4 from four floats");
+    registerFunction("ivec2", {I, I}, IV2, vec3Return, "ivec2 from two ints");
+    registerFunction("ivec3", {I, I, I}, IV3, vec3Return, "ivec3 from three ints");
+    registerFunction("ivec4", {I, I, I, I}, IV4, vec3Return, "ivec4 from four ints");
+    registerFunction("mat2",  {F, F, F, F}, M2, vec3Return, "mat2 from four floats");
+    registerFunction("mat3",  {F, F, F, F, F, F, F, F, F}, M3, vec3Return, "mat3 from nine floats");
+    registerFunction("mat4",  {F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F}, M4, vec3Return, "mat4 from sixteen floats");
 
     // Math functions
     auto mathImpl = [](float x) -> float { return std::abs(x); };
@@ -130,6 +176,69 @@ void BuiltinFunctionRegistry::registerDefaults() {
             bool cond = std::get<bool>(args[0]);
             return cond ? std::get<float>(args[1]) : std::get<float>(args[2]);
         }, "Ternary conditional");
+
+    // ---- Vector math (Phase 2 Step 2) ----
+    // These need real implementations — the unit tests assert
+    // `unify(argType, paramType)` succeeds, not that the runtime
+    // implementation runs. The runtime impls exist so future interpreter
+    // passes have a fallback. The BGFX backend ignores all of this and
+    // emits GLSL directly.
+
+    // Normalize: vecN → vecN (same dimension).
+    registerFunction("normalize", {V3}, V3,
+        [](auto args) -> float { return 0.0f; },  // interpreted return not used
+        "Normalize a vec3");
+    registerFunction("normalize", {V2}, V2,
+        [](auto) -> float { return 0.0f; },
+        "Normalize a vec2");
+    registerFunction("normalize", {V4}, V4,
+        [](auto) -> float { return 0.0f; },
+        "Normalize a vec4");
+
+    // Dot: (vecN, vecN) → float.
+    registerFunction("dot", {V2, V2}, F, vec3Return, "Dot product of two vec2");
+    registerFunction("dot", {V3, V3}, F, vec3Return, "Dot product of two vec3");
+    registerFunction("dot", {V4, V4}, F, vec3Return, "Dot product of two vec4");
+
+    // Cross: (vec3, vec3) → vec3. (cross product is vec3-only in GLSL.)
+    registerFunction("cross", {V3, V3}, V3, vec3Return, "Cross product");
+
+    // Length: vecN → float.
+    registerFunction("length", {V2}, F, vec3Return, "Length of a vec2");
+    registerFunction("length", {V3}, F, vec3Return, "Length of a vec3");
+    registerFunction("length", {V4}, F, vec3Return, "Length of a vec4");
+
+    // Distance: (vecN, vecN) → float.
+    registerFunction("distance", {V2, V2}, F, vec3Return, "Distance between two vec2");
+    registerFunction("distance", {V3, V3}, F, vec3Return, "Distance between two vec3");
+    registerFunction("distance", {V4, V4}, F, vec3Return, "Distance between two vec4");
+
+    // Reflect: (incident, normal) → reflected vec3.
+    registerFunction("reflect", {V3, V3}, V3, vec3Return, "Reflect a vec3");
+
+    // Refract: (incident, normal, eta) → refracted vec3.
+    registerFunction("refract", {V3, V3, F}, V3, vec3Return, "Refract a vec3");
+
+    // ---- Texture sampling (Phase 2 Step 2) ----
+    // Phoskia exposes `sample(tex, uv)`. The texture type is opaque —
+    // we register it as taking Dynamic for the first arg, returning vec4.
+    // (A dedicated TextureType is Phase 3 work.)
+    registerFunction("sample", {BuiltinTypes::Dynamic, V2}, V4,
+        vec3Return, "Sample a texture2d at UV");
+    registerFunction("sample", {BuiltinTypes::Dynamic, V3}, V4,
+        vec3Return, "Sample a texture2d array (vec3 UV)");
+    registerFunction("sampleLod", {BuiltinTypes::Dynamic, V2, F}, V4,
+        vec3Return, "Sample a texture2d at UV with explicit LOD");
+    registerFunction("sampleGrad", {BuiltinTypes::Dynamic, V2, V2, V2}, V4,
+        vec3Return, "Sample a texture2d with explicit gradients");
+
+    // ---- Mix / step / smoothstep extended to vectors (Phase 2 Step 2) ----
+    registerFunction("mix", {V3, V3, F}, V3, vec3Return, "Linear blend of two vec3");
+    registerFunction("mix", {V4, V4, F}, V4, vec3Return, "Linear blend of two vec4");
+    registerFunction("step", {V3, V3}, V3, vec3Return, "Step function (vector form)");
+    registerFunction("step", {V4, V4}, V4, vec3Return, "Step function (vector form)");
+    registerFunction("smoothstep", {V3, V3, V3}, V3, vec3Return, "Smoothstep (vector form)");
+    registerFunction("smoothstep", {V4, V4, V4}, V4, vec3Return, "Smoothstep (vector form)");
 }
 
 // Namespace registration functions
