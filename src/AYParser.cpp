@@ -87,12 +87,18 @@ std::unique_ptr<Program> Parser::parse() {
         if (auto stmt = parseStatement()) {
             program->declarations.push_back(std::move(stmt));
         } else {
-            // Error recovery: skip to next statement boundary
-            advance();
+            // Phase 2 Step 4: panic-mode recovery. Instead of advancing
+            // a single token (which leaves the parser stuck on whatever
+            // garbage token caused the original error), skip forward to
+            // the next top-level statement boundary. This lets the
+            // parser keep parsing any subsequent valid material /
+            // property / uniform / etc. after the first error.
+            synchronize();
         }
         if (_current == before) {
-            // DEBUG: panic-mode signal — retained until error recovery
-            // tests in Phase 2 #1 confirm this never fires on valid input.
+            // Defense-in-depth: if synchronize() somehow didn't move
+            // (e.g. malformed input with no boundary), force a single
+            // advance so the main loop terminates.
             std::cerr << "[parse] STUCK at _current=" << _current
                       << " curType=" << tokenTypeName(current().type)
                       << " lexeme='" << current().lexeme << "' — force advancing\n";
@@ -297,14 +303,20 @@ std::unique_ptr<Stmt> Parser::parseMaterialDecl() {
         if (auto stmt = parseStatement()) {
             declarations.push_back(std::move(stmt));
         } else {
-            advance();
+            // Phase 2 Step 4: panic-mode recovery inside the material
+            // body. Skip tokens until we land on a token that can start
+            // a fresh inner declaration (property / uniform / texture2d /
+            // vertex / fragment / let / etc.) or on the closing '}'.
+            // This stops one bad declaration from cascading into all
+            // subsequent ones.
+            synchronize();
         }
         if (_current == before) {
-            // DEBUG: panic-mode signal (paired with parse() top-level guard).
+            // Defense-in-depth: force one advance so we don't spin.
             std::cerr << "[parseMaterialDecl.loop] STUCK at _current=" << _current
                       << " curType=" << tokenTypeName(current().type)
                       << " lexeme='" << current().lexeme << "' — force advancing\n";
-            advance();  // panic-mode safety net
+            advance();
         }
     }
 
@@ -727,6 +739,53 @@ int Parser::getPrecedence(TokenType op) {
         case TokenType::Slash:
         case TokenType::Percent: return 6;
         default: return 0;
+    }
+}
+
+// ----- Phase 2 Step 4: panic-mode recovery -----
+
+void Parser::synchronize() {
+    // Advance until we land on a top-level statement boundary. A boundary
+    // token is one that can start a fresh declaration / statement:
+    //   - material / property / uniform / texture2d / vertex / fragment
+    //   - let / return / if / for
+    //   - left-brace (start of a stray block)
+    //   - left-bracket (start of [variant ...])
+    //   - right-brace (closing a block we couldn't open)
+    //   - EOF
+    //
+    // We don't re-report an error here — the original error was already
+    // surfaced by the failed parseStatement() / consume() call that
+    // triggered this recovery. Re-reporting would spam the error stream.
+    while (!isAtEnd()) {
+        switch (current().type) {
+            case TokenType::Material:
+            case TokenType::Property:
+            case TokenType::Uniform:
+            case TokenType::Texture2D:
+            case TokenType::Vertex:
+            case TokenType::Fragment:
+            case TokenType::Let:
+            case TokenType::Return:
+            case TokenType::If:
+            case TokenType::For:
+            case TokenType::LeftBrace:
+            case TokenType::LeftBracket:
+            case TokenType::RightBrace:
+                return;
+            default:
+                advance();
+        }
+    }
+}
+
+void Parser::synchronizeToBlockEnd() {
+    // Advance until we land on a right-brace (the close of the current
+    // vertex / fragment / if / for body) or EOF. Used after an error
+    // inside a block body so the parser can finish parsing the body
+    // and the surrounding declaration cleanly.
+    while (!isAtEnd() && current().type != TokenType::RightBrace) {
+        advance();
     }
 }
 

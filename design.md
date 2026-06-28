@@ -661,7 +661,7 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 - [x] 类型推导引擎（`TypeInference` 完整实现 — Step 2）
 - [x] 内置函数库扩充（scalar/vector/纹理 Step 2，PBR Step 3 已完成：fresnelSchlick / fresnelSchlickRoughness / distributionGGX / geometrySchlickGGX / geometrySmith）
 - [x] Variant 宏在 BGFX 后端的 #ifdef 展开 (`[variant name]` → `#ifndef BGFX_VARIANT_<NAME_UPPER>` 包裹，默认 opt-in，详见 §6.3)
-- [ ] 错误恢复与 panic-mode 验证
+- [x] 错误恢复与 panic-mode 验证（Step 4：`Parser::synchronize` 跳过到 statement boundary；`parseMaterialDecl` 内层循环也用 synchronize；EOF / 缺失闭合括号 / garbage token 都不再级联）
 - [ ] 单元测试与 golden-file 验证
 - [ ] **类型名降级重构**（与 type checker 共同推进，详见下文）
 - [ ] **Compute shader 后端**（HLSL / SPIR-V 生成路径，BGFX `.sc` 不支持 compute）

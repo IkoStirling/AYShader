@@ -59,6 +59,21 @@ private:
     void error(const std::string& message);
     Token consume(TokenType type, const std::string& message);
 
+    // Phase 2 Step 4: panic-mode recovery. After a parse error inside a
+    // material block or expression, advance tokens until we land on a
+    // synchronizing token (top-level statement keyword, '}' closing the
+    // current block, or EOF). This lets the parser continue parsing the
+    // NEXT material / declaration instead of cascading every subsequent
+    // token into another error.
+    //
+    // Boundary tokens for top-level: material / property / uniform /
+    // texture2d / vertex / fragment / left-brace / left-bracket / EOF.
+    // Boundary tokens for shader block: '}' / EOF.
+    void synchronize();
+    // Variant of synchronize for use inside vertex/fragment bodies —
+    // stops at the next '}' that closes the current block, or EOF.
+    void synchronizeToBlockEnd();
+
     // Phase 1: consume either an Identifier or any of the builtin type
     // keywords (Float/Vec2/.../Bool). Phase 2 demotes type keywords to
     // Identifier (design.md §11.1) and this helper collapses back to a

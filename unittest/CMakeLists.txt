@@ -12,6 +12,7 @@ set(TEST_FILES
     Test_TypeInference.cpp
     Test_SemanticAnalyzer.cpp
     Test_PBRFunctions.cpp
+    Test_ParserRecovery.cpp
 )
 
 add_executable(${TEST_NAME} ${TEST_FILES})
