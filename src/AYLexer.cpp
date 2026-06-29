@@ -112,6 +112,7 @@ TokenType Lexer::identifierType(const std::string& lexeme) {
         {"material", TokenType::Material},
         {"property", TokenType::Property},
         {"uniform", TokenType::Uniform},
+        {"storage", TokenType::Storage},
         {"texture2d", TokenType::Texture2D},
         {"sampler", TokenType::Sampler},
         {"vertex", TokenType::Vertex},

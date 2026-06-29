@@ -42,6 +42,7 @@ class MaterialDecl;
 class PropertyDecl;
 class UniformDecl;
 class TextureDecl;
+class StorageDecl;
 class VertexFunc;
 class FragmentFunc;
 class ComputeDecl;
@@ -221,6 +222,30 @@ public:
     std::string name;
 };
 
+// Phase 3.2 Block 3: compute storage buffer declaration.
+//   storage <name> : structuredbuffer<T>     — read access
+//   storage <name> : rwstructuredbuffer<T>   — read-write access
+//
+// Element type (`T`) is captured as a GLSL lexeme string in Phase 3.2 —
+// the parser only accepts builtin scalar / vector types (float, int,
+// vec2..4, ivec2..4). Custom struct types are Phase 3.3 work.
+//
+// The kind (structuredbuffer vs rwstructuredbuffer) is the access mode.
+// In GLSL both forms lower to the same `buffer Name { T data[]; } Name;`
+// syntax (GLSL doesn't distinguish read-only storage buffers at the
+// source level — that's a HLSL-only thing), but the access field is
+// preserved in the IR for future HLSL emitter use.
+class StorageDecl : public Stmt {
+public:
+    enum class Access { Read, ReadWrite };
+    StorageDecl(Access access, const std::string& name, const std::string& elementType)
+        : access(access), name(name), elementType(elementType) {}
+    void accept(AstVisitor& visitor) override;
+    Access access;
+    std::string name;
+    std::string elementType;
+};
+
 // Parameter declaration inside vertex { } or fragment { }.
 // `in`  → input attribute (vertex) or input varying (fragment)
 // `out` → output varying (vertex only; fragment has no out)
@@ -306,6 +331,7 @@ public:
     virtual void visit(PropertyDecl& node) = 0;
     virtual void visit(UniformDecl& node) = 0;
     virtual void visit(TextureDecl& node) = 0;
+    virtual void visit(StorageDecl& node) = 0;
     virtual void visit(ShaderParam& node) = 0;
     virtual void visit(VertexFunc& node) = 0;
     virtual void visit(FragmentFunc& node) = 0;
@@ -345,6 +371,7 @@ inline void MaterialDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void PropertyDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void UniformDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void TextureDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
+inline void StorageDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void ShaderParam::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void VertexFunc::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void FragmentFunc::accept(AstVisitor& visitor) { visitor.visit(*this); }

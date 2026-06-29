@@ -335,4 +335,57 @@ TEST_CASE(compile_compute_uses_dispatch_id_builtin) {
     CHECK(result.output.find("dispatch_id") == std::string::npos);
 }
 
+// ===== Phase 3.2 Block 3: storage buffer declarations =====
+//
+// `storage <name> : structuredbuffer<T>` (read) and
+// `storage <name> : rwstructuredbuffer<T>` (read-write) declarations
+// live inside a compute body and emit as GLSL `buffer` blocks. The
+// two access forms share the same GLSL syntax — the IR preserves the
+// access field for future HLSL emitter use (Phase 5+).
+
+TEST_CASE(compile_compute_with_storage_buffer) {
+    Compiler compiler;
+    const char* src = R"(
+        compute Increment {
+            storage counters : rwstructuredbuffer<int>
+            let idx = thread_id.x
+            counters[idx] = counters[idx] + 1
+        }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    // GLSL storage buffer emission shape: `buffer Name { T data[]; } Name;`
+    CHECK(result.output.find("buffer counters") != std::string::npos);
+    CHECK(result.output.find("int data[]") != std::string::npos);
+    CHECK(result.output.find("} counters;") != std::string::npos);
+    // The Phoskia `rwstructuredbuffer` keyword must not survive into the
+    // emitted source — shaderc wouldn't recognise it.
+    CHECK(result.output.find("rwstructuredbuffer") == std::string::npos);
+    // The body still uses thread_id and the storage buffer normally.
+    CHECK(result.output.find("gl_GlobalInvocationID") != std::string::npos);
+    // (uint is a common GLSL unsigned-int lexeme but AYBuiltinTypes
+    // doesn't carry it as a singleton — adding the full PrimitiveType::Uint
+    // enum value + builtin type + toString wiring is a Phase 3.3 task.
+    // Phase 3.2 sticks to the builtin scalar / vector types the rest
+    // of the pipeline already understands.)
+}
+
+TEST_CASE(compile_compute_with_structured_buffer_read) {
+    Compiler compiler;
+    const char* src = R"(
+        compute Reader {
+            storage particles : structuredbuffer<vec3>
+            let idx = thread_id.x
+            return idx
+        }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    CHECK(result.output.find("buffer particles") != std::string::npos);
+    CHECK(result.output.find("vec3 data[]") != std::string::npos);
+    CHECK(result.output.find("structuredbuffer") == std::string::npos);
+}
+
 TEST_SUITE_END

@@ -172,6 +172,24 @@ std::unique_ptr<IRDeclaration> IRGenerator::lowerDecl(const phoskia::Stmt& s) {
         // The AST's texture2d keyword is the only texture kind recognized
         // today; future parser additions extend this without IR changes.
         out->samplerKind = SamplerKind::Sampler2D;
+    } else if (auto st = dynamic_cast<const phoskia::StorageDecl*>(&s)) {
+        // Phase 3.2 Block 3: compute storage buffer.
+        // The element type is carried as a Type pointer (target-neutral)
+        // so backends can emit GLSL / HLSL / WGSL with the right GLSL
+        // lexeme. Custom struct element types are a Phase 3.3 extension;
+        // for now lexemeToType covers builtin scalar / vector types and
+        // falls through with a warning for anything else.
+        out->kind = IRDeclaration::Kind::Storage;
+        out->name = st->name;
+        out->storageElementType = lexemeToType(st->elementType);
+        out->storageAccess = (st->access == phoskia::StorageDecl::Access::Read)
+                                 ? IRDeclaration::StorageAccess::Read
+                                 : IRDeclaration::StorageAccess::ReadWrite;
+        if (!out->storageElementType) {
+            _warnings.push_back("Storage '" + st->name +
+                "' has unrecognized element type lexeme '" + st->elementType +
+                "'; BGFX emission will fall back to vec4");
+        }
     } else {
         return nullptr;
     }
@@ -319,7 +337,27 @@ std::unique_ptr<IRComputeDecl> IRGenerator::lowerComputeDecl(const phoskia::Comp
     out->name = c.name;
     phoskia::TypeEnvironment env;
     populateBuiltinEnv(env);
+
+    // Phase 3.2 Block 3: walk the body twice — once for declarations
+    // (storage buffers today; uniform/property in the future), once
+    // for statements. The first pass populates `declarations` so the
+    // BGFX converter can emit them as `buffer Name { T data[]; } Name;`
+    // blocks before the `void main()` body. Mirrors the
+    // lowerMaterialDecl pattern (Phase 3.1).
     for (const auto& s : c.body) {
+        if (auto decl = lowerDecl(*s)) {
+            out->declarations.push_back(std::move(decl));
+        }
+    }
+    for (const auto& s : c.body) {
+        // Skip decl-typed entries (already handled above) — lowerDecl
+        // returns non-null for Uniform/Property/Texture/Storage.
+        if (dynamic_cast<const phoskia::UniformDecl*>(s.get()) ||
+            dynamic_cast<const phoskia::PropertyDecl*>(s.get()) ||
+            dynamic_cast<const phoskia::TextureDecl*>(s.get()) ||
+            dynamic_cast<const phoskia::StorageDecl*>(s.get())) {
+            continue;
+        }
         auto ir = lowerStmt(*s, &env);
         if (ir) out->body.push_back(std::move(ir));
     }

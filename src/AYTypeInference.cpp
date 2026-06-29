@@ -287,6 +287,18 @@ std::shared_ptr<Type> TypeInference::inferIdentifierExpr(const IdentifierExpr& e
         // Check built-in functions
         auto funcType = _env.getFunction(expr.name);
         if (funcType) return funcType;
+        // Phase 3.2 Block 2: compute thread-id builtins (`thread_id` /
+        // `group_id` / `dispatch_id`) are zero-arg functions but Phoskia
+        // source uses them as bare identifiers (`thread_id.x` rather
+        // than `thread_id().x`). When a bare identifier resolves to
+        // one of these builtins, return the return type (vec3) so
+        // subsequent member access (`thread_id.x`) type-checks
+        // correctly. Without this, `inferMemberExpr` would see the
+        // FunctionType wrapper and fail to resolve the swizzle.
+        auto builtin = BuiltinFunctionRegistry::instance().getFunction(expr.name);
+        if (builtin && builtin->paramTypes.empty() && builtin->returnType) {
+            return builtin->returnType;
+        }
         return newTypeVar();
     }
     return type;

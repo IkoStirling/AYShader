@@ -113,6 +113,16 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
     if (match(TokenType::Uniform)) {
         return parseUniformDecl();
     }
+    if (match(TokenType::Storage)) {
+        // Phase 3.2 Block 3: compute storage buffer declaration.
+        // `storage <name> : structuredbuffer<T>` / `... : rwstructuredbuffer<T>`
+        // are only meaningful inside a compute body, but the parser
+        // doesn't enforce that — it just emits the AST node. The
+        // IRGenerator / BGFX converter accept storage declarations
+        // anywhere they see them (and Phase 3.2 ignores them outside
+        // compute bodies anyway — only convertComputeDecl emits them).
+        return parseStorageDecl();
+    }
     if (match(TokenType::Texture2D)) {
         return parseTextureDecl();
     }
@@ -378,6 +388,49 @@ std::unique_ptr<Stmt> Parser::parseTextureDecl() {
     Token name = consumeName("Expected texture name");
     match(TokenType::Semicolon);  // ';' is optional (Python-like)
     return std::make_unique<TextureDecl>(name.lexeme);
+}
+
+// Phase 3.2 Block 3: parse a storage buffer declaration.
+//
+//   storage <name> : structuredbuffer<T>     -> read access
+//   storage <name> : rwstructuredbuffer<T>   -> read-write access
+//
+// The element type `T` is captured as a GLSL lexeme; the parser only
+// accepts builtin scalar / vector forms (float / int / vec2..4 /
+// ivec2..4 / etc). We don't validate the lexeme here — the semantic
+// analyzer + IRGenerator's `typeFromGLSLLexeme` path covers that; an
+// unknown lexeme falls through as a warning ("could not infer element
+// type; GLSL emission will use vec4 fallback"). Custom struct types
+// are a Phase 3.3 extension.
+std::unique_ptr<Stmt> Parser::parseStorageDecl() {
+    Token name = consumeName("Expected storage buffer name");
+    consume(TokenType::Colon, "Expected ':' after storage buffer name");
+
+    // The access keyword — `structuredbuffer` (read) or
+    // `rwstructuredbuffer` (read-write). Both lower to the same GLSL
+    // `buffer` block; the access field is preserved in IR for HLSL
+    // emitter use (Phase 5+).
+    Token accessKw = consume(TokenType::Identifier, "Expected 'structuredbuffer' or 'rwstructuredbuffer'");
+    StorageDecl::Access access;
+    if (accessKw.lexeme == "structuredbuffer") {
+        access = StorageDecl::Access::Read;
+    } else if (accessKw.lexeme == "rwstructuredbuffer") {
+        access = StorageDecl::Access::ReadWrite;
+    } else {
+        error("Expected 'structuredbuffer' or 'rwstructuredbuffer', got '" +
+              accessKw.lexeme + "'");
+        return nullptr;
+    }
+
+    // Optional `<T>` element type. We require it — there's no
+    // meaningful default for storage buffer element type (it would
+    // either be `vec4` (almost certainly wrong) or invalid in GLSL).
+    consume(TokenType::Less, "Expected '<' before storage buffer element type");
+    Token elementType = consumeName("Expected storage buffer element type name");
+    consume(TokenType::Greater, "Expected '>' after storage buffer element type");
+
+    match(TokenType::Semicolon);  // ';' is optional (Python-like)
+    return std::make_unique<StorageDecl>(access, name.lexeme, elementType.lexeme);
 }
 
 std::unique_ptr<Stmt> Parser::parseShaderParam(ShaderParam::Direction dir) {

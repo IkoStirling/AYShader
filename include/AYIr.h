@@ -209,7 +209,14 @@ public:
 //   of declarations per material rather than three sequential scans.
 class IRDeclaration : public IRNode {
 public:
-    enum class Kind : uint8_t { Uniform, Property, Texture };
+    // Storage buffer access. GLSL's `buffer Name { ... } Name;` block is
+    // used for both read and read-write forms — qualifiers live on the
+    // type, not the block. The access field is therefore preserved in
+    // IR mainly for the future HLSL emitter (Phase 5+), which maps
+    // Read → `StructuredBuffer<T>` and ReadWrite → `RWStructuredBuffer<T>`.
+    enum class StorageAccess : uint8_t { Read, ReadWrite };
+
+    enum class Kind : uint8_t { Uniform, Property, Texture, Storage };
 
     Kind kind;
     std::string name;
@@ -224,6 +231,10 @@ public:
     // === Texture ===
     SamplerKind samplerKind = SamplerKind::Sampler2D;  // only when kind == Texture
     int binding = -1;                                   // optional; backends may override
+
+    // === Storage (Phase 3.2 Block 3) ===
+    std::shared_ptr<Type> storageElementType;     // non-null only when kind == Storage
+    StorageAccess storageAccess = StorageAccess::Read;  // only when kind == Storage
 
     IRDeclaration() : kind(Kind::Uniform) {}
 };
@@ -272,13 +283,18 @@ public:
     std::unique_ptr<IRFragmentFunc> fragment;
 };
 
-// Compute: GPGPU kernel. Phase 3.2 HLSL backend will add storage buffer
-// declarations and thread_id/group_id builtins; the IR carries this shape
-// unchanged from the AST (Phase 2.5 ComputeDecl) so HLSL can implement
-// compute lowering without revisiting the AST/parser.
+// Compute: GPGPU kernel. Phase 3.2 Block 3 adds storage buffer
+// declarations alongside the existing body (thread_id / group_id /
+// dispatch_id are 0-arg builtin calls handled inline by the BGFX
+// backend — no IR change needed for them). The IR mirrors the
+// IRMaterialDecl shape: a pre-sorted `declarations` vector plus the
+// body. Phase 3.2 only stores Storage-kind declarations in
+// `declarations`; compute uniforms / properties land here too if they
+// ever become a thing, but Phase 3.2 doesn't expose them.
 class IRComputeDecl : public IRStmt {
 public:
     std::string name;
+    std::vector<std::unique_ptr<IRDeclaration>> declarations;  // Storage (Phase 3.2)
     std::vector<IRStmtPtr> body;
 };
 

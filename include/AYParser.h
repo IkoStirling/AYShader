@@ -38,6 +38,8 @@ private:
     std::unique_ptr<Stmt> parsePropertyDecl();
     std::unique_ptr<Stmt> parseUniformDecl();
     std::unique_ptr<Stmt> parseTextureDecl();
+    // Phase 3.2 Block 3: `storage <name> : structuredbuffer<T>` etc.
+    std::unique_ptr<Stmt> parseStorageDecl();
     std::unique_ptr<Stmt> parseVertexFunc();
     std::unique_ptr<Stmt> parseFragmentFunc();
     std::unique_ptr<Stmt> parseShaderParam(ShaderParam::Direction dir);

@@ -383,7 +383,25 @@ void emitExpr(std::ostringstream& out, const phoskia::ir::IRExpr& e,
         out << ")";
     } else if (auto ident = dynamic_cast<const phoskia::ir::IRIdentifierExpr*>(&e)) {
         // Apply rename map for in-param identifiers (Phoskia → bgfx).
-        out << ctx.lookup(ident->name);
+        // Compute thread-id builtins inline so Phoskia source can use
+        // either `thread_id.x` (bare identifier) or `thread_id().x`
+        // (call form) — both lower to the same GLSL builtin. The call
+        // form is handled in the IRCallExpr branch above; this branch
+        // covers the bare-identifier form (e.g. when a member access
+        // skips the call wrapper). Rename-context lookup first so user
+        // variables named `thread_id` would shadow the builtin, but
+        // that's the user's choice (no Phoskia keyword reserves the
+        // name).
+        const std::string& lookupName = ctx.lookup(ident->name);
+        if (lookupName == "thread_id") {
+            out << "gl_GlobalInvocationID";
+        } else if (lookupName == "group_id") {
+            out << "gl_WorkGroupID";
+        } else if (lookupName == "dispatch_id") {
+            out << "(gl_NumWorkGroups * gl_WorkGroupID)";
+        } else {
+            out << lookupName;
+        }
     } else if (auto lit = dynamic_cast<const phoskia::ir::IRLiteralExpr*>(&e)) {
         std::visit([&out](auto&& arg) {
             using T = std::decay_t<decltype(arg)>;
@@ -965,6 +983,42 @@ BGFXComputeFile AYBGFXConverter::convertComputeDecl(const phoskia::ir::IRCompute
     // compute needs a higher profile — see Test_ShaderCompile.cpp
     // where the target is bumped for compute.
     cs << "layout(local_size_x = 64) in;\n\n";
+
+    // Phase 3.2 Block 3: storage buffer declarations. Each Storage-kind
+    // IRDeclaration becomes a GLSL `buffer` block. Both Read and
+    // ReadWrite access forms share the same `buffer` syntax (GLSL
+    // doesn't distinguish them at the source level — qualifiers live
+    // on the type, not the block). The access field is preserved in IR
+    // for future HLSL emitter use (Phase 5+) where Read maps to
+    // `StructuredBuffer<T>` and ReadWrite maps to `RWStructuredBuffer<T>`.
+    //
+    // Element type: taken from `decl->storageElementType->toString()`,
+    // which produces the GLSL lexeme ("float" / "vec3" / "ivec4" / ...).
+    // When the IRGenerator couldn't resolve the element type (unknown
+    // lexeme), it falls back to vec4 — same fallback as property
+    // emission, kept consistent so storage reads / writes type-check.
+    for (const auto& decl : compute.declarations) {
+        if (!decl) continue;
+        if (decl->kind != phoskia::ir::IRDeclaration::Kind::Storage) {
+            // Only Storage declarations live in IRComputeDecl today.
+            // Forward-compatible: silently skip anything else (future
+            // uniform / property support will be handled when added).
+            continue;
+        }
+        std::string elementLex = "vec4";
+        if (decl->storageElementType) {
+            elementLex = decl->storageElementType->toString();
+        }
+        // GLSL storage buffer syntax:
+        //   buffer Name { Type data[]; } Name;
+        // Note: the trailing `Name;` (instance name) is required by
+        // GLSL — the block's declared name and the instance name can
+        // differ in principle but conventionally match.
+        cs << "buffer " << decl->name << " { "
+           << elementLex << " data[]; } "
+           << decl->name << ";\n";
+    }
+    if (!compute.declarations.empty()) cs << "\n";
 
     // Body — same emitStmt machinery as material bodies, but with
     // outputVar=nullptr (no implicit output slot binding; return is
