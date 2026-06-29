@@ -384,9 +384,41 @@ This eliminates the previous pattern where the BGFX converter re-ran `TypeInfere
 - No `storage` declarations inside `compute` (Phase 3.2 — comes with the HLSL backend that needs them)
 - No backend-registry improvements (single-backend dispatch works fine today)
 
-**Pipeline integration.** `Compiler::runPipeline` (in `src/AYPhoskia.cpp`) now inserts `IRGenerator::generate` between the parse / semantic phases and backend dispatch. The IR is always generated; backends consume `result.ir` instead of `result.ast`. The Phoskia **surface language is unchanged** — IR is internal.
+**Pipeline integration.** `Compiler::runPipeline` (in `src/AYPhoskia.cpp`) now inserts `IRGenerator::generate` between the parse / semantic phases and backend dispatch. The IR is always generated; backends consume the IR (the local `irProgram` in `runPipeline`) instead of `result.ast`. The Phoskia **surface language is unchanged** — IR is internal.
 
 **API break.** `IAYBackendConverter::convert` now takes `const phoskia::ir::IRProgram& program` instead of `const phoskia::Program& ast`. The only implementer today (`AYBGFXConverter`) was retargeted; the behavior is byte-for-byte identical to the AST path (golden + shaderc e2e tests pass).
+
+## 6.8 Compiler 返回值策略（SSO / NRVO 根因修复）
+
+`Compiler::compile` 与 `Compiler::compileToBackend` 通过 **out 参数** 写回结果，不按值返回：
+
+```cpp
+void compile(const std::string& source, CompileResult& out);
+void compileToBackend(const std::string& source, const std::string& backendName, CompileResult& out);
+```
+
+调用方模式：
+
+```cpp
+CompileResult result;
+compiler.compile(src, result);
+CHECK(result.success);
+```
+
+**为什么用 out 参数而不是 NRVO。** MSVC 长期存在 `std::string` SSO 与 NRVO 的交互 bug：当一个含 `std::string` 的 struct 跨过某个大小阈值，MSVC 会放弃具名返回值优化、按值拷贝 struct。拷贝过程中 SSO buffer 的 `_Myproxy` 指针被破坏，析构时 deref 到 `0xFFFFFFFFFFFFFFFF` 触发 AV。
+
+`CompileResult` 自带 `std::string output`（组装后的 `.sc` 文本），天然命中此 bug。Phase 3.1 添加 `std::shared_ptr<ir::IRProgram>` 字段后，struct 跨过阈值，SSO 损坏第一次复现。最初的临时绕过是把 `result.ir` 删掉、把 IR 留在 `runPipeline` 局部变量里。但 Phase 3.2（HLSL 后端）/ 3.3（WGSL 后端）还会加 `std::string hlslSource` / `std::vector<uint32_t> dxil` 之类的 per-target 字段——任何后续字段都可能是另一个指针、再次越线。
+
+out 参数形式完全消除了"按值返回"路径：struct 构造在调用方栈帧上，调用方有稳定的栈地址（不是 SSO proxy carrier），pipeline 一边执行一边按字段填入。没有 NRVO 可言，没有跨 struct 的 SSO string 拷贝。
+
+同样的先例在多年前 `Compiler::tokenize` / `Lexer::tokenize` 上就出现过——`std::vector<Token>` 也用 out 参数避免同一个 MSVC 问题（`include/AYPhoskia.h:82-83` 注释）。
+
+**Phase 3.2+ 加字段现在是安全的。** HLSL / WGSL 后端可以放心地往 `CompileResult` 加 `std::vector<uint32_t> dxil` / `std::string hlslSource` / `std::vector<uint8_t> spirv` 等，不会再踩到 SSO bug。代价仅是 `runPipeline` 入口处一次 `out = CompileResult{};` 复位，淹没在 lex/parse/IR-gen 后面。
+
+**已删除的死代码**：
+- `CompileResult::typeEnv`（从未写入、从未读取）
+- `Compiler::errors()` / `Compiler::hasErrors()`（零调用方，与 `out.errors` 重复）
+- 便捷自由函数 `inline compile(src)`（零调用方）
 
 ## 7. 改语法的"链路"
 
@@ -735,6 +767,7 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 
 ### Phase 3: IR 与多后端
 - [x] **IR 层定义 + AST→IR 降级 + BGFX 后端 retarget**（Phase 3.1）：IR 是 AST 的 1:1 镜像（`include/AYIr.h`），每个 IR 表达式携带 `resolvedType` 在降级时由 IRGenerator 一次性 resolve；backends 读 `expr.resolvedType` 不再跑 TypeInference。BGFX 已 retarget 完毕，golden + shaderc e2e 全部通过。详见 §6.7。
+- [x] **Compiler out-param 重构**（SSO NRVO 根因修复）：`Compiler::compile` / `compileToBackend` 改为 out 参数形式，根除 Phase 3.1 暴露的 MSVC SSO / NRVO 损坏（详见 §6.8）。删除死代码 `CompileResult::typeEnv` / `Compiler::errors()` / `hasErrors()` / 便捷自由函数；Phase 3.2+ 可以安全地往 `CompileResult` 加 per-target 字段。
 - [ ] IR 设计实现（SSA 形式）
 - [ ] HLSL 后端 (`AYHLSLConverter`) — 含 Compute / Ray shader 支持
 - [ ] WGSL 后端 (`AYWGLSConverter`)

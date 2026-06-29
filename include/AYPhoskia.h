@@ -29,20 +29,20 @@
 namespace ayt::shader::phoskia
 {
 
-// Compilation result
+// Compilation result.
+//
+// Populated by `Compiler::compile` / `Compiler::compileToBackend` via
+// an out-parameter; see design.md §6.8 for the rationale (out-param
+// form roots out an MSVC SSO / NRVO interaction when this struct
+// grew past a size threshold in Phase 3.1).
 struct CompileResult {
     bool success = false;
     std::string output;                  // Backend output (e.g. .sc text)
     std::vector<CompilerError> errors;
     std::vector<std::string> warnings;
-    std::shared_ptr<Program> ast;
-    std::shared_ptr<TypeEnvironment> typeEnv;
-    // Phase 3.1: lowered IR is generated internally and passed to the
-    // backend, but NOT exposed here. Exposing the IR via CompileResult
-    // (shared_ptr or unique_ptr) crossed a struct-size threshold that
-    // breaks MSVC's NRVO of `output`, surfacing as the SSO proxy
-    // corruption documented at design.md §6.5. Callers that need the
-    // IR can run IRGenerator::generate directly on `ast`.
+    std::shared_ptr<Program> ast;       // Pipeline keeps; future backends may want
+    // Phase 3.2: removed `typeEnv` (never written, never read).
+    // Phase 3.2: removed `ir` (was dropped in d6b7d2b to dodge SSO; still internal to runPipeline).
 };
 
 // Compilation options
@@ -70,10 +70,14 @@ public:
     explicit Compiler(const CompileOptions& options);
 
     // Compile Phoskia source to the default backend's output.
-    CompileResult compile(const std::string& source);
+    // Out-parameter form to avoid the MSVC SSO / NRVO corruption bug
+    // documented at design.md §6.8. Mirrors Compiler::tokenize().
+    void compile(const std::string& source, CompileResult& out);
 
     // Compile to a specific registered backend.
-    CompileResult compileToBackend(const std::string& source, const std::string& backendName);
+    void compileToBackend(const std::string& source,
+                          const std::string& backendName,
+                          CompileResult& out);
 
     // Register a backend converter factory (e.g. "bgfx" -> AYBGFXConverter).
     void registerBackend(const std::string& name, BackendFactory factory);
@@ -85,24 +89,16 @@ public:
     std::unique_ptr<Program> parse(const std::vector<Token>& tokens);
     std::shared_ptr<TypeEnvironment> analyzeSemantics(Program& program);
 
-    // Error reporting
-    const std::vector<CompilerError>& errors() const { return _errorReporter.errors(); }
-    bool hasErrors() const { return _errorReporter.hasErrors(); }
-
 private:
-    CompileResult runPipeline(const std::string& source, const std::string& backendName);
+    void runPipeline(const std::string& source,
+                     const std::string& backendName,
+                     CompileResult& out);
 
     CompileOptions _options;
     CompilerErrorReporter _errorReporter;
     std::shared_ptr<TypeEnvironment> _typeEnv;
     std::unordered_map<std::string, BackendFactory> _backends;
 };
-
-// Convenience function
-inline CompileResult compile(const std::string& source) {
-    Compiler compiler;
-    return compiler.compile(source);
-}
 
 // ----------------------------------------------------------------------------
 // IR (Intermediate Representation) — Phase 3.1

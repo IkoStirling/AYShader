@@ -26,12 +26,14 @@ void Compiler::registerBackend(const std::string& name, BackendFactory factory) 
     _backends[name] = std::move(factory);
 }
 
-CompileResult Compiler::compile(const std::string& source) {
-    return runPipeline(source, _options.targetBackend);
+void Compiler::compile(const std::string& source, CompileResult& out) {
+    runPipeline(source, _options.targetBackend, out);
 }
 
-CompileResult Compiler::compileToBackend(const std::string& source, const std::string& backendName) {
-    return runPipeline(source, backendName);
+void Compiler::compileToBackend(const std::string& source,
+                                 const std::string& backendName,
+                                 CompileResult& out) {
+    runPipeline(source, backendName, out);
 }
 
 void Compiler::tokenize(const std::string& source, std::vector<Token>& out) {
@@ -58,8 +60,10 @@ std::shared_ptr<TypeEnvironment> Compiler::analyzeSemantics(Program& program) {
     return _typeEnv;
 }
 
-CompileResult Compiler::runPipeline(const std::string& source, const std::string& backendName) {
-    CompileResult result;
+void Compiler::runPipeline(const std::string& source,
+                           const std::string& backendName,
+                           CompileResult& out) {
+    out = CompileResult{};
     _errorReporter.clear();
 
     // 1) Tokenize
@@ -68,8 +72,8 @@ CompileResult Compiler::runPipeline(const std::string& source, const std::string
         tokenize(source, tokens);
     } catch (const std::exception& e) {
         _errorReporter.error(ErrorCode::UnexpectedToken, e.what(), 0, 0);
-        result.errors = _errorReporter.errors();
-        return result;
+        out.errors = _errorReporter.errors();
+        return;
     }
 
     // 2) Parse
@@ -79,26 +83,22 @@ CompileResult Compiler::runPipeline(const std::string& source, const std::string
         ast = parser.parse();
     } catch (const std::exception& e) {
         _errorReporter.error(ErrorCode::InvalidExpression, e.what(), 0, 0);
-        result.errors = _errorReporter.errors();
-        return result;
+        out.errors = _errorReporter.errors();
+        return;
     }
     // Forward parser diagnostics into the compiler-wide reporter.
-    // DEBUG: retained — surfaces parser-error propagation for error-recovery
-    // tests in Phase 2 #1.
-    std::cerr << "[Compiler::runPipeline] parser.errors().size()="
-              << parser.errors().size() << "\n";
     for (const auto& e : parser.errors()) {
         _errorReporter.error(e.code, e.message, e.line, e.column);
     }
-    result.ast = std::move(ast);
-    if (hasErrors()) {
-        result.errors = _errorReporter.errors();
-        return result;
+    out.ast = std::move(ast);
+    if (_errorReporter.hasErrors()) {
+        out.errors = _errorReporter.errors();
+        return;
     }
 
     // 3) Optional semantic analysis
     if (_options.enableSemanticAnalysis) {
-        analyzeSemantics(*result.ast);
+        analyzeSemantics(*out.ast);
     }
 
     // 4) Type inference — Phase 2 Step 2: when enabled, walk every
@@ -118,7 +118,7 @@ CompileResult Compiler::runPipeline(const std::string& source, const std::string
         }
 
         int returnViolations = 0;
-        for (const auto& d : result.ast->declarations) {
+        for (const auto& d : out.ast->declarations) {
             auto* mat = dynamic_cast<const MaterialDecl*>(d.get());
             if (!mat) continue;
 
@@ -163,14 +163,14 @@ CompileResult Compiler::runPipeline(const std::string& source, const std::string
         if (returnViolations > 0) {
             // Don't fail the pipeline — the BGFX backend may still produce
             // a useful output. But the diagnostics are visible in
-            // result.errors() so callers can react.
+            // out.errors so callers can react.
             (void)returnViolations;
         }
     }
 
-    if (hasErrors() && !result.ast) {
-        result.errors = _errorReporter.errors();
-        return result;
+    if (_errorReporter.hasErrors() && !out.ast) {
+        out.errors = _errorReporter.errors();
+        return;
     }
 
     // 5) Backend conversion
@@ -178,8 +178,8 @@ CompileResult Compiler::runPipeline(const std::string& source, const std::string
     if (it == _backends.end()) {
         _errorReporter.error(ErrorCode::UnexpectedToken,
                              "Unknown backend: " + backendName, 0, 0);
-        result.errors = _errorReporter.errors();
-        return result;
+        out.errors = _errorReporter.errors();
+        return;
     }
 
     auto backend = it->second();
@@ -187,51 +187,31 @@ CompileResult Compiler::runPipeline(const std::string& source, const std::string
         _errorReporter.error(ErrorCode::InvalidOperation,
                              "Backend factory for '" + backendName +
                              "' returned null", 0, 0);
-        result.errors = _errorReporter.errors();
-        return result;
+        out.errors = _errorReporter.errors();
+        return;
     }
 
     // Phase 3.1: lower the AST to the Phoskia IR before backend
     // dispatch. Backends consume IR instead of AST. The IRGenerator
     // gracefully handles a missing TypeEnvironment by running
-    // TypeInference on demand for each expression. The IR is held in
-    // a local `irProgram` (not stored on `result`) — exposing it via
-    // CompileResult crosses a struct-size threshold that breaks MSVC's
-    // NRVO of `output` (see design.md §6.5).
+    // TypeInference on demand for each expression. The IR is held
+    // locally — it is not stored on `out`; callers that need it can
+    // call `ir::IRGenerator::generate(*out.ast)` directly.
     ir::IRProgram irProgram = [&] {
         ir::IRGenerator gen;
-        return gen.generate(*result.ast, _typeEnv);
+        return gen.generate(*out.ast, _typeEnv);
     }();
 
-    // DEBUG: retained — confirms backend dispatch happens on the success path
-    // for end-to-end compile tests in Phase 1.
-    std::cerr << "[Compiler::runPipeline] dispatching backend '"
-              << backendName << "'\n";
     auto backendResult = backend->convert(irProgram);
-    std::cerr << "[Compiler::runPipeline] backend returned success="
-              << (backendResult.success ? 1 : 0) << "\n";
-    result.output = std::move(backendResult.output);
+    out.output = std::move(backendResult.output);
     // Promote backend string errors to CompilerError entries.
     for (const auto& msg : backendResult.errors) {
-        result.errors.emplace_back(ErrorCode::InvalidOperation, msg, 0, 0);
+        out.errors.emplace_back(ErrorCode::InvalidOperation, msg, 0, 0);
     }
-    result.warnings.insert(result.warnings.end(),
-                           backendResult.warnings.begin(),
-                           backendResult.warnings.end());
-    result.success = backendResult.success;
-    // DEBUG: retained — the SSO-move proxy corruption diagnostic at this
-    // exact return site caught the original _Myproxy crash (see design.md
-    // §6.5). Do not remove until CompileResult is confirmed safe to return
-    // by value across many production runs.
-    std::cerr << "[runPipeline] about to return result, output.size="
-              << result.output.size() << ", success="
-              << (result.success ? 1 : 0) << "\n";
-    try {
-        return result;
-    } catch (...) {
-        std::cerr << "[runPipeline] exception during return result\n";
-        throw;
-    }
+    out.warnings.insert(out.warnings.end(),
+                        backendResult.warnings.begin(),
+                        backendResult.warnings.end());
+    out.success = backendResult.success;
 }
 
 } // namespace ayt::shader::phoskia

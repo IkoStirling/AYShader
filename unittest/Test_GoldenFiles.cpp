@@ -74,7 +74,8 @@ void writeFile(const std::string& path, const std::string& content) {
 // backend's concatenated output (varying.def.sc + vs_ + fs_ fences).
 std::string compileToOutput(const std::string& src) {
     Compiler compiler;
-    auto result = compiler.compile(src);
+    CompileResult result;
+    compiler.compile(src, result);
     if (!result.success) {
         std::fprintf(stderr, "[golden] compile failed: %s\n",
                      result.errors.empty() ? "?" : result.errors.front().message.c_str());

@@ -272,7 +272,8 @@ TEST_CASE(compiler_emits_three_pieces) {
             fragment { return vec4(1.0, 0.0, 0.0, 1.0) }
         }
     )";
-    auto result = compiler.compile(src);
+    auto result = ayt::shader::phoskia::CompileResult{};
+    compiler.compile(src, result);
     CHECK(result.success);
     // The generic .output is a concatenated stream of the three files
     // with fences; the structured form lives in the per-material uniforms/textures.

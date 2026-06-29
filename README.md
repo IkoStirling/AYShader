@@ -23,6 +23,7 @@ AYShader 是 AY Engine 的着色器子系统：接受 **Phoskia** DSL 源码，�
 | Phase 2 收尾 | Golden file 验证 + PBR 端到端 demo | ✅ |
 | Phase 2.6 | Compute declaration (`compute Foo { }`) — AST + Parser + BGFX stub | ✅ |
 | Phase 3.1 | Phoskia IR (`AYIr`) + AST→IR 降级 + BGFX retarget | ✅ |
+| Phase 3.2-pre | Compiler out-param 重构（SSO NRVO 根因修复） | ✅ |
 | Phase 3.2 | HLSL 后端（material + 完整 compute） | 🔜 待开始 |
 | Phase 3.3 | WGSL 后端（material + 完整 compute） | 🔜 待开始 |
 

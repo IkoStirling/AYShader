@@ -317,7 +317,8 @@ TEST_CASE(shaderc_compiles_minimal_unlit) {
         }
     )";
     Compiler compiler;
-    auto compileResult = compiler.compile(src);
+    CompileResult compileResult;
+    compiler.compile(src, compileResult);
     CHECK(compileResult.success);
 
     AYBGFXConverter conv;

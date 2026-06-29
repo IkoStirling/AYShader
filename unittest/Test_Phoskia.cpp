@@ -21,7 +21,8 @@ TEST_CASE(compile_minimal_unlit) {
             fragment { return color }
         }
     )";
-    auto result = compiler.compile(src);
+    auto result = CompileResult{};
+    compiler.compile(src, result);
     CHECK(result.success);
     CHECK(!result.output.empty());
     CHECK(result.errors.empty());
@@ -30,7 +31,8 @@ TEST_CASE(compile_minimal_unlit) {
 TEST_CASE(compile_empty_material) {
     // Must include both blocks now — the converter rejects otherwise.
     Compiler compiler;
-    auto result = compiler.compile("material X { vertex { } fragment { } }");
+    auto result = CompileResult{};
+    compiler.compile("material X { vertex { } fragment { } }", result);
     CHECK(result.success);
     CHECK(!result.output.empty());
 }
@@ -49,7 +51,8 @@ TEST_CASE(compile_multiple_materials) {
             fragment { return vec4(0.0, 1.0, 0.0, 1.0) }
         }
     )";
-    auto result = compiler.compile(src);
+    auto result = CompileResult{};
+    compiler.compile(src, result);
     CHECK(result.success);
     CHECK(result.errors.empty());
 }
@@ -58,17 +61,19 @@ TEST_CASE(compile_multiple_materials) {
 
 TEST_CASE(default_backend_is_registered) {
     Compiler compiler;
-    auto result = compiler.compile(
+    auto result = CompileResult{};
+    compiler.compile(
         "material X { vertex { return vec4(0.0) } "
-        "fragment { return vec4(1.0) } }");
+        "fragment { return vec4(1.0) } }", result);
     CHECK(result.success);
 }
 
 TEST_CASE(compile_to_unknown_backend_fails) {
     Compiler compiler;
-    auto result = compiler.compileToBackend(
+    auto result = CompileResult{};
+    compiler.compileToBackend(
         "material X { vertex { return vec4(0.0) } "
-        "fragment { return vec4(1.0) } }", "hlsl");
+        "fragment { return vec4(1.0) } }", "hlsl", result);
     CHECK(!result.success);
     CHECK(!result.errors.empty());
 }
@@ -78,8 +83,9 @@ TEST_CASE(register_custom_backend) {
     compiler.registerBackend("noop", []() {
         return std::unique_ptr<ayt::shader::IAYBackendConverter>(nullptr);
     });
-    auto result = compiler.compileToBackend(
-        "material X { vertex { } fragment { } }", "noop");
+    auto result = CompileResult{};
+    compiler.compileToBackend(
+        "material X { vertex { } fragment { } }", "noop", result);
     // nullptr backend fails inside convert(), which surfaces as an error.
     CHECK(!result.success);
 }
@@ -97,9 +103,10 @@ TEST_CASE(options_can_be_customized) {
     opts.enableTypeInference = true;
     opts.enableSemanticAnalysis = false;
     Compiler compiler(opts);
-    auto result = compiler.compile(
+    auto result = CompileResult{};
+    compiler.compile(
         "material X { vertex { return vec4(0.0) } "
-        "fragment { return vec4(1.0) } }");
+        "fragment { return vec4(1.0) } }", result);
     CHECK(!result.success);
 }
 
@@ -129,29 +136,33 @@ TEST_CASE(parse_phase) {
 TEST_CASE(lex_error_propagated) {
     Compiler compiler;
     // missing material name → parser reports a missing-identifier error.
-    auto result = compiler.compile("material { vertex { } fragment { } }");
+    auto result = CompileResult{};
+    compiler.compile("material { vertex { } fragment { } }", result);
     CHECK(!result.errors.empty());
 }
 
 TEST_CASE(parse_error_propagated) {
     Compiler compiler;
-    auto result = compiler.compile(
+    auto result = CompileResult{};
+    compiler.compile(
         "material X { vertex { return vec4(0.0); "
-        "fragment { return vec4(1.0) }");  // missing '}'
+        "fragment { return vec4(1.0) }", result);  // missing '}'
     CHECK(!result.errors.empty());
 }
 
 TEST_CASE(missing_vertex_block_causes_error) {
     Compiler compiler;
-    auto result = compiler.compile(
-        "material X { fragment { return vec4(1.0) } }");
+    auto result = CompileResult{};
+    compiler.compile(
+        "material X { fragment { return vec4(1.0) } }", result);
     CHECK(!result.success);
 }
 
 TEST_CASE(missing_fragment_block_causes_error) {
     Compiler compiler;
-    auto result = compiler.compile(
-        "material X { vertex { return vec4(0.0) } }");
+    auto result = CompileResult{};
+    compiler.compile(
+        "material X { vertex { return vec4(0.0) } }", result);
     CHECK(!result.success);
 }
 
@@ -185,7 +196,8 @@ TEST_CASE(compile_pbr_like_material) {
             }
         }
     )";
-    auto result = compiler.compile(src);
+    auto result = CompileResult{};
+    compiler.compile(src, result);
     // Semantic analysis may flag incomplete uniform set; we accept that
     // and only assert the three-piece output is produced.
     CHECK(!result.output.empty());
@@ -206,7 +218,8 @@ TEST_CASE(compile_with_if_else) {
             fragment { return vec4(1.0) }
         }
     )";
-    auto result = compiler.compile(src);
+    auto result = CompileResult{};
+    compiler.compile(src, result);
     CHECK(!result.output.empty());
 }
 
@@ -223,7 +236,8 @@ TEST_CASE(compile_with_for_loop) {
             fragment { return vec4(1.0) }
         }
     )";
-    auto result = compiler.compile(src);
+    auto result = CompileResult{};
+    compiler.compile(src, result);
     CHECK(!result.output.empty());
 }
 
