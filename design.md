@@ -353,17 +353,84 @@ The body is the same statement syntax as a `vertex` / `fragment` block: `let` / 
 
 The Phase 2.5 implementation in `src/AYBGFXConverter.cpp:521` carried a placeholder error "BGFX .sc does not support compute" that was correct at the time of the original research but stale now. Phase 3.2 removes that error and adds the actual compute emission path (see §11 Phase 3.2 row).
 
-**Phase 3.2 additions** (currently scoped):
-- BGFX `.sc` compute emission — `convertComputeDecl` in `AYBGFXConverter`, emits a single compute `.sc` source with a `numthreads` directive (or bgfx's GLSL-profile equivalent).
-- `shaderc --type compute` e2e test — extend `Test_ShaderCompile.cpp` to compile a simple Phoskia compute into `.bin` and round-trip through `bgfx::createProgram(_csh)` / `dispatch`.
-- Storage buffer declarations — `storage T : structuredbuffer` (read) and `storage T : rwstructuredbuffer` (read-write) in Phoskia surface syntax, mapped to GLSL `buffer` blocks with the corresponding read/write qualifiers.
-- Thread-id / group-id / dispatch-id builtins — `thread_id` / `group_id` / `dispatch_id` expressions in the compute body, mapped to GLSL `gl_GlobalInvocationID` / `gl_WorkGroupID` / `gl_NumWorkGroups` (or the bgfx-profile equivalent).
+**Phase 3.2 — Compute 端到端落地 ✅** (2026-06-29):
 
-**Out of scope (deferred to Phase 5+)**:
+- BGFX `.sc` compute emission — `convertComputeDecl` in `AYBGFXConverter` emits a single compute `.sc` source (see §6.6.1 for the exact emit shape).
+- `shaderc --type compute` e2e test — `shaderc_compiles_compute_with_storage_buffer` in `Test_ShaderCompile.cpp` runs a storage-buffer + thread-id kernel through the full pipeline and asserts a non-empty `.bin` (which `bgfx::createProgram(_csh)` then accepts).
+- Storage buffer declarations — `storage NAME : structuredbuffer<T>` (read) and `storage NAME : rwstructuredbuffer<T>` (read-write) in Phoskia surface syntax, mapped to GLSL `buffer Name { T data[]; } Name;` blocks (see §6.6.2).
+- Thread-id builtins — `thread_id` / `group_id` / `dispatch_id` 0-arg calls return `vec3`, inlined to GLSL `gl_GlobalInvocationID` / `gl_WorkGroupID` / `(gl_NumWorkGroups * gl_WorkGroupID)` at emission time (see §6.6.3).
+
+**Phase 3.2 fixes bundled in**:
+
+- **MSVC SSO/NRVO bug, `BGFXConvertResult` flavour** — the same root cause as the Phase 3.2-pre `Compiler::compile` fix (see §6.8) showed up when `AYBGFXConverter::convertBGFX` returned `BGFXConvertResult` by value from a shaderc e2e test. The fix mirrors the Compiler pattern: added an out-param overload `void convertBGFX(const IRProgram&, BGFXConvertResult&)` and switched all test call sites. The return-by-value overload remains as a forwarder for callers that tolerate the risk.
+
+**Out of scope (deferred to Phase 3.3+ / Phase 5+ 按需)**:
+
 - HLSL emitter (`AYHLSLConverter`) — only justified if/when DXC-first quality is required or the project wants to drop shaderc.
 - WGSL emitter (`AYWGLSConverter`) — only justified if/when the project targets WebGPU and wants native WGSL (bgfx does not currently have a WebGPU backend; this would require a runtime swap to wgpu-native / Dawn).
 - HLSL `StructuredBuffer<T>` / `RWStructuredBuffer<T>` direct emission — comes with the HLSL emitter.
-- `[numthreads(...)]` attribute syntax — GLSL compute uses `layout(local_size_x=...) in;` which shaderc accepts; the explicit `[numthreads]` attribute is an HLSL-only concept.
+- `[numthreads(X, Y, Z)] compute Foo { ... }` attribute syntax — Phase 3.2 hard-codes `layout(local_size_x = 64) in;`. Per-decl numthreads is a Phase 3.3 surface-syntax extension.
+- `groupshared` shared storage — Phase 3.3+; requires `BGFX_SHADER_LANGUAGE_GLSL` macro path through bgfx's `bgfx_compute.sh` (`SHARED shared` / `groupshared`).
+- Custom struct types (`struct Particle { vec3 pos; vec3 vel; }`) as storage buffer element type — Phase 3.3; needs a parser-side `struct` decl + an IR `IRStructDecl` carrying field layout.
+- Strict `uvec3` typing for thread-id — Phase 3.3; requires adding `uvec3` to `PrimitiveType` + `BuiltinTypes` + `lexemeToType` and propagating through `inferIdentifierExpr` / `emitExpr`.
+- `uint` builtin type — Phase 3.3; same plumbing as `uvec3` (currently the storage buffer e2e uses `int` because the surrounding pipeline doesn't carry `uint` end-to-end).
+
+### 6.6.1 BGFX compute `.sc` emit shape (Phase 3.2)
+
+A Phoskia `compute Foo { ... }` declaration lowers to one `BGFXComputeFile { cs }` (single .sc source, no vs/fs/varyingdef split). The emitted source has the following shape:
+
+```
+$input                                          // empty (compute has no attributes)
+$output                                         // empty (compute has no varyings)
+
+#include "common.sh"
+
+layout(local_size_x = 64) in;                   // numthreads fixed at 64; Phase 3.3+
+
+buffer counters { int data[]; } counters;       // one per Storage-kind IRDeclaration
+                                                // (Phase 3.2 emits even Read-only storage
+                                                //  as `buffer`; the access field is
+                                                //  preserved in IR for future HLSL)
+
+void main()
+{
+    <body — IRComputeDecl::body verbatim>
+}
+```
+
+The `void main()` body uses the same `emitStmt` machinery as material bodies, with `outputVar = nullptr` (no implicit output slot binding; `return` is early-exit only). `IRVariantAttribute` is silently skipped — compute bodies don't currently support kernel-level variants.
+
+shaderc invocation: `shaderc -f cs_Foo.sc -o cs_Foo.bin --type compute --platform linux -p 430` (compute requires GLSL 4.30+; the material e2e tests use `-p 120`, which compute rejects).
+
+### 6.6.2 Storage buffer declaration syntax (Phase 3.2)
+
+```
+storage NAME : structuredbuffer<ELEM>      // read access
+storage NAME : rwstructuredbuffer<ELEM>    // read-write access
+```
+
+`ELEM` is a builtin scalar / vector lexeme: `float` / `int` / `vec2..4` / `ivec2..4` (`uint` is Phase 3.3 — see the out-of-scope list). Custom struct element types are Phase 3.3.
+
+Both forms lower to the same GLSL `buffer Name { ELEM data[]; } Name;` block — GLSL doesn't distinguish read-only storage buffers at the source level (qualifiers live on the type, not the block). The access field is preserved in `IRDeclaration::storageAccess` so a future HLSL emitter can map `Read` → `StructuredBuffer<T>` and `ReadWrite` → `RWStructuredBuffer<T>`.
+
+Element-type resolution: `IRGenerator::lowerDecl` calls `lexemeToType(st->elementType)` to carry the element type as a `Type` pointer (target-neutral). The BGFX converter emits `storageElementType->toString()` to get the GLSL lexeme; if `lexemeToType` returns `nullptr` (unrecognised lexeme), a warning is recorded and the emitter falls back to `vec4` — same fallback strategy as `PropertyDecl`.
+
+### 6.6.3 Thread-id / group-id / dispatch_id builtins (Phase 3.2)
+
+Three 0-arg builtin functions registered in `BuiltinFunctionRegistry::registerDefaults`, all returning `vec3`:
+
+| Phoskia | GLSL | Notes |
+|---|---|---|
+| `thread_id()` | `gl_GlobalInvocationID` (uvec3) | Per-thread global linear index. Phoskia treats it as `vec3` so `.x` / `.y` / `.z` swizzles resolve to `float` and chain naturally with vector math. Strict `uvec3` is Phase 3.3. |
+| `group_id()` | `gl_WorkGroupID` (uvec3) | Workgroup-space index. |
+| `dispatch_id()` | `(gl_NumWorkGroups * gl_WorkGroupID)` (uvec3) | Dispatch-space workgroup index — emitted with surrounding parens so a subsequent `.x` swizzle lands on the product, not just `gl_NumWorkGroups`. |
+
+Both call form (`thread_id()`) and bare-identifier form (`thread_id.x`) are accepted in Phoskia source. The bare-identifier form is the canonical one in the Phase 3.2 tests — `let idx = thread_id.x;`. Two pieces wire this end-to-end:
+
+1. `TypeInference::inferIdentifierExpr` recognises bare `thread_id` / `group_id` / `dispatch_id` as 0-arg builtins and returns the return type (`vec3`) directly, so subsequent member access resolves correctly instead of seeing a `FunctionType` wrapper.
+2. `AYBGFXConverter::emitExpr`'s `IRIdentifierExpr` branch inlines these three names to the corresponding GLSL builtin (rename-context-aware, so user variables named `thread_id` shadow the builtin).
+
+The call-form (`thread_id()`) works because `inferCallExpr` already does `getFunctionByArity("thread_id", 0)` lookup; the inline happens in the `IRCallExpr` branch of `emitExpr`.
 
 ## 6.7 Phoskia IR (Phase 3.1)
 
@@ -504,11 +571,15 @@ enum class BGFXShaderType {
 };
 ```
 
-**Compute shader 特殊处理**：BGFX 不通过 `.sc` 提供 compute 支持。Phase 2+ Compute shader 走独立路径：
-- 生成目标平台的 compute shader 源码（HLSL for DX11/DX12、WebGPU SPIR-V 等）
-- 或通过 `bgfx::create_compute_shader()` 直接加载平台特定二进制
-- shaderc 工具链需单独调用（`--type compute`）
-- **Phase 2.5**: 顶层 `compute Name { ... }` declaration 已加入 Phoskia 语法（见 §6.6 / §10 BNF），BGFX 后端在 `result.errors` 报告 "BGFX .sc does not support compute" non-fatal 错误。HLSL / WGSL 后端实现是 Phase 3。
+**Compute shader 处理**：BGFX `.sc` 通过 `shaderc --type compute` 直接支持 compute（Phase 3.2 ✅）。运行时消费 `.bin` 的入口：
+- `bgfx::createProgram(ShaderHandle _csh, bool _destroyShader = false)`（`bgfx.h:2704` 重载）— 创建 compute program
+- `bgfx::dispatch(ProgramHandle _handle, uint32_t _numGroupsX, uint32_t _numGroupsY, uint32_t _numGroupsZ)`（`bgfx.h:1651`）— 提交 dispatch
+- Storage buffer 绑定：`BGFX_BUFFER_COMPUTE_READ` / `BGFX_BUFFER_COMPUTE_READ_WRITE` flag（`bgfx.h:2257+`）
+- shaderc 调用约定：`shaderc -f cs_Foo.sc -o cs_Foo.bin --type compute --platform <plat> -p 430`（compute 要求 GLSL 4.30+，material 用的 -p 120 会被拒绝）
+
+`compute Name { ... }` 是顶层声明（与 `material` 平级），定义 GPGPU kernel。Body 语法同 material：let / return / if / for / expression statements。无 in/out 语义绑定、无 implicit output slot、`return <expr>` 是 early-exit（不绑到输出）。详见 §6.6 + §6.6.1 + §6.6.2 + §6.6.3。
+
+Phase 3.2 之前（Phase 2.5 时代）的 `BGFX .sc does not support compute` placeholder 错误已删除。HLSL / WGSL emitter 仍属 Phase 5+ 按需启动。
 
 **长期路线**：
 
@@ -516,7 +587,7 @@ enum class BGFXShaderType {
 |---|---|---|---|
 | Vertex | converter 隐式绑定 `return <expr>` → `gl_Position` | 完善 `gl_Position` 语义 | 多后端 |
 | Fragment | converter 隐式绑定 `return <expr>` → `gl_FragColor` | 完善 PBR/光照 | 多后端 |
-| Compute | BGFX 不支持 `.sc` | DX11/HLSL compute 生成 | SPIR-V / WGSL |
+| Compute | BGFX `.sc` via `shaderc --type compute` (Phase 3.2 ✅) | DX11/HLSL compute 生成 (Phase 5+ 按需) | SPIR-V / WGSL (Phase 5+ 按需) |
 | Ray | 不支持 | — | 独立架构 |
 
 ### 8.3 shaderc 集成方式（路线对比）
@@ -618,17 +689,32 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 <material_decl>     ::= "material" <identifier> "{" <declaration_list> "}"
 
 <compute_decl>      ::= "compute" <identifier> "{" <statement_list> "}"
+                      ; body 含 storage buffer 声明（Phase 3.2）：
+                      ;   storage NAME : structuredbuffer<T>
+                      ;   storage NAME : rwstructuredbuffer<T>
+                      ; 与 let / return / if / for / expression 自由混合。
 
 <declaration_list>   ::= <declaration>
                        | <declaration_list> <declaration>
 
 <declaration>       ::= <property_decl>
                       | <uniform_decl>
+                      | <storage_decl>          ; Phase 3.2 — 仅在 compute body 内有意义
                       | <texture_decl>
                       | <sampler_decl>
                       | <vertex_func>
                       | <fragment_func>
                       | <variant_attribute>
+
+<storage_decl>      ::= "storage" <identifier> ":" <storage_kind> "<" <type> ">" ";"
+                      ; <storage_kind> ::= "structuredbuffer" | "rwstructuredbuffer"
+                      ; <type> 见 <type> 规则。Phase 3.2 限制为 builtin
+                      ; scalar / vector（float / int / vec2..4 / ivec2..4），
+                      ; uint / 自定义 struct 留 Phase 3.3。
+                      ; Read 与 ReadWrite 在 GLSL 路径下 emit 形态相同
+                      ; (`buffer Name { T data[]; } Name;`)；access 字段
+                      ; 在 IR 上保留供未来 HLSL emitter 区分
+                      ; StructuredBuffer<T> vs RWStructuredBuffer<T>。
 
 <variant_attribute> ::= "[" "variant" <identifier> "]"
                       ; Phoskia 源码用纯 [variant ...] 形式（无 # 前缀），
@@ -710,6 +796,14 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
                       | <call_expr>
                       | <member_expr>
                       | "(" <expression> ")"
+                      | <thread_id_builtin>      ; Phase 3.2 — compute body only
+
+<thread_id_builtin> ::= "thread_id"               ; GLSL gl_GlobalInvocationID (uvec3, Phoskia vec3)
+                      | "group_id"                ; GLSL gl_WorkGroupID (uvec3, Phoskia vec3)
+                      | "dispatch_id"             ; GLSL gl_NumWorkGroups * gl_WorkGroupID
+                      ; 可作为 call form (thread_id()) 或 bare-identifier form
+                      ; (thread_id.x)。后者是 Phase 3.2 测试的规范形式：
+                      ; let idx = thread_id.x;
 
 <call_expr>         ::= <identifier> "(" <argument_list> ")"
 
@@ -776,7 +870,7 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 - [x] 内置函数库扩充（scalar/vector/纹理 Step 2，PBR Step 3 已完成：fresnelSchlick / fresnelSchlickRoughness / distributionGGX / geometrySchlickGGX / geometrySmith）
 - [x] Variant 宏在 BGFX 后端的 #ifdef 展开 (`[variant name]` → `#ifndef BGFX_VARIANT_<NAME_UPPER>` 包裹，默认 opt-in，详见 §6.3)
 - [x] 错误恢复与 panic-mode 验证（Step 4：`Parser::synchronize` 跳过到 statement boundary；`parseMaterialDecl` 内层循环也用 synchronize；EOF / 缺失闭合括号 / garbage token 都不再级联）
-- [x] 单元测试与 golden-file 验证（Test_GoldenFiles.cpp 5 个 fixture（unlit / pbr_minimal / pbr_with_emission / pbr_with_texture / empty），golden baseline 自动生成 + AY_SHADER_REGEN_GOLDEN env 强制重生成 + 失败时 byte 级 diff 上下文）
+- [x] 单元测试与 golden-file 验证（Test_GoldenFiles.cpp 6 个 fixture：5 个 material（unlit / pbr_minimal / pbr_with_emission / pbr_with_texture / empty）+ 1 个 compute_minimal (Phase 3.2)。golden baseline 自动生成 + AY_SHADER_REGEN_GOLDEN env 强制重生成 + 失败时 byte 级 diff 上下文）
 - [x] **类型名降级重构**（Step 5 完成：13 个 type keyword（Float/Vec2-4/Int/IVec2-4/Mat2-4/Quat/Bool）从 TokenType enum 删除，Lexer 关键字表清空对应 13 行，parsePrimary / parseShaderParam / consumeTypeName 的临时分支全部移除；新增 AYBuiltinTypes.h/.cpp 提供 string_view 查表 `isBuiltinType`；SemanticAnalyzer 在 analyzeUniformDecl 调用 isBuiltinType 校验非 builtin 名字并报 Go 风格错误"line N: 'hello' is not a builtin type (expected: ...)"）
 - [x] **Compute shader 后端** — Phase 2.5 closes the parser / AST half (`compute Name { <body> }` is a top-level declaration, parser builds a `ComputeDecl`, `IRGenerator` lowers to `IRComputeDecl`). BGFX `.sc` does support compute via shaderc `--type compute` + `bgfx::createProgram(_csh)`; the Phase 2.5 placeholder "BGFX .sc does not support compute" error in `AYBGFXConverter.cpp:521` is **stale** and will be replaced by the real emission path in Phase 3.2. See §6.6.
 - [x] **Shader type 动态输出变量**（`gl_Position` / `gl_FragColor`，已完成 `_shadingOutputVar`）
@@ -784,11 +878,20 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 ### Phase 3: IR 与多后端
 - [x] **IR 层定义 + AST→IR 降级 + BGFX 后端 retarget**（Phase 3.1）：IR 是 AST 的 1:1 镜像（`include/AYIr.h`），每个 IR 表达式携带 `resolvedType` 在降级时由 IRGenerator 一次性 resolve；backends 读 `expr.resolvedType` 不再跑 TypeInference。BGFX 已 retarget 完毕，golden + shaderc e2e 全部通过。详见 §6.7。
 - [x] **Compiler out-param 重构**（SSO NRVO 根因修复）：`Compiler::compile` / `compileToBackend` 改为 out 参数形式，根除 Phase 3.1 暴露的 MSVC SSO / NRVO 损坏（详见 §6.8）。删除死代码 `CompileResult::typeEnv` / `Compiler::errors()` / `hasErrors()` / 便捷自由函数；Phase 3.2+ 可以安全地往 `CompileResult` 加 per-target 字段。
-- [ ] **Compute 端到端落地**（Phase 3.2 — BGFX `.sc` compute 路径）：移除 `AYBGFXConverter.cpp:521` 的 placeholder 报错，实现 `convertComputeDecl` emit 真实的 compute `.sc` 源；补 `storage T : structuredbuffer` / `storage T : rwstructuredbuffer` 语法；补 `thread_id` / `group_id` / `dispatch_id` 内置；`shaderc --type compute` e2e 测试 + `bgfx::createProgram(_csh)` / `dispatch` 验证。详见 §6.6。
+- [x] **Compute 端到端落地**（Phase 3.2 — BGFX `.sc` compute 路径，2026-06-29 完成）：移除 `AYBGFXConverter.cpp:521` 的 placeholder 报错；实现 `convertComputeDecl` emit 真实的 compute `.sc` 源（见 §6.6.1）；补 `storage NAME : structuredbuffer<T>` / `storage NAME : rwstructuredbuffer<T>` 语法（见 §6.6.2）；补 `thread_id` / `group_id` / `dispatch_id` 0-arg 内置（见 §6.6.3）；`shaderc --type compute` e2e 测试 + golden fixture (`compute_minimal`)。总测试 624 → 690（+66）。
+
+  附带的根因修复：`AYBGFXConverter::convertBGFX` 的 return-by-value 触发 MSVC SSO/NRVO 损坏（同一类 bug，详见 §6.8），新增 out-param 重载 + 全测试切换。
+
 - [ ] IR 设计实现（SSA 形式）
+- [ ] **Phase 3.3 surface-syntax 补完**（compute 深化 + 自定义类型）：
+  - [ ] `[numthreads(X, Y, Z)] compute Foo { ... }` attribute — 当前 `numthreads` 硬编 64
+  - [ ] `uint` builtin 类型 — 补 `PrimitiveType::Uint` + `BuiltinTypes::UInt` + `lexemeToType`
+  - [ ] 严格 `uvec3` 类型 — 当前 thread_id 系列都是 vec3，`.x` 解析为 float；严格起来 `gl_GlobalInvocationID` 实际是 uvec3
+  - [ ] 自定义 `struct` 类型（`struct Particle { vec3 pos; vec3 vel; }`）— 让 storage buffer 元素类型支持 struct
+  - [ ] `groupshared` 共享存储（workgroup 内线程共享 local 内存）— 走 `bgfx_compute.sh` 的 `SHARED` / `groupshared` 路径
 - [ ] HLSL 后端 (`AYHLSLConverter`) — **Phase 5+ 按需**，当前不计划。仅在项目要求 DXC 一手质量或要摆脱 shaderc 时再做。
 - [ ] WGSL 后端 (`AYWGLSConverter`) — **Phase 5+ 按需**，当前不计划。仅在项目目标 WebGPU 且要原生 WGSL 时再做（bgfx 当前没有 WebGPU 后端，需要换 runtime 到 wgpu-native / Dawn）。
-- [ ] 跨后端优化（dead code、constant folding）
+- [ ] 跨后端优化（dead code、constant folding）— 在 SSA IR 上做
 - [ ] **Ray shader 架构**（独立于 compute 的路径）
 
 ### Phase 4: ShaderGraph 与工具链

@@ -24,9 +24,10 @@ AYShader 是 AY Engine 的着色器子系统：接受 **Phoskia** DSL 源码，�
 | Phase 2.6 | Compute declaration (`compute Foo { }`) — AST + Parser + BGFX stub | ✅ |
 | Phase 3.1 | Phoskia IR (`AYIr`) + AST→IR 降级 + BGFX retarget | ✅ |
 | Phase 3.2-pre | Compiler out-param 重构（SSO NRVO 根因修复） | ✅ |
-| Phase 3.2 | Compute 端到端落地（BGFX `.sc` compute emit + storage buffer + thread-id） | 🔜 待开始 |
-| Phase 3.3 | HLSL 后端（按需 — DXC 一手质量 / 减体积） | 🅿 暂缓 |
-| Phase 3.4 | WGSL 后端（按需 — WebGPU 目标） | 🅿 暂缓 |
+| Phase 3.2 | Compute 端到端落地（BGFX `.sc` compute emit + storage buffer + thread-id） | ✅ |
+| Phase 3.3 | `[numthreads]` attribute + `uint` builtin + 自定义 `struct` + `uvec3` strict + `groupshared` | 🔜 按需 |
+| Phase 5+ | HLSL 后端（按需 — DXC 一手质量 / 减体积） | 🅿 暂缓 |
+| Phase 5+ | WGSL 后端（按需 — WebGPU 目标） | 🅿 暂缓 |
 
 ---
 
@@ -43,7 +44,7 @@ cmake --build <build-dir>
 AY_SHADER_REGEN_GOLDEN=1 <build-dir>/AYShader_Test.exe
 ```
 
-最后一次完整跑：**624 / 624 PASS**（截至 Phase 3.1 commit）。
+最后一次完整跑：**690 / 690 PASS**（截至 Phase 3.2 commit）。
 
 ### 测试套件
 
@@ -53,7 +54,7 @@ AY_SHADER_REGEN_GOLDEN=1 <build-dir>/AYShader_Test.exe
 | `Test_Parser.cpp` | material/property/uniform/texture 声明、shader block、expression |
 | `Test_Phoskia.cpp` | 端到端 `Compiler::compile` 通过 |
 | `Test_BGFXConverter.cpp` | BGFX 后端输出字符串、three-piece、varying.def.sc |
-| `Test_ShaderCompile.cpp` | 端到端 **shaderc** 编译 vs/fs 到 `.bin`，含完整 PBR demo |
+| `Test_ShaderCompile.cpp` | 端到端 **shaderc** 编译 vs/fs/cs 到 `.bin`（Phase 3.2 含 compute 端到端），含完整 PBR demo |
 | `Test_TypeInference.cpp` | 字面量 / 二元 / swizzle / 索引 / builtin / constructor / unify |
 | `Test_SemanticAnalyzer.cpp` | ShaderParam 注册、property 推断、严格 vec4 / bool 检查 |
 | `Test_ParserRecovery.cpp` | panic-mode：synchronize() 跳过到 statement boundary |
@@ -74,6 +75,7 @@ AY_SHADER_REGEN_GOLDEN=1 <build-dir>/AYShader_Test.exe
 | `pbr_with_texture` | texture2d + sample + swizzle |
 | `pbr_full` | 完整 PBR 演示：2 个 texture、2 个 property、5 个 PBR 内置、clearcoat、IBL diffuse、emission variant |
 | `empty` | 空 vertex/fragment body，fence-only 输出 |
+| `compute_minimal` | Phase 3.2 compute：storage buffer + thread_id + `counters[idx] = counters[idx] + 1`（GPGPU kernel smoke test） |
 
 ---
 
@@ -110,18 +112,30 @@ material PBR {
 
 → 编译为 BGFX 三段输出（`vs_PBR.sc` + `fs_PBR.sc` + `varying.def.sc`），再交给 `shaderc.exe` 编译为平台二进制。
 
-**Compute declaration (Phase 2.6 stub):**
+**Compute declaration (Phase 3.2 ✅):**
 
 ```phoskia
-material PBR { vertex { } fragment { } }   // 现有 material 不变
+material PBR { vertex { } fragment { } }   // existing material, unchanged
 
-compute ParticleUpdate {                   // 顶层 compute，GPGPU kernel
-    let idx = 0
-    return idx
+compute Increment {                        // 顶层 compute，GPGPU kernel
+    storage counters : rwstructuredbuffer<int>
+    let idx = thread_id.x                   // gl_GlobalInvocationID.x
+    counters[idx] = counters[idx] + 1
 }
 ```
 
-`compute Name { <body> }` 是与 `material` 平级的顶层声明，定义 GPGPU kernel（粒子模拟、图像处理、GPU 剔除等）。Phase 2.5 完成了语法 + AST + IR 降级。**BGFX `.sc` 是 compute 的目标后端**（`shaderc --type compute` 直接支持；`bgfx::createProgram(ShaderHandle _csh)` 重载 + `bgfx::dispatch(_handle, ...)` 走整 dispatch）—— 之前文档里"BGFX .sc 不支持 compute"的描述是 Phase 2.5 时代的过时结论。Phase 3.2 在 `AYBGFXConverter` 里实现 `convertComputeDecl` 把 compute 真正落到 `.sc` 二进制，补 `storage T : structuredbuffer` 存储缓冲语法与 `thread_id` / `group_id` / `dispatch_id` 内置函数。
+`compute Name { <body> }` 是与 `material` 平级的顶层声明，定义 GPGPU kernel（粒子模拟、图像处理、GPU 剔除、lightmap 烘焙等）。
+
+**BGFX `.sc` 是 compute 的目标后端**（`shaderc --type compute` 直接支持；`bgfx::createProgram(ShaderHandle _csh)` 重载 + `bgfx::dispatch(_handle, ...)` 走整 dispatch）。Phase 3.2 实现的 compute 端到端能力：
+
+- **`convertComputeDecl`** — Phoskia compute → BGFX `.sc`（`layout(local_size_x = 64) in;` + `void main() { <body> }`）
+- **`storage NAME : structuredbuffer<T>` / `rwstructuredbuffer<T>`** — GPGPU 存储缓冲声明；GLSL 路径 emit 为 `buffer Name { T data[]; } Name;`（read / read-write 在 GLSL 路径下形态相同，access 字段在 IR 保留供未来 HLSL emitter 区分 `StructuredBuffer<T>` vs `RWStructuredBuffer<T>`）
+- **`thread_id` / `group_id` / `dispatch_id`** — 0-arg 内置，返回 `vec3`；分别映射为 `gl_GlobalInvocationID` / `gl_WorkGroupID` / `(gl_NumWorkGroups * gl_WorkGroupID)`
+- **`shaderc --type compute` e2e** — `Test_ShaderCompile.cpp::shaderc_compiles_compute_with_storage_buffer` 跑通整条 Phoskia → BGFX `.sc` → shaderc `.bin` 链路，断言 `.bin` 非空（`bgfx::createProgram(_csh)` 拒收 0 字节 program）
+
+Phase 3.2 限制：`numthreads` 硬编 64（待 Phase 3.3 加 `[numthreads(X, Y, Z)]` attribute）、元素类型仅限 builtin scalar/vector（`uint` / 自定义 `struct` 待 Phase 3.3）、`thread_id` 系列以 `vec3` 表示（strict `uvec3` 待 Phase 3.3）。
+
+完整设计见 [`design.md`](design.md) §6.6 + §6.6.1 (emit shape) + §6.6.2 (storage) + §6.6.3 (thread-id)。
 
 ---
 
