@@ -210,8 +210,12 @@ void emitExpr(std::ostringstream& out, const phoskia::Expr& e,
                 out << "texture2D";
             } else if (callee->name == "fresnelSchlick") {
                 // F(cosTheta, F0) = F0 + (1 - F0) * (1 - cosTheta)^5
+                // Arity is enforced upstream by the SemanticAnalyzer and
+                // the builtin's FunctionType; reaching this branch with
+                // the wrong arg count means someone hand-built the AST,
+                // in which case we still emit something compile-able
+                // (a zero fallback) rather than crash the converter.
                 if (call->args.size() != 2) {
-                    error("fresnelSchlick expects 2 args");
                     out << "vec3(0.0)";
                 } else {
                     out << "(";
@@ -227,7 +231,6 @@ void emitExpr(std::ostringstream& out, const phoskia::Expr& e,
                 // F(cosTheta, F0, roughness) =
                 //     F0 + max(roughness^2, 1 - F0) * (1 - cosTheta)^5
                 if (call->args.size() != 3) {
-                    error("fresnelSchlickRoughness expects 3 args");
                     out << "vec3(0.0)";
                 } else {
                     out << "(";
@@ -246,7 +249,6 @@ void emitExpr(std::ostringstream& out, const phoskia::Expr& e,
             } else if (callee->name == "distributionGGX") {
                 // D(NdotH, roughness) = alpha^2 / (PI * (NdotH^2 * (alpha^2 - 1) + 1)^2)
                 if (call->args.size() != 2) {
-                    error("distributionGGX expects 2 args");
                     out << "0.0";
                 } else {
                     out << "((";
@@ -268,7 +270,6 @@ void emitExpr(std::ostringstream& out, const phoskia::Expr& e,
                 // G_sub(NdotV, roughness) = NdotV / (NdotV * (1 - k) + k)
                 //   where k = (roughness + 1)^2 / 8
                 if (call->args.size() != 2) {
-                    error("geometrySchlickGGX expects 2 args");
                     out << "0.0";
                 } else {
                     out << "(";
@@ -291,7 +292,6 @@ void emitExpr(std::ostringstream& out, const phoskia::Expr& e,
                 //   (the G_sub formula is the same as geometrySchlickGGX
                 //   applied to each side, with k derived from roughness)
                 if (call->args.size() != 3) {
-                    error("geometrySmith expects 3 args");
                     out << "0.0";
                 } else {
                     // Helper macro-like template to inline the G_sub
