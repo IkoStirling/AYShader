@@ -189,9 +189,17 @@ void emitStmt(std::ostringstream& out, const phoskia::Stmt& s,
 void emitExpr(std::ostringstream& out, const phoskia::Expr& e,
               const RenameContext& ctx) {
     if (auto bin = dynamic_cast<const phoskia::BinaryExpr*>(&e)) {
+        // Parenthesize the whole subexpression so operator precedence
+        // is preserved in the emitted GLSL. Without the parens, a
+        // chain like `a * (b - c) * d` (parsed as `((a * (b-c)) * d)`)
+        // would emit as `a * b - c * d` and silently change the math
+        // under GLSL's left-associative precedence rules. Wrapping
+        // every BinaryExpr in (...) is verbose but always correct.
+        out << "(";
         emitExpr(out, *bin->left, ctx);
         out << " " << bin->op.lexeme << " ";
         emitExpr(out, *bin->right, ctx);
+        out << ")";
     } else if (auto un = dynamic_cast<const phoskia::UnaryExpr*>(&e)) {
         out << un->op.lexeme;
         emitExpr(out, *un->operand, ctx);
@@ -218,52 +226,70 @@ void emitExpr(std::ostringstream& out, const phoskia::Expr& e,
                 if (call->args.size() != 2) {
                     out << "vec3(0.0)";
                 } else {
+                    // F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0)
+                    // Note: vec3(1.0) is a constructor call (its own
+                    // parens), so we open a paren before, let the
+                    // constructor add the inner one, then close both.
                     out << "(";
                     emitExpr(out, *call->args[1], ctx);  // F0
                     out << " + (vec3(1.0) - ";
                     emitExpr(out, *call->args[1], ctx);
                     out << ") * pow(1.0 - ";
                     emitExpr(out, *call->args[0], ctx);  // cosTheta
-                    out << ", vec3(5.0)))";
+                    out << ", 5.0))";
                 }
                 return;
             } else if (callee->name == "fresnelSchlickRoughness") {
                 // F(cosTheta, F0, roughness) =
-                //     F0 + max(roughness^2, 1 - F0) * (1 - cosTheta)^5
+                //     F0 + (max(roughness^2, 1 - F0) - F0) * (1 - cosTheta)^5
+                // (glTF KHR_materials_clearcoat form). Both `roughness^2`
+                // and `1 - F0` are vec3; GLSL's `max` requires both
+                // operands to share a type, so we promote the scalar
+                // roughness^2 to vec3(roughness^2) before max.
                 if (call->args.size() != 3) {
                     out << "vec3(0.0)";
                 } else {
                     out << "(";
                     emitExpr(out, *call->args[1], ctx);  // F0
-                    out << " + max((";
+                    out << " + (max(vec3(";
                     emitExpr(out, *call->args[2], ctx);  // roughness
-                    out << ") * (";
+                    out << " * ";
                     emitExpr(out, *call->args[2], ctx);
                     out << "), vec3(1.0) - ";
                     emitExpr(out, *call->args[1], ctx);
+                    out << ") - ";
+                    emitExpr(out, *call->args[1], ctx);  // F0
                     out << ") * pow(1.0 - ";
                     emitExpr(out, *call->args[0], ctx);  // cosTheta
-                    out << ", vec3(5.0)))";
+                    out << ", 5.0))";
                 }
                 return;
             } else if (callee->name == "distributionGGX") {
                 // D(NdotH, roughness) = alpha^2 / (PI * (NdotH^2 * (alpha^2 - 1) + 1)^2)
+                // The exponent is the scalar 2 (squaring the inner
+                // expression); GLSL's pow(float, float) and
+                // pow(vec, float) both work, so a scalar `2.0` is
+                // shape-correct for both scalar and vector inputs.
                 if (call->args.size() != 2) {
                     out << "0.0";
                 } else {
-                    out << "((";
+                    // (roughness*roughness) / (3.14159265 * pow(NdotH*NdotH * (roughness*roughness - 1.0) + 1.0, 2.0))
+                    // Paren structure (one `( ... )` per manual scope):
+                    //   ( ... roughness*roughness / (3.14159265 * pow(... , 2.0)) )
+                    //       └ 1 outer wrap ─┘   └ denom (   )  └ pow (   )     └ (roughness^2 - 1) (  )
+                    out << "(";
                     emitExpr(out, *call->args[1], ctx);  // roughness
-                    out << ") * (";
+                    out << " * ";
                     emitExpr(out, *call->args[1], ctx);
-                    out << ") / (3.14159265 * pow((";
+                    out << " / (3.14159265 * pow(";
                     emitExpr(out, *call->args[0], ctx);  // NdotH
-                    out << ") * (";
+                    out << " * ";
                     emitExpr(out, *call->args[0], ctx);
-                    out << ") * ((";
+                    out << " * (";
                     emitExpr(out, *call->args[1], ctx);
-                    out << ") * (";
+                    out << " * ";
                     emitExpr(out, *call->args[1], ctx);
-                    out << ") - 1.0) + 1.0), vec2(2.0))))";
+                    out << " - 1.0) + 1.0, 2.0)))";
                 }
                 return;
             } else if (callee->name == "geometrySchlickGGX") {
@@ -272,19 +298,23 @@ void emitExpr(std::ostringstream& out, const phoskia::Expr& e,
                 if (call->args.size() != 2) {
                     out << "0.0";
                 } else {
+                    // NdotV / (NdotV * (1.0 - (roughness+1)^2 / 8) + (roughness+1)^2 / 8)
+                    auto emitK = [&]() {
+                        out << "((";
+                        emitExpr(out, *call->args[1], ctx);  // roughness
+                        out << " + 1.0) * (";
+                        emitExpr(out, *call->args[1], ctx);
+                        out << " + 1.0)) / 8.0";
+                    };
                     out << "(";
                     emitExpr(out, *call->args[0], ctx);  // NdotV
-                    out << " / ((";
+                    out << " / (";
                     emitExpr(out, *call->args[0], ctx);
-                    out << ") * (1.0 - (((";
-                    emitExpr(out, *call->args[1], ctx);  // roughness
-                    out << ") + 1.0) * ((";
-                    emitExpr(out, *call->args[1], ctx);
-                    out << ") + 1.0)) / 8.0) + (((";
-                    emitExpr(out, *call->args[1], ctx);
-                    out << ") + 1.0) * ((";
-                    emitExpr(out, *call->args[1], ctx);
-                    out << ") + 1.0)) / 8.0)))";
+                    out << " * (1.0 - ";
+                    emitK();
+                    out << ") + ";
+                    emitK();
+                    out << "))";
                 }
                 return;
             } else if (callee->name == "geometrySmith") {
@@ -294,27 +324,31 @@ void emitExpr(std::ostringstream& out, const phoskia::Expr& e,
                 if (call->args.size() != 3) {
                     out << "0.0";
                 } else {
-                    // Helper macro-like template to inline the G_sub
-                    // formula on a single Ndot side. We emit two
-                    // G_sub terms multiplied together.
+                    // (NdotV / (NdotV*(1.0 - k) + k)) * (NdotL / (NdotL*(1.0 - k) + k))
+                    //   where k = (roughness+1)^2 / 8
+                    auto emitK = [&]() {
+                        out << "((";
+                        emitExpr(out, *call->args[2], ctx);
+                        out << " + 1.0) * (";
+                        emitExpr(out, *call->args[2], ctx);
+                        out << " + 1.0)) / 8.0";
+                    };
                     auto emitGSub = [&](const phoskia::Expr& ndot) {
                         out << "(";
                         emitExpr(out, ndot, ctx);
-                        out << " / ((";
+                        out << " / (";
                         emitExpr(out, ndot, ctx);
-                        out << ") * (1.0 - (((";
-                        emitExpr(out, *call->args[2], ctx);
-                        out << ") + 1.0) * ((";
-                        emitExpr(out, *call->args[2], ctx);
-                        out << ") + 1.0)) / 8.0) + (((";
-                        emitExpr(out, *call->args[2], ctx);
-                        out << ") + 1.0) * ((";
-                        emitExpr(out, *call->args[2], ctx);
-                        out << ") + 1.0)) / 8.0)))";
+                        out << " * (1.0 - ";
+                        emitK();
+                        out << ") + ";
+                        emitK();
+                        out << "))";
                     };
+                    out << "(";
                     emitGSub(*call->args[0]);  // NdotV
                     out << " * ";
                     emitGSub(*call->args[1]);  // NdotL
+                    out << ")";
                 }
                 return;
             } else {
@@ -422,15 +456,42 @@ static std::string variantMacroName(const std::string& name) {
     return out;
 }
 
+// Infer the GLSL type string of a property initializer. Returns "vec4"
+// when inference can't recover a concrete type (the historical
+// Phase 1 default — chosen because every PBR demo so far used vec4
+// properties; tests that need a non-vec4 property now drive this
+// from the initializer shape).
+//
+// Run the type-inference engine on the initializer to recover the
+// right type. shaderc (GLSL 1.20 in particular) rejects uniforms
+// whose declared type doesn't match the initializer type with
+// `initializer of type T cannot be assigned to variable of type U`,
+// so this must match exactly.
+std::string inferPropertyGLSLType(const phoskia::PropertyDecl& prop) {
+    std::string glslType = "vec4";
+    if (prop.initializer) {
+        phoskia::TypeEnvironment env;  // empty: properties don't see body lets
+        phoskia::TypeInference inference(env);
+        auto inferred = inference.infer(*prop.initializer);
+        std::shared_ptr<phoskia::Type> concrete = inferred;
+        while (auto tv = std::dynamic_pointer_cast<phoskia::TypeVar>(concrete)) {
+            if (tv->hasSolution()) concrete = tv->getSolution();
+            else break;
+        }
+        if (auto vec = std::dynamic_pointer_cast<phoskia::VectorType>(concrete)) {
+            glslType = vec->toString();
+        } else if (auto mat = std::dynamic_pointer_cast<phoskia::MatrixType>(concrete)) {
+            glslType = mat->toString();
+        } else if (auto p = std::dynamic_pointer_cast<phoskia::PrimitiveType_>(concrete)) {
+            glslType = p->toString();
+        }
+    }
+    return glslType;
+}
+
 void emitPropertyUniform(std::ostream& out, const phoskia::PropertyDecl& prop) {
-    // Properties default to vec4 — the converter emits the literal
-    // initializer via the generic emitter, preserving the user's shape
-    // (e.g. `vec4(1.0, 0.5, 0.25, 1.0)` for a constructor). The result
-    // is a GLSL-constructible uniform initializer that compiles under
-    // GLSL 1.20, ESSL, HLSL, Metal, and SPIR-V alike. The previous
-    // "flatten vec4(...) → 1.0, 0.5, 0.25, 1.0" form was a Phase 1
-    // mis-fix that only GLSL 1.20 accepts; removed.
-    out << "uniform vec4 " << prop.name << " = ";
+    std::string glslType = inferPropertyGLSLType(prop);
+    out << "uniform " << glslType << " " << prop.name << " = ";
     if (prop.initializer) {
         std::ostringstream tmp;
         RenameContext empty;  // properties don't reference in/out params
@@ -558,14 +619,23 @@ BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::MaterialDecl& ma
             std::ostringstream tmp;
             emitPropertyUniform(tmp, *p);
             _propertyUniforms += tmp.str();
-            BGFXUniform bu; bu.name = p->name; bu.type = "vec4";
+            // The uniform type matches the GLSL type we emit — driven
+            // by the initializer's inferred type so e.g. `property
+            // emission = vec3(0.0)` becomes `uniform vec3 emission`.
+            std::string glslType = inferPropertyGLSLType(*p);
+            BGFXUniform bu; bu.name = p->name; bu.type = glslType;
             _uniforms.push_back(std::move(bu));
-            // Property types are recorded as vec4 in the converter
-            // (the property's initializer must resolve to vec4 per
-            // current design). Future revisions can map based on the
-            // initializer's inferred type.
-            vsEnv.addVariable(p->name, phoskia::BuiltinTypes::Vec4());
-            fsEnv.addVariable(p->name, phoskia::BuiltinTypes::Vec4());
+            // Register in both per-block type envs so the let-stmt
+            // type inference in either block resolves references to
+            // this property to the right GLSL type.
+            std::shared_ptr<phoskia::Type> ptype;
+            if      (glslType == "vec2") ptype = phoskia::BuiltinTypes::Vec2();
+            else if (glslType == "vec3") ptype = phoskia::BuiltinTypes::Vec3();
+            else if (glslType == "vec4") ptype = phoskia::BuiltinTypes::Vec4();
+            if (ptype) {
+                vsEnv.addVariable(p->name, ptype);
+                fsEnv.addVariable(p->name, ptype);
+            }
         } else if (auto v = dynamic_cast<const phoskia::VertexFunc*>(d.get())) {
             vf = v;
         } else if (auto f = dynamic_cast<const phoskia::FragmentFunc*>(d.get())) {
@@ -791,7 +861,7 @@ void AYBGFXConverter::generateProperty(const phoskia::PropertyDecl& prop) {
     std::ostringstream tmp;
     emitPropertyUniform(tmp, prop);
     _propertyUniforms += tmp.str();
-    BGFXUniform bu; bu.name = prop.name; bu.type = "vec4";
+    BGFXUniform bu; bu.name = prop.name; bu.type = inferPropertyGLSLType(prop);
     _uniforms.push_back(std::move(bu));
 }
 

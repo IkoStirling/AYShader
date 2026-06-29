@@ -10,7 +10,7 @@ $output
 #include "common.sh"
 
 uniform vec3 cameraPos;
-uniform vec4 emission = vec3(0.0);
+uniform vec3 emission = vec3(0.0);
 
 void main()
 {
@@ -23,7 +23,7 @@ $input v_normal
 #include "common.sh"
 
 uniform vec3 cameraPos;
-uniform vec4 emission = vec3(0.0);
+uniform vec3 emission = vec3(0.0);
 
 void main()
 {
@@ -32,7 +32,7 @@ void main()
 #ifndef BGFX_VARIANT_USE_EMISSION
     // variant: skipped unless --define BGFX_VARIANT_USE_EMISSION
 #else
-    result = result + emission;
+    (result = (result + emission));
     gl_FragColor = vec4(result, 1.0);
 #endif
 }

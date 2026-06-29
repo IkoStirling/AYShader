@@ -1,11 +1,3 @@
-// Comprehensive PBR demo: every Phase 2 feature exercised in one material.
-//  - Two texture samples (albedo + normal)
-//  - Two properties (emission + envColor for IBL diffuse)
-//  - Five PBR builtins (fresnelSchlick, fresnelSchlickRoughness,
-//    distributionGGX, geometrySchlickGGX, geometrySmith)
-//  - Cook-Torrance specular + clearcoat layer + IBL diffuse
-//  - [variant useEmission] opt-in code path
-//  - 5 inputs/outputs across position/normal/texcoord
 material PBR {
     texture2d albedoMap
     texture2d normalMap

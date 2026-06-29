@@ -32,6 +32,6 @@ void main()
     vec3 N = normalize(v_normal);
     vec3 L = normalize(cameraPos);
     float NdotL = max(dot(N, L), 0.0);
-    gl_FragColor = vec4(baseColor.rgb * NdotL, 1.0);
+    gl_FragColor = vec4((baseColor.rgb * NdotL), 1.0);
 }
 
