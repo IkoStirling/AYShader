@@ -379,4 +379,85 @@ TEST_CASE(variant_macro_name_uppercases_and_replaces_special_chars) {
     CHECK(files.fs.find("#ifndef BGFX_VARIANT_HDR2PASS") != std::string::npos);
 }
 
+// ===== Phase 2 closing: PBR builtin inlining =====
+//
+// The four PBR math functions (fresnelSchlick / fresnelSchlickRoughness /
+// distributionGGX / geometrySchlickGGX / geometrySmith) are registered
+// as builtins (Step 3) for type-checking, but bgfx's shaderc does not
+// know them. The BGFX converter inlines each call to the equivalent
+// plain GLSL math at emission time. These tests pin the inlining
+// shape so a refactor that subtly changes an emitted formula is
+// caught.
+
+TEST_CASE(pbr_fresnel_schlick_inlined_in_fs) {
+    // After inlining, fresnelSchlick(cosTheta, F0) must produce a
+    // GLSL expression matching F0 + (1 - F0) * pow(1 - cosTheta, 5),
+    // NOT a call to fresnelSchlick (which shaderc would reject).
+    const char* src = R"(
+        material X {
+            vertex { return vec4(0.0) }
+            fragment {
+                let c = 0.5
+                let f0 = vec3(0.04)
+                let F = fresnelSchlick(c, f0)
+                return vec4(F, 1.0)
+            }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    CHECK(files.fs.find("fresnelSchlick") == std::string::npos);
+    // pow(1.0 - 0.5, vec3(5.0)) inline expansion
+    CHECK(files.fs.find("pow(") != std::string::npos);
+}
+
+TEST_CASE(pbr_distribution_ggx_inlined_in_fs) {
+    const char* src = R"(
+        material X {
+            vertex { return vec4(0.0) }
+            fragment {
+                let NdotH = 0.9
+                let r = 0.3
+                let D = distributionGGX(NdotH, r)
+                return vec4(D, D, D, 1.0)
+            }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    CHECK(files.fs.find("distributionGGX") == std::string::npos);
+    CHECK(files.fs.find("3.14159265") != std::string::npos);
+}
+
+TEST_CASE(pbr_geometry_schlick_ggx_inlined_in_fs) {
+    const char* src = R"(
+        material X {
+            vertex { return vec4(0.0) }
+            fragment {
+                let NdotV = 0.8
+                let r = 0.5
+                let G = geometrySchlickGGX(NdotV, r)
+                return vec4(G, G, G, 1.0)
+            }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    CHECK(files.fs.find("geometrySchlickGGX") == std::string::npos);
+}
+
+TEST_CASE(pbr_geometry_smith_inlined_in_fs) {
+    const char* src = R"(
+        material X {
+            vertex { return vec4(0.0) }
+            fragment {
+                let NdotV = 0.7
+                let NdotL = 0.6
+                let r = 0.4
+                let G = geometrySmith(NdotV, NdotL, r)
+                return vec4(G, G, G, 1.0)
+            }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    CHECK(files.fs.find("geometrySmith") == std::string::npos);
+}
+
 TEST_SUITE_END

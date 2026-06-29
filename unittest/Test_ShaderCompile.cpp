@@ -478,14 +478,11 @@ TEST_CASE(shaderc_compiles_pbr_with_ggx_and_fresnel) {
     std::filesystem::create_directories(dir);
 
     // NOTE: this test exercises the FULL Phoskia -> bgfx -> shaderc
-    // pipeline including a non-trivial Cook-Torrance fragment body.
-    // The PBR math is written inline in Phoskia syntax using only
-    // builtins the BGFX converter emits verbatim to GLSL (normalize /
-    // dot / max / mix / sample). The standalone PBR functions
-    // (fresnelSchlick / distributionGGX / geometrySchlickGGX) are
-    // registered for type-checking (Step 3) but NOT yet inlined by
-    // the converter — that integration lands in a follow-up step.
-    // Once it does, this test will switch to the higher-level form.
+    // pipeline using the higher-level PBR builtin forms (fresnelSchlick /
+    // distributionGGX / geometrySchlickGGX). The converter inlines each
+    // call into the equivalent GLSL math expression at emission time
+    // (Phase 2 Step 3 + closing), so users can write idiomatic Phoskia
+    // without manually expanding the formulas.
     const char* src = R"(
         material PBR {
             texture2d albedoMap
@@ -511,17 +508,9 @@ TEST_CASE(shaderc_compiles_pbr_with_ggx_and_fresnel) {
                 let baseColor = sample(albedoMap, uvCoord)
                 let NdotV = max(dot(N, V), 0.0)
                 let F0 = mix(vec3(0.04), baseColor.rgb, metallic)
-                let oneMinusNdotV = 1.0 - NdotV
-                let pow5 = oneMinusNdotV * oneMinusNdotV * oneMinusNdotV * oneMinusNdotV * oneMinusNdotV
-                let F = F0 + (vec3(1.0) - F0) * pow5
-                let r2 = roughness * roughness
-                let a2 = r2 * r2
-                let NdotV2 = NdotV * NdotV
-                let denomD = NdotV2 * (a2 - 1.0) + 1.0
-                let D = a2 / (denomD * denomD)
-                let k = (roughness + 1.0) * (roughness + 1.0) / 8.0
-                let denomG = NdotV * (1.0 - k) + k
-                let G = NdotV / denomG
+                let F = fresnelSchlick(NdotV, F0)
+                let D = distributionGGX(NdotV, roughness)
+                let G = geometrySchlickGGX(NdotV, roughness)
                 let specular = D * G * F / max(4.0 * NdotV, 0.001)
                 let diffuse = baseColor.rgb * (vec3(1.0) - F) * (1.0 - metallic)
                 return vec4(diffuse + specular, 1.0)

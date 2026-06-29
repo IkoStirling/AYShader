@@ -197,9 +197,126 @@ void emitExpr(std::ostringstream& out, const phoskia::Expr& e,
         emitExpr(out, *un->operand, ctx);
     } else if (auto call = dynamic_cast<const phoskia::CallExpr*>(&e)) {
         // Builtin mapping: Phoskia's `sample(tex, uv)` → bgfx `texture2D(tex, uv)`.
+        // PBR math functions (fresnelSchlick / distributionGGX /
+        // geometrySchlickGGX / geometrySmith) registered as Phase 2
+        // Step 3 builtins are inlined to plain GLSL expressions here
+        // because bgfx's shaderc does not recognise the Phoskia
+        // names. The TypeInference engine knows about these
+        // signatures for type-checking; the converter handles
+        // emission. After inline, the result is the same GLSL a
+        // user would have written by hand from the math.
         if (auto callee = dynamic_cast<const phoskia::IdentifierExpr*>(call->callee.get())) {
             if (callee->name == "sample") {
                 out << "texture2D";
+            } else if (callee->name == "fresnelSchlick") {
+                // F(cosTheta, F0) = F0 + (1 - F0) * (1 - cosTheta)^5
+                if (call->args.size() != 2) {
+                    error("fresnelSchlick expects 2 args");
+                    out << "vec3(0.0)";
+                } else {
+                    out << "(";
+                    emitExpr(out, *call->args[1], ctx);  // F0
+                    out << " + (vec3(1.0) - ";
+                    emitExpr(out, *call->args[1], ctx);
+                    out << ") * pow(1.0 - ";
+                    emitExpr(out, *call->args[0], ctx);  // cosTheta
+                    out << ", vec3(5.0)))";
+                }
+                return;
+            } else if (callee->name == "fresnelSchlickRoughness") {
+                // F(cosTheta, F0, roughness) =
+                //     F0 + max(roughness^2, 1 - F0) * (1 - cosTheta)^5
+                if (call->args.size() != 3) {
+                    error("fresnelSchlickRoughness expects 3 args");
+                    out << "vec3(0.0)";
+                } else {
+                    out << "(";
+                    emitExpr(out, *call->args[1], ctx);  // F0
+                    out << " + max((";
+                    emitExpr(out, *call->args[2], ctx);  // roughness
+                    out << ") * (";
+                    emitExpr(out, *call->args[2], ctx);
+                    out << "), vec3(1.0) - ";
+                    emitExpr(out, *call->args[1], ctx);
+                    out << ") * pow(1.0 - ";
+                    emitExpr(out, *call->args[0], ctx);  // cosTheta
+                    out << ", vec3(5.0)))";
+                }
+                return;
+            } else if (callee->name == "distributionGGX") {
+                // D(NdotH, roughness) = alpha^2 / (PI * (NdotH^2 * (alpha^2 - 1) + 1)^2)
+                if (call->args.size() != 2) {
+                    error("distributionGGX expects 2 args");
+                    out << "0.0";
+                } else {
+                    out << "((";
+                    emitExpr(out, *call->args[1], ctx);  // roughness
+                    out << ") * (";
+                    emitExpr(out, *call->args[1], ctx);
+                    out << ") / (3.14159265 * pow((";
+                    emitExpr(out, *call->args[0], ctx);  // NdotH
+                    out << ") * (";
+                    emitExpr(out, *call->args[0], ctx);
+                    out << ") * ((";
+                    emitExpr(out, *call->args[1], ctx);
+                    out << ") * (";
+                    emitExpr(out, *call->args[1], ctx);
+                    out << ") - 1.0) + 1.0), vec2(2.0))))";
+                }
+                return;
+            } else if (callee->name == "geometrySchlickGGX") {
+                // G_sub(NdotV, roughness) = NdotV / (NdotV * (1 - k) + k)
+                //   where k = (roughness + 1)^2 / 8
+                if (call->args.size() != 2) {
+                    error("geometrySchlickGGX expects 2 args");
+                    out << "0.0";
+                } else {
+                    out << "(";
+                    emitExpr(out, *call->args[0], ctx);  // NdotV
+                    out << " / ((";
+                    emitExpr(out, *call->args[0], ctx);
+                    out << ") * (1.0 - (((";
+                    emitExpr(out, *call->args[1], ctx);  // roughness
+                    out << ") + 1.0) * ((";
+                    emitExpr(out, *call->args[1], ctx);
+                    out << ") + 1.0)) / 8.0) + (((";
+                    emitExpr(out, *call->args[1], ctx);
+                    out << ") + 1.0) * ((";
+                    emitExpr(out, *call->args[1], ctx);
+                    out << ") + 1.0)) / 8.0)))";
+                }
+                return;
+            } else if (callee->name == "geometrySmith") {
+                // G(NdotV, NdotL, roughness) = G_sub(NdotV) * G_sub(NdotL)
+                //   (the G_sub formula is the same as geometrySchlickGGX
+                //   applied to each side, with k derived from roughness)
+                if (call->args.size() != 3) {
+                    error("geometrySmith expects 3 args");
+                    out << "0.0";
+                } else {
+                    // Helper macro-like template to inline the G_sub
+                    // formula on a single Ndot side. We emit two
+                    // G_sub terms multiplied together.
+                    auto emitGSub = [&](const phoskia::Expr& ndot) {
+                        out << "(";
+                        emitExpr(out, ndot, ctx);
+                        out << " / ((";
+                        emitExpr(out, ndot, ctx);
+                        out << ") * (1.0 - (((";
+                        emitExpr(out, *call->args[2], ctx);
+                        out << ") + 1.0) * ((";
+                        emitExpr(out, *call->args[2], ctx);
+                        out << ") + 1.0)) / 8.0) + (((";
+                        emitExpr(out, *call->args[2], ctx);
+                        out << ") + 1.0) * ((";
+                        emitExpr(out, *call->args[2], ctx);
+                        out << ") + 1.0)) / 8.0)))";
+                    };
+                    emitGSub(*call->args[0]);  // NdotV
+                    out << " * ";
+                    emitGSub(*call->args[1]);  // NdotL
+                }
+                return;
             } else {
                 out << callee->name;
             }
