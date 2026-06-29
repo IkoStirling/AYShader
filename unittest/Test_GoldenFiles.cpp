@@ -151,5 +151,11 @@ TEST_CASE(golden_pbr_with_emission)      { runOneFixture("pbr_with_emission"); }
 TEST_CASE(golden_pbr_with_texture)       { runOneFixture("pbr_with_texture"); }
 TEST_CASE(golden_pbr_full)               { runOneFixture("pbr_full"); }
 TEST_CASE(golden_empty)                  { runOneFixture("empty"); }
+// Phase 3.2 Block 4: compute fixture exercises Blocks 1-3 end-to-end
+// (convertComputeDecl skeleton + thread_id inline + storage buffer
+// emission). The .sc baseline is auto-generated on first run if
+// missing; regenerate with AY_SHADER_REGEN_GOLDEN=1 after an
+// intentional converter change.
+TEST_CASE(golden_compute_minimal)        { runOneFixture("compute_minimal"); }
 
 TEST_SUITE_END

@@ -1,0 +1,5 @@
+compute Increment {
+    storage counters : rwstructuredbuffer<int>
+    let idx = thread_id.x
+    counters[idx] = counters[idx] + 1
+}

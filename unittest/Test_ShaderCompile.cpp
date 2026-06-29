@@ -387,6 +387,88 @@ TEST_CASE(shaderc_compiles_minimal_unlit) {
     std::filesystem::remove_all(dir);
 }
 
+// ===== Phase 3.2 Block 4: Compute end-to-end shaderc compile =====
+//
+// shaderc `--type compute` runs the same source-path as `--type vertex /
+// fragment` but produces a compute program. The bgfx runtime consumes
+// the .bin via `bgfx::createProgram(ShaderHandle _csh)` (verified at
+// `bgfx.h:2704`).
+//
+// GLSL profile: compute requires GLSL 4.30 / OpenGL ES 3.10. The
+// material e2e tests use `--platform linux -p 120` (legacy GL profile);
+// that profile is rejected by compute shaders. We bump to `-p 430`
+// for the compute path. shaderc accepts the bump silently when the
+// emitted source uses 430-only constructs (`layout(local_size_x = N)
+// in;`).
+//
+// The body uses thread_id + storage buffer (Phase 3.2 Blocks 2/3) so
+// this test exercises the full pipeline end-to-end, not just the
+// convertComputeDecl skeleton (which is covered by Test_Phoskia + golden).
+
+TEST_CASE(shaderc_compiles_compute_with_storage_buffer) {
+    const std::string shaderc = shadercPath();
+    if (!fileExists(shaderc)) {
+        std::cerr << "[shaderc test] FATAL: shaderc not found at '"
+                  << shaderc << "'. Set " << kShadercEnvVar
+                  << " or re-run CMake with "
+                  << "-DAY_SHADER_SHADERC_PATH=/full/path/to/shaderc\n";
+        CHECK(false);
+        return;
+    }
+
+    const std::string dir = tempDir() + "/compute_storage";
+    std::filesystem::create_directories(dir);
+
+    // Minimal GPGPU kernel: increment a per-thread counter in a
+    // storage buffer. Demonstrates Phase 3.2 Block 2 (thread_id.x)
+    // + Block 3 (storage buffer access) end-to-end.
+    const char* src = R"(
+        compute Increment {
+            storage counters : rwstructuredbuffer<int>
+            let idx = thread_id.x
+            counters[idx] = counters[idx] + 1
+        }
+    )";
+    Compiler compiler;
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    auto ast = compiler.parse(tokens);
+    ir::IRGenerator gen;
+    AYBGFXConverter conv;
+    BGFXConvertResult bgfxRes;
+    conv.convertBGFX(gen.generate(*ast), bgfxRes);
+    CHECK(bgfxRes.success);
+    CHECK(bgfxRes.computeFiles.size() == 1);
+    const auto& cs = bgfxRes.computeFiles.front();
+    CHECK(!cs.cs.empty());
+
+    const std::string csPath = dir + "/cs_Increment.sc";
+    const std::string csBin  = dir + "/cs_Increment.bin";
+    std::ofstream(csPath) << cs.cs;
+
+    auto includes = includeDirs();
+    std::vector<std::string> csArgs = {
+        "-f", csPath, "-o", csBin,
+        "--type", "compute",
+        "--platform", "linux",
+        "-p", "430",
+    };
+    for (const auto& d : includes) { csArgs.push_back("-i"); csArgs.push_back(d); }
+    auto rcs = runShaderc(shaderc, csArgs);
+    if (rcs.exitCode != 0) {
+        std::cerr << "[shaderc test] compute compile failed:\n" << rcs.output << "\n";
+    }
+    CHECK(rcs.exitCode == 0);
+    if (rcs.exitCode == 0) {
+        // .bin must be non-empty — the bgfx runtime will reject zero-byte
+        // compute programs at `createProgram(_csh)` time.
+        CHECK(std::filesystem::file_size(csBin) > 0);
+    }
+
+    std::filesystem::remove_all(dir);
+}
+
 // ===== Material with texture sampling =====
 
 TEST_CASE(shaderc_compiles_material_with_texture) {
