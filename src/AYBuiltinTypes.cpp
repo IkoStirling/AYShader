@@ -15,6 +15,7 @@ const std::unordered_set<std::string_view>& builtinSet() {
         "float",
         "vec2",  "vec3",  "vec4",
         "int",
+        "uint",   // Phase 3.3 Block 1 — GLSL unsigned int (32-bit)
         "ivec2", "ivec3", "ivec4",
         "mat2",  "mat3",  "mat4",
         "quat",
@@ -35,7 +36,7 @@ const std::unordered_set<std::string_view>& AYBuiltinTypes::all() {
 std::string AYBuiltinTypes::expectedList() {
     // Stable ordering so test assertions on error strings are
     // deterministic across runs.
-    return "float, vec2, vec3, vec4, int, ivec2, ivec3, ivec4, "
+    return "float, vec2, vec3, vec4, int, uint, ivec2, ivec3, ivec4, "
            "mat2, mat3, mat4, quat, bool";
 }
 

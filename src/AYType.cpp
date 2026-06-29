@@ -10,6 +10,7 @@ std::string PrimitiveType_::toString() const {
     switch (_primitive) {
         case PrimitiveType::Bool: return "bool";
         case PrimitiveType::Int: return "int";
+        case PrimitiveType::Uint: return "uint";  // Phase 3.3 Block 1
         case PrimitiveType::Float: return "float";
         case PrimitiveType::String: return "string";
         default: return "unknown";
@@ -100,6 +101,11 @@ void TypeEnvironment::popScope() {
 namespace BuiltinTypes {
     std::shared_ptr<PrimitiveType_> Bool = std::make_shared<PrimitiveType_>(PrimitiveType::Bool);
     std::shared_ptr<PrimitiveType_> Int = std::make_shared<PrimitiveType_>(PrimitiveType::Int);
+    // Phase 3.3 Block 1: GLSL `uint` lexeme → PrimitiveType::Uint
+    // singleton. Used by storage buffer element types (uint counters)
+    // and any future Phase 3.3 strict-uvec3 plumbing (uvec3's element
+    // type is Uint). Vector forms (uvec2..4) are Phase 3.3-Block 3.
+    std::shared_ptr<PrimitiveType_> Uint = std::make_shared<PrimitiveType_>(PrimitiveType::Uint);
     std::shared_ptr<PrimitiveType_> Float = std::make_shared<PrimitiveType_>(PrimitiveType::Float);
     std::shared_ptr<PrimitiveType_> String = std::make_shared<PrimitiveType_>(PrimitiveType::String);
     std::shared_ptr<Type> Void = nullptr;  // Will be set below

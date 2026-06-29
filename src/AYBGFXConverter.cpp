@@ -90,6 +90,7 @@ std::shared_ptr<phoskia::Type> phoskiaGLSLTypeToPhoskiaType(const std::string& l
     using namespace phoskia;
     if (lex == "float")  return BuiltinTypes::Float;
     if (lex == "int")    return BuiltinTypes::Int;
+    if (lex == "uint")   return BuiltinTypes::Uint;  // Phase 3.3 Block 1
     if (lex == "bool")   return BuiltinTypes::Bool;
     if (lex == "vec2")   return BuiltinTypes::Vec2();
     if (lex == "vec3")   return BuiltinTypes::Vec3();

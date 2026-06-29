@@ -4,6 +4,7 @@
 // ============================================================
 
 #include "AYPhoskia.h"
+#include "AYBuiltinTypes.h"
 #include "AYTest.h"
 
 using namespace ayt::shader::phoskia;
@@ -386,6 +387,48 @@ TEST_CASE(compile_compute_with_structured_buffer_read) {
     CHECK(result.output.find("buffer particles") != std::string::npos);
     CHECK(result.output.find("vec3 data[]") != std::string::npos);
     CHECK(result.output.find("structuredbuffer") == std::string::npos);
+}
+
+// ===== Phase 3.3 Block 1: uint builtin type =====
+//
+// GLSL `uint` (unsigned 32-bit int) is now a first-class primitive type
+// alongside int / float / bool. Three integration points:
+//   - AYType: PrimitiveType::Uint + BuiltinTypes::Uint singleton
+//   - lexemeToType in src/AYIr.cpp + src/AYBGFXConverter.cpp: "uint"
+//     lexeme maps to BuiltinTypes::Uint
+//   - AYBuiltinFunctions::registerDefaults: uint(int) constructor
+//   - AYBuiltinTypes::isBuiltinType: "uint" accepted as a builtin type
+//
+// `uint(0)` is the canonical uint literal idiom (Phoskia parses integer
+// literals as int). A future Phase 3.3 may add `0u` literal syntax.
+
+TEST_CASE(compile_compute_with_uint_storage_buffer) {
+    Compiler compiler;
+    const char* src = R"(
+        compute UintCounter {
+            storage counters : rwstructuredbuffer<uint>
+            let idx = thread_id.x
+            counters[idx] = counters[idx] + uint(1)
+        }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    CHECK(result.output.find("buffer counters") != std::string::npos);
+    CHECK(result.output.find("uint data[]") != std::string::npos);
+    CHECK(result.output.find("} counters;") != std::string::npos);
+    CHECK(result.output.find("rwstructuredbuffer") == std::string::npos);
+}
+
+TEST_CASE(uint_is_builtin_type) {
+    // The semantic-analyzer-side type check (used by uniform decls and
+    // similar) must recognise "uint" as a builtin scalar. If it doesn't,
+    // `uniform uint x;` would error with "is not a builtin type". This
+    // guards the AYBuiltinTypes table registration.
+    CHECK(AYBuiltinTypes::isBuiltinType("uint"));
+    CHECK(AYBuiltinTypes::isBuiltinType("int"));
+    CHECK(AYBuiltinTypes::isBuiltinType("float"));
+    CHECK_FALSE(AYBuiltinTypes::isBuiltinType("foo"));
 }
 
 TEST_SUITE_END

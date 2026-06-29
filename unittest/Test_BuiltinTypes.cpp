@@ -93,12 +93,16 @@ TEST_CASE(string_view_overload_works) {
 
 TEST_CASE(all_returns_full_set) {
     const auto& names = AYBuiltinTypes::all();
-    CHECK(names.size() == 13);
+    // 14 entries as of Phase 3.3 Block 1: float, vec2, vec3, vec4, int,
+    // uint, ivec2, ivec3, ivec4, mat2, mat3, mat4, quat, bool.
+    CHECK(names.size() == 14);
     CHECK(names.count("float") == 1);
     CHECK(names.count("vec3") == 1);
     CHECK(names.count("mat4") == 1);
     CHECK(names.count("bool") == 1);
     CHECK(names.count("quat") == 1);
+    // Phase 3.3 Block 1
+    CHECK(names.count("uint") == 1);
 }
 
 TEST_CASE(expected_list_is_non_empty_and_mentions_common_types) {

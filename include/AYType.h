@@ -28,6 +28,7 @@ enum class TypeKind {
 enum class PrimitiveType {
     Bool,
     Int,
+    Uint,
     Float,
     String
 };
@@ -194,6 +195,7 @@ private:
 namespace BuiltinTypes {
     extern std::shared_ptr<PrimitiveType_> Bool;
     extern std::shared_ptr<PrimitiveType_> Int;
+    extern std::shared_ptr<PrimitiveType_> Uint;
     extern std::shared_ptr<PrimitiveType_> Float;
     extern std::shared_ptr<PrimitiveType_> String;
     extern std::shared_ptr<Type> Void;

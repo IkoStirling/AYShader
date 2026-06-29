@@ -77,6 +77,15 @@ void BuiltinFunctionRegistry::registerDefaults() {
     // TypeInference::inferConstructor in AYTypeInference.cpp.
     registerFunction("float", {F}, F, vec3Return, "Scalar float");
     registerFunction("int",   {I}, I, vec3Return, "Scalar int");
+    // Phase 3.3 Block 1: uint constructor. GLSL's `uint(int_expr)` is
+    // an explicit conversion (truncates negative values). We mirror
+    // that with a single-arg (int) -> uint signature so the call form
+    // `uint(0)` resolves correctly. The integer literal `0` infers as
+    // int (parser parses IntLiteral as `int`), and the constructor
+    // call converts it. A future Phase 3.3 strict-uvec3 extension may
+    // add a separate `0u` IntLiteral variant, but for now `uint(0)`
+    // is the canonical uint literal idiom.
+    registerFunction("uint",  {I}, BuiltinTypes::Uint, vec3Return, "Scalar uint");
     registerFunction("bool",  {B}, B, vec3Return, "Scalar bool");
     registerFunction("vec2",  {F, F}, V2, vec3Return, "vec2 from two floats");
     registerFunction("vec3",  {F, F, F}, V3, vec3Return, "vec3 from three floats");
