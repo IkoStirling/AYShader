@@ -20,6 +20,7 @@
 
 #include "AYAst.h"   // PhoskiaSemantic, Token reused for IRBinaryExpr.op etc.
 #include "AYType.h"
+#include <array>
 #include <memory>
 #include <vector>
 #include <string>
@@ -291,11 +292,19 @@ public:
 // body. Phase 3.2 only stores Storage-kind declarations in
 // `declarations`; compute uniforms / properties land here too if they
 // ever become a thing, but Phase 3.2 doesn't expose them.
+//
+// Phase 3.3 Block 2: optional `[numthreads(X, Y, Z)]` attribute.
+// `hasNumThreads` distinguishes "user wrote the attribute" from "user
+// didn't specify" (the latter falls back to the BGFX backend's
+// hardcoded 64 default). When false, numThreads is uninitialised —
+// check hasNumThreads before reading.
 class IRComputeDecl : public IRStmt {
 public:
     std::string name;
     std::vector<std::unique_ptr<IRDeclaration>> declarations;  // Storage (Phase 3.2)
     std::vector<IRStmtPtr> body;
+    bool hasNumThreads = false;
+    std::array<uint32_t, 3> numThreads{};
 };
 
 // (8) Top-level IR container.

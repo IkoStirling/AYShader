@@ -12,6 +12,7 @@
 //   6) out-of-line definitions of all accept() methods
 
 #include "AYToken.h"
+#include <array>
 #include <memory>
 #include <vector>
 #include <string>
@@ -305,6 +306,13 @@ public:
     void accept(AstVisitor& visitor) override;
     std::string name;
     std::vector<StmtPtr> body;
+    // Phase 3.3 Block 2: optional [numthreads(X, Y, Z)] attribute.
+    // hasNumThreads distinguishes "user wrote [numthreads(8, 8, 1)]"
+    // (true) from "user didn't specify" (false — BGFX backend falls
+    // back to its hardcoded 64 default). When false, numThreads is
+    // uninitialised / leftover; check hasNumThreads before reading.
+    bool hasNumThreads = false;
+    std::array<uint32_t, 3> numThreads{};
 };
 
 class VariantAttribute : public Stmt {

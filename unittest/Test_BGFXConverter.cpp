@@ -574,10 +574,13 @@ TEST_CASE(compute_declaration_produces_valid_bgfx_cs) {
     CHECK(cs.find("$input") != std::string::npos);
     CHECK(cs.find("$output") != std::string::npos);
     CHECK(cs.find("#include \"common.sh\"") != std::string::npos);
-    // Workgroup layout — Phase 3.2 fixed at 64, may become a per-decl
-    // attribute later. Pin the literal so a refactor that changes the
-    // default is caught (a real change needs an explicit test update).
-    CHECK(cs.find("layout(local_size_x = 64) in;") != std::string::npos);
+    // Workgroup layout — Phase 3.3 Block 2 default is (64, 1, 1) when
+    // no `[numthreads(...)]` attribute is present. Phase 3.3 also
+    // writes all three layout dimensions explicitly (GLSL would
+    // default y and z to 1 anyway). Pin the literal so a refactor that
+    // changes the default is caught (a real change needs an explicit
+    // test update).
+    CHECK(cs.find("layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;") != std::string::npos);
     // Body entry.
     CHECK(cs.find("void main()") != std::string::npos);
 }

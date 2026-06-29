@@ -4,6 +4,7 @@
 #include "AYToken.h"
 #include "AYAst.h"
 #include "AYCompilerError.h"
+#include <array>
 #include <memory>
 #include <vector>
 
@@ -34,7 +35,16 @@ private:
     std::unique_ptr<Expr> parseIndex();
 
     std::unique_ptr<Stmt> parseMaterialDecl();
-    std::unique_ptr<Stmt> parseComputeDecl();
+    // Phase 3.3 Block 2: the no-attribute parseComputeDecl() helper
+    // was retired in favour of parseComputeDeclWithAttributes() which
+    // consumes both shapes (with and without `[numthreads(...)]`).
+    std::unique_ptr<ComputeDecl> parseComputeDeclWithAttributes(
+        std::array<uint32_t, 3>& outNumThreads, bool& outHasNumThreads);
+    // Helper: skip the inner contents of an unknown bracketed
+    // attribute (used when parseComputeDeclWithAttributes encounters
+    // an attribute name it doesn't recognise). Consumes tokens up to
+    // (but not including) the closing ']'.
+    void skipBracketedAttributeBody();
     std::unique_ptr<Stmt> parsePropertyDecl();
     std::unique_ptr<Stmt> parseUniformDecl();
     std::unique_ptr<Stmt> parseTextureDecl();

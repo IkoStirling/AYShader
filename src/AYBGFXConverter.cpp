@@ -978,12 +978,28 @@ BGFXComputeFile AYBGFXConverter::convertComputeDecl(const phoskia::ir::IRCompute
        << "\n#include \"common.sh\"\n\n";
 
     // GLSL 4.30 / OpenGL ES 3.1 workgroup layout. bgfx's GLSL profile
-    // accepts the comma-less `layout(local_size_x = N) in;` form (Y
-    // and Z default to 1). shaderc validates this against the target
-    // profile; for the linux/GLSL 120 target used by the e2e tests,
-    // compute needs a higher profile — see Test_ShaderCompile.cpp
-    // where the target is bumped for compute.
-    cs << "layout(local_size_x = 64) in;\n\n";
+    // accepts the `layout(local_size_x = N) in;` form (Y and Z default
+    // to 1). shaderc validates this against the target profile; for
+    // the linux/GLSL 120 target used by the e2e tests, compute needs
+    // a higher profile — see Test_ShaderCompile.cpp where the target
+    // is bumped for compute.
+    //
+    // Phase 3.3 Block 2: the user-supplied `[numthreads(X, Y, Z)]`
+    // attribute (if present on the AST / IR node) takes priority. When
+    // absent we fall back to the historical 64 default — kept for
+    // backward compatibility with Phase 3.2 compute sources that don't
+    // declare a workgroup shape.
+    {
+        uint32_t nx = 64, ny = 1, nz = 1;
+        if (compute.hasNumThreads) {
+            nx = compute.numThreads[0];
+            ny = compute.numThreads[1];
+            nz = compute.numThreads[2];
+        }
+        cs << "layout(local_size_x = " << nx
+           << ", local_size_y = " << ny
+           << ", local_size_z = " << nz << ") in;\n\n";
+    }
 
     // Phase 3.2 Block 3: storage buffer declarations. Each Storage-kind
     // IRDeclaration becomes a GLSL `buffer` block. Both Read and

@@ -1,6 +1,7 @@
 // AYParser.cpp - Parser implementation
 
 #include "AYParser.h"
+#include <array>
 #include <iostream>
 
 namespace ayt::shader::phoskia
@@ -100,12 +101,44 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
     if (match(TokenType::Material)) {
         return parseMaterialDecl();
     }
+    // Phase 3.3 Block 2: dispatch to parseComputeDeclWithAttributes
+    // when the current token is `[` AND the bracket contents look like
+    // a compute attribute (`[numthreads(...)]`). A bare `[` could also
+    // be a `[variant name]` inside a material body — those go through
+    // the regular parseShaderBlockBody path, NOT this dispatch.
+    //
+    // To distinguish them without consuming: peek the next token. If
+    // it's the identifier "numthreads", it's a compute attribute; the
+    // material-body variant attribute uses the keyword `variant`.
+    // (See parseVariantAttribute.) The two are disjoint lexemes today.
+    if (check(TokenType::LeftBracket) && _current + 1 < _tokens.size() &&
+        _tokens[_current + 1].type == TokenType::Identifier &&
+        _tokens[_current + 1].lexeme == "numthreads") {
+        std::array<uint32_t, 3> numThreads{};
+        bool hasNumThreads = false;
+        auto decl = parseComputeDeclWithAttributes(numThreads, hasNumThreads);
+        if (decl) {
+            decl->hasNumThreads = hasNumThreads;
+            decl->numThreads = numThreads;
+            return decl;
+        }
+        // The attribute wasn't a recognised numthreads form (parser
+        // errors already reported). Return null so the outer loop
+        // synchronises.
+        return nullptr;
+    }
     if (match(TokenType::Compute)) {
-        // Top-level `compute Name { <body> }` — Phase 2.5 introduction.
-        // The BGFX backend stub reports "HLSL / WGSL required" so authors
-        // get a friendly diagnostic; the actual HLSL / WGSL compute
-        // backend is Phase 3.
-        return parseComputeDecl();
+        // No-attribute compute decl. parseComputeDeclWithAttributes
+        // still does the work; its `[...]` loop is a no-op when
+        // current token is an identifier (the name).
+        std::array<uint32_t, 3> numThreads{};
+        bool hasNumThreads = false;
+        auto decl = parseComputeDeclWithAttributes(numThreads, hasNumThreads);
+        if (decl) {
+            decl->hasNumThreads = hasNumThreads;
+            decl->numThreads = numThreads;
+        }
+        return decl;
     }
     if (match(TokenType::Property)) {
         return parsePropertyDecl();
@@ -334,13 +367,68 @@ std::unique_ptr<Stmt> Parser::parseMaterialDecl() {
     return std::make_unique<MaterialDecl>(name.lexeme, std::move(declarations));
 }
 
-std::unique_ptr<Stmt> Parser::parseComputeDecl() {
-    // Top-level `compute Name { <body> }` (Phase 2.5). Body is the same
-    // statement syntax as a vertex / fragment block — `let`, `return`,
-    // `if`, `for`, expression statements. No in/out semantic binding,
-    // no implicit output slot, no gl_Position / gl_FragColor analogue.
-    // Storage buffers and thread-id builtins (Phase 3 additions) live
-    // alongside the HLSL backend; for now the body is just statements.
+// Phase 3.3 Block 2: `[numthreads(X, Y, Z)] compute Foo { ... }`
+// attribute. Lets the user pin the workgroup shape per-declaration
+// instead of inheriting the BGFX backend's hardcoded 64 default.
+//
+// Syntax: an optional attribute list before `compute Name`, where each
+// attribute is `[numthreads(<int_literal>, <int_literal>, <int_literal>)]`.
+// Phoskia only exposes `numthreads` today; future attributes (`[local_size(...)]`,
+// `[max_registers(...)]`) would slot in here.
+//
+// The attribute is consumed by parseComputeDecl-with-attribute and
+// stored on the resulting ComputeDecl node. The IRGenerator carries it
+// forward to IRComputeDecl::numThreads; the BGFX backend emits the
+// GLSL `layout(local_size_x = N, local_size_y = N, local_size_z = N) in;`
+// directive with the user's values.
+
+std::unique_ptr<ComputeDecl> Parser::parseComputeDeclWithAttributes(
+    std::array<uint32_t, 3>& outNumThreads, bool& outHasNumThreads) {
+    // Optional attribute list — at most one `[numthreads(X, Y, Z)]` for
+    // now. We allow other attributes to be skipped silently so a future
+    // `[max_registers(...)]` doesn't break older Phoskia sources.
+    while (check(TokenType::LeftBracket)) {
+        advance();  // consume '['
+        Token attrName = consume(TokenType::Identifier, "Expected attribute name in [...]");
+        if (attrName.lexeme == "numthreads") {
+            consume(TokenType::LeftParen, "Expected '(' after 'numthreads'");
+            // Three int literals: X, Y, Z. GLSL accepts `local_size_y = 1`
+            // and `local_size_z = 1` defaults; we require all three to
+            // match the user-written form byte-for-byte (Phoskia doesn't
+            // try to be clever about omitted dimensions).
+            Token xTok = consume(TokenType::IntLiteral, "Expected int literal for numthreads X");
+            consume(TokenType::Comma, "Expected ',' after numthreads X");
+            Token yTok = consume(TokenType::IntLiteral, "Expected int literal for numthreads Y");
+            consume(TokenType::Comma, "Expected ',' after numthreads Y");
+            Token zTok = consume(TokenType::IntLiteral, "Expected int literal for numthreads Z");
+            consume(TokenType::RightParen, "Expected ')' after numthreads Z");
+            try {
+                outNumThreads[0] = static_cast<uint32_t>(std::stoul(xTok.lexeme));
+                outNumThreads[1] = static_cast<uint32_t>(std::stoul(yTok.lexeme));
+                outNumThreads[2] = static_cast<uint32_t>(std::stoul(zTok.lexeme));
+                outHasNumThreads = true;
+            } catch (const std::exception&) {
+                error("numthreads components must be non-negative integers");
+            }
+        } else {
+            // Unknown attribute — skip the bracketed expression. We
+            // consume the closing ']' and move on. A more strict parser
+            // would reject unknown attributes; Phase 3.3 is permissive
+            // so future attributes don't break older sources.
+            skipBracketedAttributeBody();
+        }
+        consume(TokenType::RightBracket, "Expected ']' after compute attribute");
+    }
+
+    // After the attribute loop we may or may not have consumed the
+    // `compute` keyword yet. The dispatcher in parseStatement handles
+    // both shapes: when it sees `[numthreads`, it routes here without
+    // consuming `compute` (because the helper eats the `[...]` first);
+    // when it sees a bare `compute`, it consumes the keyword first
+    // and then routes here with the attribute loop being a no-op.
+    // To keep the helper self-contained we optionally consume `compute`
+    // here — match() doesn't error if the token is wrong.
+    match(TokenType::Compute);  // optional — present iff dispatcher didn't pre-consume it
     Token name = consumeName("Expected compute name");
     consume(TokenType::LeftBrace, "Expected '{' before compute body");
 
@@ -348,21 +436,43 @@ std::unique_ptr<Stmt> Parser::parseComputeDecl() {
     while (!check(TokenType::RightBrace) && !isAtEnd()) {
         size_t before = _current;
         if (auto stmt = parseStatement()) {
-            // Guard against the same null-ExprStmt trap that
-            // parseVertexFunc / parseFragmentFunc handle: an empty
-            // expression parse shouldn't enter the body.
             if (stmt) body.push_back(std::move(stmt));
         } else {
             synchronize();
         }
         if (_current == before) {
-            // Stuck — force advance to avoid an infinite loop.
             advance();
         }
     }
 
     consume(TokenType::RightBrace, "Expected '}' after compute body");
     return std::make_unique<ComputeDecl>(name.lexeme, std::move(body));
+}
+
+// Helper: skip the inner contents of an unknown `[name ...]` attribute.
+// Used when we encounter an attribute we don't recognise so the parser
+// can continue with the next token. The closing ']' is consumed by the
+// caller.
+void Parser::skipBracketedAttributeBody() {
+    // Conservative: count bracket depth and skip until the matching
+    // ']' at depth 0. Attributes in Phoskia today only nest via parens
+    // in their args, not brackets, so this is sufficient for the
+    // current attribute grammar.
+    int parenDepth = 0;
+    while (!isAtEnd()) {
+        if (parenDepth == 0 && check(TokenType::RightBracket)) {
+            return;
+        }
+        if (check(TokenType::LeftParen)) {
+            ++parenDepth;
+            advance();
+        } else if (check(TokenType::RightParen)) {
+            if (parenDepth > 0) --parenDepth;
+            advance();
+        } else {
+            advance();
+        }
+    }
 }
 
 std::unique_ptr<Stmt> Parser::parsePropertyDecl() {

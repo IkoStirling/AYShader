@@ -270,7 +270,10 @@ TEST_CASE(compile_minimal_compute) {
     // generic `output` field concatenates it with section fences.
     CHECK(!result.output.empty());
     CHECK(result.output.find("void main()") != std::string::npos);
-    CHECK(result.output.find("layout(local_size_x = 64) in;") != std::string::npos);
+    // Phase 3.3 Block 2: the default emit now writes all three layout
+    // dimensions (y and z default to 1, matching GLSL's built-in
+    // fallbacks). Pin the full directive shape.
+    CHECK(result.output.find("layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;") != std::string::npos);
 }
 
 // ===== Phase 3.2 Block 2: thread_id / group_id / dispatch_id builtins =====
@@ -429,6 +432,49 @@ TEST_CASE(uint_is_builtin_type) {
     CHECK(AYBuiltinTypes::isBuiltinType("int"));
     CHECK(AYBuiltinTypes::isBuiltinType("float"));
     CHECK_FALSE(AYBuiltinTypes::isBuiltinType("foo"));
+}
+
+// ===== Phase 3.3 Block 2: [numthreads(X, Y, Z)] compute attribute =====
+//
+// `[numthreads(X, Y, Z)] compute Foo { ... }` lets the user pin the
+// GLSL workgroup shape per-declaration instead of inheriting the
+// BGFX backend's hardcoded 64 default. Stored on the AST / IR
+// ComputeDecl node and emitted as the GLSL `layout(local_size_x = X,
+// local_size_y = Y, local_size_z = Z) in;` directive.
+
+TEST_CASE(compile_compute_with_numthreads_attribute) {
+    Compiler compiler;
+    const char* src = R"(
+        [numthreads(8, 8, 1)] compute MatMulKernel {
+            let idx = thread_id.x
+            return idx
+        }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    // The user's (8, 8, 1) must reach the emitted source verbatim.
+    CHECK(result.output.find("layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;") != std::string::npos);
+    // The Phoskia `[numthreads(...)]` attribute must not survive into
+    // the emitted source.
+    CHECK(result.output.find("numthreads") == std::string::npos);
+}
+
+TEST_CASE(compile_compute_without_numthreads_uses_default) {
+    // Backward compatibility: compute declarations without the attribute
+    // fall back to the historical Phase 3.2 default of (64, 1, 1). This
+    // keeps Phase 3.2 sources working without source edits.
+    Compiler compiler;
+    const char* src = R"(
+        compute DefaultShape {
+            let idx = thread_id.x
+            return idx
+        }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    CHECK(result.output.find("layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;") != std::string::npos);
 }
 
 TEST_SUITE_END

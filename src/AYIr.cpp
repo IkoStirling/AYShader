@@ -336,6 +336,12 @@ std::unique_ptr<IRMaterialDecl> IRGenerator::lowerMaterialDecl(const phoskia::Ma
 std::unique_ptr<IRComputeDecl> IRGenerator::lowerComputeDecl(const phoskia::ComputeDecl& c) {
     auto out = std::make_unique<IRComputeDecl>();
     out->name = c.name;
+    // Phase 3.3 Block 2: forward the optional [numthreads(X, Y, Z)]
+    // attribute from the AST node to the IR node. The BGFX backend
+    // reads out->hasNumThreads and out->numThreads to drive the
+    // `layout(local_size_x = N, ...)` directive emission.
+    out->hasNumThreads = c.hasNumThreads;
+    out->numThreads = c.numThreads;
     phoskia::TypeEnvironment env;
     populateBuiltinEnv(env);
 
