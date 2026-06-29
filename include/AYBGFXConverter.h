@@ -31,6 +31,17 @@ struct BGFXShaderFiles {
     std::string varyingDef;   // varying.def.sc contents
 };
 
+// One compute declaration's output: the single .sc source that bgfx's
+// shaderc compiles with `--type compute`. Compute has no vs/fs/varying
+// split and no varying.def.sc (it has no attributes, no varyings).
+//
+// Phase 3.2: the compiler body is empty-only — no storage buffers, no
+// thread-id builtins. The two additions land in the next two blocks
+// (storage buffer syntax + thread-id builtins).
+struct BGFXComputeFile {
+    std::string cs;           // cs_<Compute>.sc contents
+};
+
 // One material → three artifact strings. The frontend (upper layer) is
 // responsible for writing these to disk and invoking shaderc.
 struct BGFXUniform {
@@ -50,6 +61,11 @@ struct BGFXConvertResult {
     // Per-material three-piece sets, in declaration order. Empty when
     // success == false.
     std::vector<BGFXShaderFiles> materialFiles;
+    // Per-compute single-piece sets, in declaration order. Phase 3.2:
+    // BGFX .sc IS the compute target backend (bgfx 1.18 / shaderc 1.18
+    // both support `--type compute` and `bgfx::createProgram(_csh)`),
+    // so compute declarations are first-class here just like materials.
+    std::vector<BGFXComputeFile> computeFiles;
     std::vector<BGFXUniform> uniforms;
     std::vector<BGFXTexture> textures;
     std::vector<std::string> errors;
@@ -62,10 +78,25 @@ public:
     const char* targetExtension() const override { return ".sc"; }
 
     BGFXConvertResult convertBGFX(const phoskia::ir::IRProgram& program);
+    // Out-param overload — preferred entry point. The return-by-value
+    // overload above remains for callers that can tolerate the SSO /
+    // NRVO risk; production paths in this repo use the out-param form
+    // (the Phase 3.2-pre SSO bug fix landed the same pattern for
+    // Compiler::compile / CompileResult).
+    void convertBGFX(const phoskia::ir::IRProgram& program, BGFXConvertResult& out);
     ConvertResult convert(const phoskia::ir::IRProgram& program) override;
 
     // Compile one material into its three-piece set.
     BGFXShaderFiles convertMaterial(const phoskia::ir::IRMaterialDecl& material);
+
+    // Compile one compute declaration into its single-piece .sc output.
+    // Phase 3.2: BGFX .sc is the compute target backend — bgfx 1.18 +
+    // shaderc 1.18 fully support compute via `bgfx::createProgram(_csh)`
+    // and `shaderc --type compute`. Earlier Phase 2.5 had a placeholder
+    // that claimed BGFX .sc does not support compute — that conclusion
+    // was wrong and has been corrected. Compute declarations are now
+    // first-class alongside materials.
+    BGFXComputeFile convertComputeDecl(const phoskia::ir::IRComputeDecl& compute);
 
     std::vector<std::string_view> getCompilerArgs() const override {
         // BGFX backend emits a three-piece set per material; the frontend

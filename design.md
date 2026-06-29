@@ -345,9 +345,25 @@ compute ParticleUpdate {                   // NEW, top-level
 
 The body is the same statement syntax as a `vertex` / `fragment` block: `let` / `return` / `if` / `for` / expression statements.
 
-Compute is dispatched via the HLSL / WGSL backend (Phase 3). The BGFX `.sc` backend surfaces a clear "BGFX .sc does not support compute" diagnostic so authors know to switch backends. The error is **non-fatal** to other declarations — a `material` in the same file still converts; only `result.success` flips to false and the message lands in `result.errors`.
+**Compute is emitted by the BGFX `.sc` backend in Phase 3.2.** A previous version of this section (Phase 2.5 era) stated that BGFX `.sc` does not support compute. That claim is **incorrect** as of bgfx 1.18 / shaderc 1.18:
+- `bgfx::createProgram(ShaderHandle _csh, bool _destroyShader = false)` (overload at `bgfx.h:2704`) creates a compute program.
+- `bgfx::dispatch(ProgramHandle _handle, ...)` (at `bgfx.h:1651`) submits a dispatch.
+- `shaderc -f compute.sc -o out.bin --type compute --platform windows` accepts a GLSL compute source and produces a bgfx-compatible binary.
+- Buffer flags `BGFX_BUFFER_COMPUTE_READ` / `BGFX_BUFFER_COMPUTE_READ_WRITE` (`bgfx.h:2257+`) bind storage buffers to compute stages.
 
-**Phase 3 additions** (out of scope for Phase 2.5): storage buffer declarations (`storage T : structuredbuffer` / `storage T : rwstructuredbuffer`), thread-id builtins (`thread_id` / `group_id` / `dispatch_id`), `[numthreads(...)]` attribute, HLSL `StructuredBuffer<T>` / `RWStructuredBuffer<T>` emission.
+The Phase 2.5 implementation in `src/AYBGFXConverter.cpp:521` carried a placeholder error "BGFX .sc does not support compute" that was correct at the time of the original research but stale now. Phase 3.2 removes that error and adds the actual compute emission path (see §11 Phase 3.2 row).
+
+**Phase 3.2 additions** (currently scoped):
+- BGFX `.sc` compute emission — `convertComputeDecl` in `AYBGFXConverter`, emits a single compute `.sc` source with a `numthreads` directive (or bgfx's GLSL-profile equivalent).
+- `shaderc --type compute` e2e test — extend `Test_ShaderCompile.cpp` to compile a simple Phoskia compute into `.bin` and round-trip through `bgfx::createProgram(_csh)` / `dispatch`.
+- Storage buffer declarations — `storage T : structuredbuffer` (read) and `storage T : rwstructuredbuffer` (read-write) in Phoskia surface syntax, mapped to GLSL `buffer` blocks with the corresponding read/write qualifiers.
+- Thread-id / group-id / dispatch-id builtins — `thread_id` / `group_id` / `dispatch_id` expressions in the compute body, mapped to GLSL `gl_GlobalInvocationID` / `gl_WorkGroupID` / `gl_NumWorkGroups` (or the bgfx-profile equivalent).
+
+**Out of scope (deferred to Phase 5+)**:
+- HLSL emitter (`AYHLSLConverter`) — only justified if/when DXC-first quality is required or the project wants to drop shaderc.
+- WGSL emitter (`AYWGLSConverter`) — only justified if/when the project targets WebGPU and wants native WGSL (bgfx does not currently have a WebGPU backend; this would require a runtime swap to wgpu-native / Dawn).
+- HLSL `StructuredBuffer<T>` / `RWStructuredBuffer<T>` direct emission — comes with the HLSL emitter.
+- `[numthreads(...)]` attribute syntax — GLSL compute uses `layout(local_size_x=...) in;` which shaderc accepts; the explicit `[numthreads]` attribute is an HLSL-only concept.
 
 ## 6.7 Phoskia IR (Phase 3.1)
 
@@ -762,15 +778,16 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 - [x] 错误恢复与 panic-mode 验证（Step 4：`Parser::synchronize` 跳过到 statement boundary；`parseMaterialDecl` 内层循环也用 synchronize；EOF / 缺失闭合括号 / garbage token 都不再级联）
 - [x] 单元测试与 golden-file 验证（Test_GoldenFiles.cpp 5 个 fixture（unlit / pbr_minimal / pbr_with_emission / pbr_with_texture / empty），golden baseline 自动生成 + AY_SHADER_REGEN_GOLDEN env 强制重生成 + 失败时 byte 级 diff 上下文）
 - [x] **类型名降级重构**（Step 5 完成：13 个 type keyword（Float/Vec2-4/Int/IVec2-4/Mat2-4/Quat/Bool）从 TokenType enum 删除，Lexer 关键字表清空对应 13 行，parsePrimary / parseShaderParam / consumeTypeName 的临时分支全部移除；新增 AYBuiltinTypes.h/.cpp 提供 string_view 查表 `isBuiltinType`；SemanticAnalyzer 在 analyzeUniformDecl 调用 isBuiltinType 校验非 builtin 名字并报 Go 风格错误"line N: 'hello' is not a builtin type (expected: ...)"）
-- [x] **Compute shader 后端** — Phase 2.5 closes the parser / AST / BGFX-stub half (`compute Name { <body> }` is a top-level declaration, parser builds a `ComputeDecl`, BGFX backend reports "HLSL / WGSL required (Phase 3)" non-fatally). HLSL / WGSL compute backend is Phase 3; storage buffers and thread-id builtins land alongside the HLSL backend. See §6.6 and §10 BNF.
+- [x] **Compute shader 后端** — Phase 2.5 closes the parser / AST half (`compute Name { <body> }` is a top-level declaration, parser builds a `ComputeDecl`, `IRGenerator` lowers to `IRComputeDecl`). BGFX `.sc` does support compute via shaderc `--type compute` + `bgfx::createProgram(_csh)`; the Phase 2.5 placeholder "BGFX .sc does not support compute" error in `AYBGFXConverter.cpp:521` is **stale** and will be replaced by the real emission path in Phase 3.2. See §6.6.
 - [x] **Shader type 动态输出变量**（`gl_Position` / `gl_FragColor`，已完成 `_shadingOutputVar`）
 
 ### Phase 3: IR 与多后端
 - [x] **IR 层定义 + AST→IR 降级 + BGFX 后端 retarget**（Phase 3.1）：IR 是 AST 的 1:1 镜像（`include/AYIr.h`），每个 IR 表达式携带 `resolvedType` 在降级时由 IRGenerator 一次性 resolve；backends 读 `expr.resolvedType` 不再跑 TypeInference。BGFX 已 retarget 完毕，golden + shaderc e2e 全部通过。详见 §6.7。
 - [x] **Compiler out-param 重构**（SSO NRVO 根因修复）：`Compiler::compile` / `compileToBackend` 改为 out 参数形式，根除 Phase 3.1 暴露的 MSVC SSO / NRVO 损坏（详见 §6.8）。删除死代码 `CompileResult::typeEnv` / `Compiler::errors()` / `hasErrors()` / 便捷自由函数；Phase 3.2+ 可以安全地往 `CompileResult` 加 per-target 字段。
+- [ ] **Compute 端到端落地**（Phase 3.2 — BGFX `.sc` compute 路径）：移除 `AYBGFXConverter.cpp:521` 的 placeholder 报错，实现 `convertComputeDecl` emit 真实的 compute `.sc` 源；补 `storage T : structuredbuffer` / `storage T : rwstructuredbuffer` 语法；补 `thread_id` / `group_id` / `dispatch_id` 内置；`shaderc --type compute` e2e 测试 + `bgfx::createProgram(_csh)` / `dispatch` 验证。详见 §6.6。
 - [ ] IR 设计实现（SSA 形式）
-- [ ] HLSL 后端 (`AYHLSLConverter`) — 含 Compute / Ray shader 支持
-- [ ] WGSL 后端 (`AYWGLSConverter`)
+- [ ] HLSL 后端 (`AYHLSLConverter`) — **Phase 5+ 按需**，当前不计划。仅在项目要求 DXC 一手质量或要摆脱 shaderc 时再做。
+- [ ] WGSL 后端 (`AYWGLSConverter`) — **Phase 5+ 按需**，当前不计划。仅在项目目标 WebGPU 且要原生 WGSL 时再做（bgfx 当前没有 WebGPU 后端，需要换 runtime 到 wgpu-native / Dawn）。
 - [ ] 跨后端优化（dead code、constant folding）
 - [ ] **Ray shader 架构**（独立于 compute 的路径）
 

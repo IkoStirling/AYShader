@@ -499,47 +499,51 @@ void emitPropertyUniform(std::ostream& out, const phoskia::ir::IRDeclaration& de
 // --------------------------------------------------------------------------
 
 BGFXConvertResult AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program) {
-    BGFXConvertResult result;
-    result.success = true;
+    // Phase 3.2-pre SSO/NRVO fix: same pattern as Compiler::compile.
+    // Return-by-value of BGFXConvertResult corrupts caller-stack on
+    // MSVC under certain optimizer decisions. Forward to the out-param
+    // overload.
+    BGFXConvertResult out;
+    convertBGFX(program, out);
+    return out;
+}
+
+void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXConvertResult& out) {
+    out = BGFXConvertResult{};
+    out.success = true;
 
     try {
         for (const auto& mat : program.materials) {
-            if (mat) result.materialFiles.push_back(convertMaterial(*mat));
+            if (mat) out.materialFiles.push_back(convertMaterial(*mat));
         }
         for (const auto& cmp : program.computes) {
             if (!cmp) continue;
-            // Phase 2.5: BGFX .sc backend does not support compute.
-            // The HLSL / WGSL compute backend (Phase 3) handles these.
-            // We surface a clear, non-fatal diagnostic so authors
-            // writing GPGPU kernels don't silently get a no-op
-            // conversion. The loop continues so any material
-            // declarations that follow still get converted — the
-            // error is reported in `result.errors` and `success`
-            // flips to false. The caller can then dispatch to a
-            // compute-capable backend via the IAYBackendConverter
-            // registry.
-            result.errors.push_back(
-                "Compute declaration '" + cmp->name +
-                "' requires HLSL / WGSL backend (Phase 3); "
-                "BGFX .sc does not support compute");
-            result.success = false;
+            // Phase 3.2: BGFX .sc IS the compute target backend.
+            // bgfx 1.18 + shaderc 1.18 fully support compute via
+            //   shaderc --type compute -o <out.bin> <input.sc>
+            //   bgfx::createProgram(ShaderHandle _csh)
+            //   bgfx::dispatch(ProgramHandle, numGroupsX, numGroupsY, numGroupsZ)
+            // The earlier "BGFX .sc does not support compute" diagnostic
+            // was Phase 2.5-era speculation, never empirically verified,
+            // and is incorrect. Compute declarations are now first-class.
+            out.computeFiles.push_back(convertComputeDecl(*cmp));
         }
     } catch (const std::exception& e) {
-        result.errors.push_back(e.what());
-        result.success = false;
+        out.errors.push_back(e.what());
+        out.success = false;
     } catch (...) {
-        result.errors.push_back("Unknown exception during BGFX conversion");
-        result.success = false;
+        out.errors.push_back("Unknown exception during BGFX conversion");
+        out.success = false;
     }
 
-    result.uniforms = _uniforms;
-    result.textures = _textures;
-    return result;
+    out.uniforms = _uniforms;
+    out.textures = _textures;
 }
 
 ConvertResult AYBGFXConverter::convert(const phoskia::ir::IRProgram& program) {
     ConvertResult result;
-    auto bgfx = convertBGFX(program);
+    BGFXConvertResult bgfx;
+    convertBGFX(program, bgfx);
     result.success = bgfx.success;
     result.errors = bgfx.errors;
     std::ostringstream oss;
@@ -551,6 +555,12 @@ ConvertResult AYBGFXConverter::convert(const phoskia::ir::IRProgram& program) {
             << f.vs
             << "\n// === material " << i << " fs ===\n"
             << f.fs
+            << "\n";
+    }
+    for (size_t i = 0; i < bgfx.computeFiles.size(); ++i) {
+        const auto& f = bgfx.computeFiles[i];
+        oss << "// === compute " << i << " cs ===\n"
+            << f.cs
             << "\n";
     }
     result.output = oss.str();
@@ -875,6 +885,86 @@ BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::ir::IRMaterialDe
 
     _uniforms.insert(_uniforms.begin(), uniformSave.begin(), uniformSave.end());
     _textures.insert(_textures.begin(), textureSave.begin(), textureSave.end());
+    return out;
+}
+
+// --------------------------------------------------------------------------
+// Per-compute conversion
+// --------------------------------------------------------------------------
+//
+// Phase 3.2: bgfx 1.18 + shaderc 1.18 fully support compute shaders. The
+// `.sc` source for a compute shader is a single file (no vs/fs/varyingdef
+// split) with the following shape:
+//
+//   $input                // empty — compute has no attributes
+//   $output               // empty — compute has no varyings
+//
+//   #include "common.sh"
+//
+//   // (storage buffers / uniforms will go here in later blocks)
+//
+//   layout(local_size_x = 64) in;
+//
+//   void main() {
+//       <body — IRComputeDecl::body>
+//   }
+//
+// shaderc is invoked with `--type compute` to produce the .bin blob that
+// `bgfx::createProgram(ShaderHandle _csh)` consumes.
+//
+// numthreads is fixed at 64 in this Phase 3.2 cut (Phoskia's surface
+// syntax does not yet expose `[numthreads(X, Y, Z)] compute Foo { ... }`).
+// The dispatch (X*Y*Z workgroups) is the engine's responsibility at the
+// `bgfx::dispatch(_handle, X, Y, Z)` call site — Phoskia just emits the
+// kernel.
+//
+// Phase 3.2 Block 1: body emission supports whatever `let / return /
+// expression-statement / if / for` is in the IR — same `emitStmt`
+// machinery as material bodies. The storage-buffer and thread-id
+// extensions land in Blocks 2 and 3.
+
+BGFXComputeFile AYBGFXConverter::convertComputeDecl(const phoskia::ir::IRComputeDecl& compute) {
+    // Compute uses its own per-call type env for let-stmt type
+    // inference (mirrors material's vsEnv/fsEnv pattern). Compute
+    // bodies are flat: no vs/fs split, no in/out param renames, no
+    // output-var slot binding (compute return is early-exit, not an
+    // output assignment). So the env starts empty and the rename
+    // context is empty too.
+    phoskia::TypeEnvironment env;
+    RenameContext ctx;
+
+    std::ostringstream cs;
+    cs << "$input\n"           // empty input list (compute has no attributes)
+       << "$output\n"          // empty output list (compute has no varyings)
+       << "\n#include \"common.sh\"\n\n";
+
+    // GLSL 4.30 / OpenGL ES 3.1 workgroup layout. bgfx's GLSL profile
+    // accepts the comma-less `layout(local_size_x = N) in;` form (Y
+    // and Z default to 1). shaderc validates this against the target
+    // profile; for the linux/GLSL 120 target used by the e2e tests,
+    // compute needs a higher profile — see Test_ShaderCompile.cpp
+    // where the target is bumped for compute.
+    cs << "layout(local_size_x = 64) in;\n\n";
+
+    // Body — same emitStmt machinery as material bodies, but with
+    // outputVar=nullptr (no implicit output slot binding; return is
+    // early-exit only).
+    cs << "void main()\n{\n";
+    for (const auto& stmt : compute.body) {
+        if (!stmt) continue;
+        // Compute bodies do not currently support [variant] (they have
+        // no in-shader opt-in semantics that make sense for a kernel).
+        // If an IRVariantAttribute ever appears here, skip it silently
+        // rather than recursing — emitStmt has no path for it. Future
+        // work: add a kernel-level variant mechanism (e.g. per-dispatch
+        // defines) if needed.
+        if (dynamic_cast<const phoskia::ir::IRVariantAttribute*>(stmt.get())) continue;
+        emitStmt(cs, *stmt, ctx, nullptr, env);
+    }
+    cs << "}\n";
+
+    BGFXComputeFile out;
+    out.cs = cs.str();
     return out;
 }
 

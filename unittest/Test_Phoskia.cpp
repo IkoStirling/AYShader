@@ -241,4 +241,35 @@ TEST_CASE(compile_with_for_loop) {
     CHECK(!result.output.empty());
 }
 
+// ===== Phase 3.2: compute declaration end-to-end =====
+//
+// Phase 2.5 introduced the `compute Foo { ... }` syntax and lowered it
+// to an IRComputeDecl, but the BGFX backend refused to emit a .sc
+// ("HLSL / WGSL required"). That conclusion was wrong — bgfx 1.18 +
+// shaderc 1.18 fully support compute. Phase 3.2 wires it through.
+//
+// This smoke test runs the full pipeline on a minimal compute body and
+// asserts the .sc output is non-empty. The deeper structural
+// assertions (layout/local_size_x, $input/$output, void main) live in
+// Test_BGFXConverter.cpp; this test only verifies the high-level
+// Compiler::compile path doesn't drop compute on the floor.
+
+TEST_CASE(compile_minimal_compute) {
+    Compiler compiler;
+    const char* src = R"(
+        compute ParticleUpdate {
+            let x = 0
+            return x
+        }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    // The BGFX backend emits a single .sc source for compute; the
+    // generic `output` field concatenates it with section fences.
+    CHECK(!result.output.empty());
+    CHECK(result.output.find("void main()") != std::string::npos);
+    CHECK(result.output.find("layout(local_size_x = 64) in;") != std::string::npos);
+}
+
 TEST_SUITE_END

@@ -32,7 +32,9 @@ static BGFXShaderFiles compileFirstMaterial(const std::string& src) {
     ir::IRGenerator gen;
     auto ir = gen.generate(*ast);
     AYBGFXConverter conv;
-    BGFXConvertResult res = conv.convertBGFX(ir);
+    // Phase 3.2-pre SSO/NRVO fix: use the out-param form.
+    BGFXConvertResult res;
+    conv.convertBGFX(ir, res);
     if (!res.success) {
         throw std::runtime_error("convertBGFX failed: " +
             (res.errors.empty() ? std::string("?") : res.errors.front()));
@@ -227,7 +229,8 @@ TEST_CASE(compute_throws_not_implemented) {
     // emit silently — a malformed material cannot yield valid bgfx code.
     ir::IRGenerator gen;
     AYBGFXConverter conv;
-    auto res = conv.convertBGFX(gen.generate(*ast));
+    BGFXConvertResult res;
+    conv.convertBGFX(gen.generate(*ast), res);
     CHECK(!res.success);
     CHECK(!res.errors.empty());
 }
@@ -252,7 +255,8 @@ TEST_CASE(multiple_materials_each_get_three_pieces) {
     auto ast = parser.parse();
     ir::IRGenerator gen;
     AYBGFXConverter conv;
-    auto res = conv.convertBGFX(gen.generate(*ast));
+    BGFXConvertResult res;
+    conv.convertBGFX(gen.generate(*ast), res);
     CHECK(res.success);
     CHECK(res.materialFiles.size() == 2);
     CHECK(!res.materialFiles[0].vs.empty());
@@ -526,21 +530,30 @@ TEST_CASE(vec3_plus_scalar_emits_in_source_order) {
     CHECK(files.fs.find("r = (v + s);") != std::string::npos);
 }
 
-// ===== Phase 2.5: compute declaration stub =====
+// ===== Phase 3.2: compute declaration → BGFX .sc =====
 //
-// BGFX .sc does not support compute. The converter's contract is:
-//   - `result.success == false`
-//   - `result.errors` contains a clear "HLSL / WGSL required (Phase 3)"
-//     message that names the offending declaration
-//   - The error is non-fatal to other declarations in the same program
-//     (a material in the same file still converts; compute doesn't
-//      block the rest of the pipeline)
+// Earlier (Phase 2.5) the converter refused compute with a "HLSL /
+// WGSL required" error. That conclusion was wrong — bgfx 1.18 +
+// shaderc 1.18 fully support compute via:
+//   - shaderc --type compute
+//   - bgfx::createProgram(ShaderHandle _csh)
+//   - bgfx::dispatch(_handle, numGroupsX, numGroupsY, numGroupsZ)
 //
-// These tests pin that contract so the BGFX-stub behavior is
-// regression-proof — if a refactor accidentally makes compute fatal
-// (throws) or silent (no error), these fail.
+// The new contract is:
+//   - `result.success == true`
+//   - `result.computeFiles.size() == 1` per compute declaration
+//   - `computeFiles[0].cs` is a valid bgfx .sc source with:
+//       * `$input` / `$output` (both empty)
+//       * `#include "common.sh"`
+//       * `layout(local_size_x = 64) in;`
+//       * `void main() { ... }` containing the lowered body
+//   - Materials and computes in the same program both convert cleanly
+//     (compute is no longer an error path)
+//
+// These tests pin the new contract so a future refactor that reverts
+// to the error-stub behavior fails loudly.
 
-TEST_CASE(compute_declaration_produces_clear_error) {
+TEST_CASE(compute_declaration_produces_valid_bgfx_cs) {
     const char* src = R"(
         compute ParticleUpdate { return 0 }
     )";
@@ -551,26 +564,27 @@ TEST_CASE(compute_declaration_produces_clear_error) {
     auto ast = parser.parse();
     ir::IRGenerator gen;
     AYBGFXConverter conv;
-    auto res = conv.convertBGFX(gen.generate(*ast));
-    CHECK(!res.success);
-    CHECK(!res.errors.empty());
-    // The error must reference both the compute declaration name
-    // and the "BGFX .sc does not support compute" diagnostic.
-    bool foundName = false, foundDiagnostic = false;
-    for (const auto& err : res.errors) {
-        if (err.find("ParticleUpdate") != std::string::npos) foundName = true;
-        if (err.find("BGFX .sc does not support compute") != std::string::npos) {
-            foundDiagnostic = true;
-        }
-    }
-    CHECK(foundName);
-    CHECK(foundDiagnostic);
+    BGFXConvertResult res;
+    conv.convertBGFX(gen.generate(*ast), res);
+    CHECK(res.success);
+    CHECK(res.errors.empty());
+    CHECK(res.computeFiles.size() == 1);
+    const auto& cs = res.computeFiles[0].cs;
+    // Standard bgfx .sc prologue: $input / $output empty, common.sh include.
+    CHECK(cs.find("$input") != std::string::npos);
+    CHECK(cs.find("$output") != std::string::npos);
+    CHECK(cs.find("#include \"common.sh\"") != std::string::npos);
+    // Workgroup layout — Phase 3.2 fixed at 64, may become a per-decl
+    // attribute later. Pin the literal so a refactor that changes the
+    // default is caught (a real change needs an explicit test update).
+    CHECK(cs.find("layout(local_size_x = 64) in;") != std::string::npos);
+    // Body entry.
+    CHECK(cs.find("void main()") != std::string::npos);
 }
 
-TEST_CASE(compute_alongside_material_converts_material) {
-    // Non-fatal: the compute declaration reports the diagnostic, but
-    // the material in the same program still converts. The error
-    // path must not abort the dispatch loop.
+TEST_CASE(compute_alongside_material_converts_both) {
+    // Non-fatal, both convert cleanly. Compute no longer reports an
+    // error and the material still produces a three-piece set.
     const char* src = R"(
         material Unlit {
             vertex { return vec4(0.0) }
@@ -585,23 +599,14 @@ TEST_CASE(compute_alongside_material_converts_material) {
     auto ast = parser.parse();
     ir::IRGenerator gen;
     AYBGFXConverter conv;
-    auto res = conv.convertBGFX(gen.generate(*ast));
-    // Overall success is false because of the compute diagnostic, but
-    // the material still produced a three-piece set.
-    CHECK(!res.success);
+    BGFXConvertResult res;
+    conv.convertBGFX(gen.generate(*ast), res);
+    CHECK(res.success);
     CHECK(res.materialFiles.size() == 1);
     CHECK(!res.materialFiles[0].vs.empty());
     CHECK(!res.materialFiles[0].fs.empty());
-    // The error must reference the *compute* declaration, not the
-    // material — i.e. the diagnostic is correctly attributed.
-    bool errorIsAboutCompute = false;
-    for (const auto& err : res.errors) {
-        if (err.find("compute") != std::string::npos &&
-            err.find("ParticleUpdate") != std::string::npos) {
-            errorIsAboutCompute = true;
-        }
-    }
-    CHECK(errorIsAboutCompute);
+    CHECK(res.computeFiles.size() == 1);
+    CHECK(!res.computeFiles[0].cs.empty());
 }
 
 TEST_SUITE_END

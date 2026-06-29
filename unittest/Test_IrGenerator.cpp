@@ -174,7 +174,8 @@ TEST_CASE(ir_property_uniform_type_resolved_from_initializer) {
     IRProgram program = gen.generate(*ast);
 
     ayt::shader::AYBGFXConverter conv;
-    auto bgfx = conv.convertBGFX(program);
+    ayt::shader::BGFXConvertResult bgfx;
+    conv.convertBGFX(program, bgfx);
     CHECK(bgfx.success);
     CHECK_FALSE(bgfx.materialFiles.empty());
     CHECK(bgfx.materialFiles.front().vs.find("uniform vec3 col") != std::string::npos);

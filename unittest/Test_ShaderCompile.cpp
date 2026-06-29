@@ -323,13 +323,14 @@ TEST_CASE(shaderc_compiles_minimal_unlit) {
 
     AYBGFXConverter conv;
     ir::IRGenerator gen;
-    auto ast = conv.convertBGFX(gen.generate(*compiler.parse(
+    BGFXConvertResult ast;
+    conv.convertBGFX(gen.generate(*compiler.parse(
         [&]{
             Lexer lx(src);
             std::vector<Token> tk;
             lx.tokenize(tk);
             return tk;
-        }())));
+        }())), ast);
     CHECK(ast.success);
     CHECK(ast.materialFiles.size() == 1);
 
@@ -423,7 +424,8 @@ TEST_CASE(shaderc_compiles_material_with_texture) {
     auto ast = compiler.parse(tokens);
     ir::IRGenerator gen;
     AYBGFXConverter conv;
-    auto bgfxRes = conv.convertBGFX(gen.generate(*ast));
+    BGFXConvertResult bgfxRes;
+    conv.convertBGFX(gen.generate(*ast), bgfxRes);
     CHECK(bgfxRes.success);
     CHECK(bgfxRes.materialFiles.size() == 1);
 
@@ -557,7 +559,8 @@ TEST_CASE(shaderc_compiles_pbr_with_ggx_and_fresnel) {
     auto ast = compiler.parse(tokens);
     ir::IRGenerator gen;
     AYBGFXConverter conv;
-    auto bgfxRes = conv.convertBGFX(gen.generate(*ast));
+    BGFXConvertResult bgfxRes;
+    conv.convertBGFX(gen.generate(*ast), bgfxRes);
     CHECK(bgfxRes.success);
     CHECK(bgfxRes.materialFiles.size() == 1);
 

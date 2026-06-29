@@ -24,8 +24,9 @@ AYShader 是 AY Engine 的着色器子系统：接受 **Phoskia** DSL 源码，�
 | Phase 2.6 | Compute declaration (`compute Foo { }`) — AST + Parser + BGFX stub | ✅ |
 | Phase 3.1 | Phoskia IR (`AYIr`) + AST→IR 降级 + BGFX retarget | ✅ |
 | Phase 3.2-pre | Compiler out-param 重构（SSO NRVO 根因修复） | ✅ |
-| Phase 3.2 | HLSL 后端（material + 完整 compute） | 🔜 待开始 |
-| Phase 3.3 | WGSL 后端（material + 完整 compute） | 🔜 待开始 |
+| Phase 3.2 | Compute 端到端落地（BGFX `.sc` compute emit + storage buffer + thread-id） | 🔜 待开始 |
+| Phase 3.3 | HLSL 后端（按需 — DXC 一手质量 / 减体积） | 🅿 暂缓 |
+| Phase 3.4 | WGSL 后端（按需 — WebGPU 目标） | 🅿 暂缓 |
 
 ---
 
@@ -120,7 +121,7 @@ compute ParticleUpdate {                   // 顶层 compute，GPGPU kernel
 }
 ```
 
-`compute Name { <body> }` 是与 `material` 平级的顶层声明，定义 GPGPU kernel（粒子模拟、图像处理、GPU 剔除等）。Phase 2.6 完成了语法 + AST + BGFX 后端 stub —— BGFX `.sc` 不支持 compute，会在 `result.errors` 报告 "BGFX .sc does not support compute" 错误（非 fatal，文件中其它 material 仍会正常转换）。HLSL / WGSL 后端实现在 Phase 3。
+`compute Name { <body> }` 是与 `material` 平级的顶层声明，定义 GPGPU kernel（粒子模拟、图像处理、GPU 剔除等）。Phase 2.5 完成了语法 + AST + IR 降级。**BGFX `.sc` 是 compute 的目标后端**（`shaderc --type compute` 直接支持；`bgfx::createProgram(ShaderHandle _csh)` 重载 + `bgfx::dispatch(_handle, ...)` 走整 dispatch）—— 之前文档里"BGFX .sc 不支持 compute"的描述是 Phase 2.5 时代的过时结论。Phase 3.2 在 `AYBGFXConverter` 里实现 `convertComputeDecl` 把 compute 真正落到 `.sc` 二进制，补 `storage T : structuredbuffer` 存储缓冲语法与 `thread_id` / `group_id` / `dispatch_id` 内置函数。
 
 ---
 
