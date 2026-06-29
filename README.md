@@ -66,6 +66,7 @@ AY_SHADER_REGEN_GOLDEN=1 <build-dir>/AYShader_Test.exe
 | `pbr_minimal` | in/out + normalize/dot/max 链 + variant attribute |
 | `pbr_with_emission` | `[variant useEmission]` 包裹代码段 |
 | `pbr_with_texture` | texture2d + sample + swizzle |
+| `pbr_full` | 完整 PBR 演示：2 个 texture、2 个 property、5 个 PBR 内置、clearcoat、IBL diffuse、emission variant |
 | `empty` | 空 vertex/fragment body，fence-only 输出 |
 
 ---

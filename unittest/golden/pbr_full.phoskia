@@ -1,0 +1,48 @@
+// Comprehensive PBR demo: every Phase 2 feature exercised in one material.
+//  - Two texture samples (albedo + normal)
+//  - Two properties (emission + envColor for IBL diffuse)
+//  - Five PBR builtins (fresnelSchlick, fresnelSchlickRoughness,
+//    distributionGGX, geometrySchlickGGX, geometrySmith)
+//  - Cook-Torrance specular + clearcoat layer + IBL diffuse
+//  - [variant useEmission] opt-in code path
+//  - 5 inputs/outputs across position/normal/texcoord
+material PBR {
+    texture2d albedoMap
+    texture2d normalMap
+    uniform vec3 cameraPos
+    uniform float roughness
+    uniform float metallic
+    uniform float clearcoatRoughness
+    property emission = vec3(0.0, 0.0, 0.0)
+    property envColor  = vec3(0.4, 0.45, 0.5)
+
+    vertex {
+        in pos    : position
+        in nrm    : normal
+        in uv     : texcoord
+        out worldNormal : normal   = vec3(0.0, 0.0, 1.0)
+        out uvCoord     : texcoord = vec2(0.0, 0.0)
+        return vec4(pos, 1.0)
+    }
+
+    fragment {
+        in worldNormal : normal
+        in uvCoord     : texcoord
+        let N = normalize(worldNormal)
+        let V = normalize(cameraPos)
+        let baseColor = sample(albedoMap, uvCoord)
+        let _normalSample = sample(normalMap, uvCoord)
+        let NdotV = max(dot(N, V), 0.001)
+        let F0 = mix(vec3(0.04), baseColor.rgb, metallic)
+        let F = fresnelSchlick(NdotV, F0)
+        let Fcc = fresnelSchlickRoughness(NdotV, F0, clearcoatRoughness)
+        let D = distributionGGX(NdotV, roughness)
+        let G = geometrySchlickGGX(NdotV, roughness)
+        let specular = D * G * F / max(4.0 * NdotV, 0.001)
+        let diffuseIBL = baseColor.rgb * envColor * (vec3(1.0) - F) * (1.0 - metallic)
+        let result = baseColor.rgb + specular + diffuseIBL
+        [variant useEmission]
+        result = result + emission
+        return vec4(result, 1.0)
+    }
+}

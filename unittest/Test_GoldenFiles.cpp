@@ -148,6 +148,7 @@ TEST_CASE(golden_unlit)                  { runOneFixture("unlit"); }
 TEST_CASE(golden_pbr_minimal)            { runOneFixture("pbr_minimal"); }
 TEST_CASE(golden_pbr_with_emission)      { runOneFixture("pbr_with_emission"); }
 TEST_CASE(golden_pbr_with_texture)       { runOneFixture("pbr_with_texture"); }
+TEST_CASE(golden_pbr_full)               { runOneFixture("pbr_full"); }
 TEST_CASE(golden_empty)                  { runOneFixture("empty"); }
 
 TEST_SUITE_END

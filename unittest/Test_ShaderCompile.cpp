@@ -459,10 +459,13 @@ TEST_CASE(shaderc_compiles_material_with_texture) {
 
 // ===== Phase 2 closing: end-to-end PBR material =====
 //
-// A full Cook-Torrance PBR demo with multiple in/out params, a
-// texture2d sample, swizzle (.rgb), and the Fresnel-Schlick + GGX +
-// Smith-GGX library registered in AYBuiltinFunctions (Step 3). The
-// test asserts that the bgfx shaderc toolchain can lower the whole
+// A full Cook-Torrance PBR demo with all five PBR builtins (Fresnel-
+// Schlick, Fresnel-Schlick-Roughness for IBL/clearcoat, GGX, Schlick-
+// GGX, Smith), two texture samples (albedo + normal), two properties
+// (emission + envColor for IBL), a [variant useEmission] opt-in code
+// path, and a clearcoat specular layer on top of the base BRDF.
+//
+// The test asserts that the bgfx shaderc toolchain can lower the whole
 // pipeline all the way to .bin on at least one target (linux /
 // GLSL 1.20 by default).
 
@@ -478,18 +481,30 @@ TEST_CASE(shaderc_compiles_pbr_with_ggx_and_fresnel) {
     std::filesystem::create_directories(dir);
 
     // NOTE: this test exercises the FULL Phoskia -> bgfx -> shaderc
-    // pipeline using the higher-level PBR builtin forms (fresnelSchlick /
-    // distributionGGX / geometrySchlickGGX). The converter inlines each
-    // call into the equivalent GLSL math expression at emission time
-    // (Phase 2 Step 3 + closing), so users can write idiomatic Phoskia
-    // without manually expanding the formulas.
+    // pipeline using the higher-level PBR builtin forms. The converter
+    // inlines each call into the equivalent GLSL math expression at
+    // emission time (Phase 2 Step 3 + closing), so users can write
+    // idiomatic Phoskia without manually expanding the formulas.
+    //
+    // The demo also exercises the clearcoat layer and the IBL diffuse
+    // term — these are common in production PBR pipelines (glTF /
+    // Unreal / Filament) and use the fresnelSchlickRoughness variant
+    // of the Fresnel formula to mix the base color with a procedurally
+    // sampled environment color (envColor property, a placeholder for
+    // a real cubemap lookup).
     const char* src = R"(
         material PBR {
             texture2d albedoMap
+            texture2d normalMap
             uniform mat4 modelViewProj
             uniform vec3 cameraPos
+            uniform vec3 lightDir
             uniform float roughness
             uniform float metallic
+            uniform float clearcoat
+            uniform float clearcoatRoughness
+            property emission = vec3(0.0, 0.0, 0.0)
+            property envColor  = vec3(0.4, 0.45, 0.5)
 
             vertex {
                 in pos    : position
@@ -505,15 +520,28 @@ TEST_CASE(shaderc_compiles_pbr_with_ggx_and_fresnel) {
                 in uvCoord     : texcoord
                 let N = normalize(worldNormal)
                 let V = normalize(cameraPos)
+                let L = normalize(lightDir)
+                let H = normalize(L + V)
                 let baseColor = sample(albedoMap, uvCoord)
-                let NdotV = max(dot(N, V), 0.0)
+                let _normalSample = sample(normalMap, uvCoord)
+                let NdotV = max(dot(N, V), 0.001)
+                let NdotL = max(dot(N, L), 0.0)
+                let NdotH = max(dot(N, H), 0.0)
+                let VdotH = max(dot(V, H), 0.0)
                 let F0 = mix(vec3(0.04), baseColor.rgb, metallic)
-                let F = fresnelSchlick(NdotV, F0)
-                let D = distributionGGX(NdotV, roughness)
-                let G = geometrySchlickGGX(NdotV, roughness)
+                let F = fresnelSchlick(VdotH, F0)
+                let Fcc = fresnelSchlickRoughness(VdotH, F0, clearcoatRoughness)
+                let D = distributionGGX(NdotH, roughness)
+                let G = geometrySmith(NdotV, NdotL, roughness)
+                let Gcc = geometrySchlickGGX(NdotV, clearcoatRoughness)
                 let specular = D * G * F / max(4.0 * NdotV, 0.001)
-                let diffuse = baseColor.rgb * (vec3(1.0) - F) * (1.0 - metallic)
-                return vec4(diffuse + specular, 1.0)
+                let clearcoatSpec = D * Gcc * Fcc / max(4.0 * NdotV, 0.001) * clearcoat
+                let diffuseIBL = baseColor.rgb * envColor * (vec3(1.0) - F) * (1.0 - metallic)
+                let diffuse = baseColor.rgb * (vec3(1.0) - F) * (1.0 - metallic) / 3.14159265
+                let result = diffuse + diffuseIBL + specular + clearcoatSpec
+                [variant useEmission]
+                result = result + emission
+                return vec4(result, 1.0)
             }
         }
     )";
@@ -527,6 +555,30 @@ TEST_CASE(shaderc_compiles_pbr_with_ggx_and_fresnel) {
     auto bgfxRes = conv.convertBGFX(*ast);
     CHECK(bgfxRes.success);
     CHECK(bgfxRes.materialFiles.size() == 1);
+
+    // Sanity-check that the converter registered both textures and
+    // all the PBR-related uniforms/properties in the result metadata.
+    // This guards against future refactors that drop the ShaderParam /
+    // PropertyDecl → uniform registration path silently.
+    bool hasAlbedo = false, hasNormal = false;
+    for (const auto& t : bgfxRes.textures) {
+        if (t.name == "albedoMap") hasAlbedo = true;
+        if (t.name == "normalMap") hasNormal = true;
+    }
+    CHECK(hasAlbedo);
+    CHECK(hasNormal);
+    int uniformCount = 0;
+    bool hasEmission = false, hasEnvColor = false, hasRoughness = false;
+    for (const auto& u : bgfxRes.uniforms) {
+        ++uniformCount;
+        if (u.name == "emission")  hasEmission  = true;
+        if (u.name == "envColor")  hasEnvColor  = true;
+        if (u.name == "roughness") hasRoughness = true;
+    }
+    CHECK(uniformCount >= 9);  // 5 user uniforms + 2 properties + clearcoat(2)
+    CHECK(hasEmission);
+    CHECK(hasEnvColor);
+    CHECK(hasRoughness);
 
     const auto& f = bgfxRes.materialFiles.front();
     const std::string vsPath  = dir + "/vs_PBR.sc";
