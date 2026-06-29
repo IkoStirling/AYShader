@@ -272,4 +272,67 @@ TEST_CASE(compile_minimal_compute) {
     CHECK(result.output.find("layout(local_size_x = 64) in;") != std::string::npos);
 }
 
+// ===== Phase 3.2 Block 2: thread_id / group_id / dispatch_id builtins =====
+//
+// Phoskia exposes the GLSL compute builtins as 0-arg functions returning
+// vec3. The BGFX backend inlines each call to the corresponding GLSL
+// builtin at emission time. `thread_id.x` is the canonical per-thread
+// index and must be wired all the way through to
+// `gl_GlobalInvocationID.x` in the emitted .sc source.
+
+TEST_CASE(compile_compute_uses_thread_id_builtin) {
+    Compiler compiler;
+    const char* src = R"(
+        compute ParticleUpdate {
+            let idx = thread_id.x
+            return idx
+        }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    // The Phoskia `thread_id()` call must inline to `gl_GlobalInvocationID`,
+    // and `.x` swizzle must produce `gl_GlobalInvocationID.x`.
+    CHECK(result.output.find("gl_GlobalInvocationID") != std::string::npos);
+    CHECK(result.output.find("gl_GlobalInvocationID.x") != std::string::npos);
+    // The Phoskia name `thread_id` itself must NOT survive into the
+    // emitted source — shaderc wouldn't recognise it. We assert via
+    // "thread_id" being absent (or, more precisely, only the GLSL
+    // builtin appears).
+    CHECK(result.output.find("thread_id") == std::string::npos);
+}
+
+TEST_CASE(compile_compute_uses_group_id_builtin) {
+    Compiler compiler;
+    const char* src = R"(
+        compute ParticleUpdate {
+            let gid = group_id.x
+            return gid
+        }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    CHECK(result.output.find("gl_WorkGroupID.x") != std::string::npos);
+    CHECK(result.output.find("group_id") == std::string::npos);
+}
+
+TEST_CASE(compile_compute_uses_dispatch_id_builtin) {
+    Compiler compiler;
+    const char* src = R"(
+        compute ParticleUpdate {
+            let did = dispatch_id.x
+            return did
+        }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    // dispatch_id inlines to `gl_NumWorkGroups * gl_WorkGroupID`. The
+    // parenthesised product is the canonical form so subsequent `.x`
+    // swizzle lands on the product, not on `gl_NumWorkGroups` alone.
+    CHECK(result.output.find("(gl_NumWorkGroups * gl_WorkGroupID).x") != std::string::npos);
+    CHECK(result.output.find("dispatch_id") == std::string::npos);
+}
+
 TEST_SUITE_END

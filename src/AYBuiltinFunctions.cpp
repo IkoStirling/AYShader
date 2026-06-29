@@ -240,6 +240,24 @@ void BuiltinFunctionRegistry::registerDefaults() {
     registerFunction("smoothstep", {V3, V3, V3}, V3, vec3Return, "Smoothstep (vector form)");
     registerFunction("smoothstep", {V4, V4, V4}, V4, vec3Return, "Smoothstep (vector form)");
 
+    // ---- Compute thread-id builtins (Phase 3.2 Block 2) ----
+    //
+    // GLSL exposes three built-ins for compute workgroup addressing:
+    //   - gl_GlobalInvocationID  (uvec3) — global linear thread index
+    //   - gl_WorkGroupID         (uvec3) — which workgroup this thread belongs to
+    //   - gl_NumWorkGroups       (uvec3) — total dispatched workgroups
+    //
+    // Phoskia exposes these as 0-arg functions returning vec3. The BGFX
+    // backend inlines each call to the corresponding GLSL builtin at
+    // emission time. Returning vec3 (float-vector) instead of uvec3
+    // (int-vector) is a Phase 3.2 simplification — it lets `thread_id.x`
+    // resolve to `float` and chains naturally with other vector math.
+    // Strict uvec3 typing is a Phase 3.3 candidate.
+    registerFunction("thread_id",   {}, V3, vec3Return, "GLSL gl_GlobalInvocationID");
+    registerFunction("group_id",    {}, V3, vec3Return, "GLSL gl_WorkGroupID");
+    registerFunction("dispatch_id", {}, V3, vec3Return,
+        "GLSL gl_NumWorkGroups * gl_WorkGroupID (dispatch-space index)");
+
     // ============================================================
     // PBR (Physically-Based Rendering) — Phase 2 Step 3
     // ============================================================

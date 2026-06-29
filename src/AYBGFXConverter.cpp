@@ -214,6 +214,26 @@ void emitExpr(std::ostringstream& out, const phoskia::ir::IRExpr& e,
         if (auto callee = dynamic_cast<const phoskia::ir::IRIdentifierExpr*>(call->callee.get())) {
             if (callee->name == "sample") {
                 out << "texture2D";
+            } else if (callee->name == "thread_id") {
+                // Phase 3.2 Block 2: compute builtin.
+                // Phoskia `thread_id()` → GLSL `gl_GlobalInvocationID`
+                // (uvec3; the type-inference side registers thread_id
+                // as vec3 so .x/.y/.z swizzles resolve to float).
+                out << "gl_GlobalInvocationID";
+                return;  // skip the generic `name(args)` emit below
+            } else if (callee->name == "group_id") {
+                // Phoskia `group_id()` → GLSL `gl_WorkGroupID`.
+                out << "gl_WorkGroupID";
+                return;
+            } else if (callee->name == "dispatch_id") {
+                // Phoskia `dispatch_id()` → GLSL `gl_NumWorkGroups * gl_WorkGroupID`.
+                // The product gives a global workgroup-space index (one
+                // per workgroup, not per thread); for per-thread
+                // dispatch-space users want thread_id instead. We
+                // surface both shapes via separate names rather than
+                // asking callers to multiply by hand.
+                out << "(gl_NumWorkGroups * gl_WorkGroupID)";
+                return;
             } else if (callee->name == "fresnelSchlick") {
                 // F(cosTheta, F0) = F0 + (1 - F0) * (1 - cosTheta)^5
                 // Arity is enforced upstream by the SemanticAnalyzer and
