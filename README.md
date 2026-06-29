@@ -21,6 +21,7 @@ AYShader 是 AY Engine 的着色器子系统：接受 **Phoskia** DSL 源码，�
 | Phase 2.4 | Parser panic-mode 错误恢复 | ✅ |
 | Phase 2.5 | Token 降级重构（`vec3`/`float`/... → `Identifier`） | ✅ |
 | Phase 2 收尾 | Golden file 验证 + PBR 端到端 demo | ✅ |
+| Phase 2.6 | Compute declaration (`compute Foo { }`) — AST + Parser + BGFX stub | ✅ |
 | Phase 3 | IR + HLSL/WGSL 多后端 | 🔜 待开始 |
 
 ---
@@ -103,6 +104,19 @@ material PBR {
 ```
 
 → 编译为 BGFX 三段输出（`vs_PBR.sc` + `fs_PBR.sc` + `varying.def.sc`），再交给 `shaderc.exe` 编译为平台二进制。
+
+**Compute declaration (Phase 2.6 stub):**
+
+```phoskia
+material PBR { vertex { } fragment { } }   // 现有 material 不变
+
+compute ParticleUpdate {                   // 顶层 compute，GPGPU kernel
+    let idx = 0
+    return idx
+}
+```
+
+`compute Name { <body> }` 是与 `material` 平级的顶层声明，定义 GPGPU kernel（粒子模拟、图像处理、GPU 剔除等）。Phase 2.6 完成了语法 + AST + BGFX 后端 stub —— BGFX `.sc` 不支持 compute，会在 `result.errors` 报告 "BGFX .sc does not support compute" 错误（非 fatal，文件中其它 material 仍会正常转换）。HLSL / WGSL 后端实现在 Phase 3。
 
 ---
 

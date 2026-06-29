@@ -328,6 +328,27 @@ Phoskia 的 Lexer / Parser / 后端转换器在实现时**必须**遵守以下�
 
 这十条不是建议，是闸门。每次 PR review 时，任何一条被违反必须立即指出并修复。
 
+## 6.6 Compute declarations (Phase 2.5)
+
+A `compute Name { ... }` block at the top level defines a GPGPU kernel (particle simulation, image processing, GPU culling, lightmap baking — anything that maps to a dispatch).
+
+```phoskia
+material PBR { vertex { } fragment { } }   // existing, unchanged
+
+compute ParticleUpdate {                   // NEW, top-level
+    let idx = 0
+    return idx
+}
+```
+
+**Compute is not a material.** There is no implicit output slot, no `in`/`out` semantic binding, no `gl_Position` / `gl_FragColor` analogue. A `return <expr>` in a compute body is **early-exit** (the thread has nothing to do) — it does NOT bind the return value to a fixed output.
+
+The body is the same statement syntax as a `vertex` / `fragment` block: `let` / `return` / `if` / `for` / expression statements.
+
+Compute is dispatched via the HLSL / WGSL backend (Phase 3). The BGFX `.sc` backend surfaces a clear "BGFX .sc does not support compute" diagnostic so authors know to switch backends. The error is **non-fatal** to other declarations — a `material` in the same file still converts; only `result.success` flips to false and the message lands in `result.errors`.
+
+**Phase 3 additions** (out of scope for Phase 2.5): storage buffer declarations (`storage T : structuredbuffer` / `storage T : rwstructuredbuffer`), thread-id builtins (`thread_id` / `group_id` / `dispatch_id`), `[numthreads(...)]` attribute, HLSL `StructuredBuffer<T>` / `RWStructuredBuffer<T>` emission.
+
 ## 7. 改语法的"链路"
 
 Phoskia 的语法控制在以下 5 个文件里。**改一个语法特性需要同步修改这一组文件**：
@@ -400,6 +421,7 @@ enum class BGFXShaderType {
 - 生成目标平台的 compute shader 源码（HLSL for DX11/DX12、WebGPU SPIR-V 等）
 - 或通过 `bgfx::create_compute_shader()` 直接加载平台特定二进制
 - shaderc 工具链需单独调用（`--type compute`）
+- **Phase 2.5**: 顶层 `compute Name { ... }` declaration 已加入 Phoskia 语法（见 §6.6 / §10 BNF），BGFX 后端在 `result.errors` 报告 "BGFX .sc does not support compute" non-fatal 错误。HLSL / WGSL 后端实现是 Phase 3。
 
 **长期路线**：
 
@@ -498,12 +520,17 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 ## 10. Phoskia 完整语法 BNF
 
 ```bnf
-<program> ::= <material_decl_list>
+<program>           ::= <top_level_decl>*
+
+<top_level_decl>    ::= <material_decl>
+                      | <compute_decl>
 
 <material_decl_list> ::= <material_decl>
                        | <material_decl_list> <material_decl>
 
 <material_decl>     ::= "material" <identifier> "{" <declaration_list> "}"
+
+<compute_decl>      ::= "compute" <identifier> "{" <statement_list> "}"
 
 <declaration_list>   ::= <declaration>
                        | <declaration_list> <declaration>
@@ -664,7 +691,7 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 - [x] 错误恢复与 panic-mode 验证（Step 4：`Parser::synchronize` 跳过到 statement boundary；`parseMaterialDecl` 内层循环也用 synchronize；EOF / 缺失闭合括号 / garbage token 都不再级联）
 - [x] 单元测试与 golden-file 验证（Test_GoldenFiles.cpp 5 个 fixture（unlit / pbr_minimal / pbr_with_emission / pbr_with_texture / empty），golden baseline 自动生成 + AY_SHADER_REGEN_GOLDEN env 强制重生成 + 失败时 byte 级 diff 上下文）
 - [x] **类型名降级重构**（Step 5 完成：13 个 type keyword（Float/Vec2-4/Int/IVec2-4/Mat2-4/Quat/Bool）从 TokenType enum 删除，Lexer 关键字表清空对应 13 行，parsePrimary / parseShaderParam / consumeTypeName 的临时分支全部移除；新增 AYBuiltinTypes.h/.cpp 提供 string_view 查表 `isBuiltinType`；SemanticAnalyzer 在 analyzeUniformDecl 调用 isBuiltinType 校验非 builtin 名字并报 Go 风格错误"line N: 'hello' is not a builtin type (expected: ...)"）
-- [ ] **Compute shader 后端**（HLSL / SPIR-V 生成路径，BGFX `.sc` 不支持 compute）
+- [x] **Compute shader 后端** — Phase 2.5 closes the parser / AST / BGFX-stub half (`compute Name { <body> }` is a top-level declaration, parser builds a `ComputeDecl`, BGFX backend reports "HLSL / WGSL required (Phase 3)" non-fatally). HLSL / WGSL compute backend is Phase 3; storage buffers and thread-id builtins land alongside the HLSL backend. See §6.6 and §10 BNF.
 - [x] **Shader type 动态输出变量**（`gl_Position` / `gl_FragColor`，已完成 `_shadingOutputVar`）
 
 ### Phase 3: IR 与多后端

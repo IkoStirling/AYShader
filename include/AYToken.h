@@ -24,6 +24,7 @@ enum class TokenType : uint8_t {
     Sampler,
     Vertex,
     Fragment,
+    Compute,
     Let,
     If,
     Else,

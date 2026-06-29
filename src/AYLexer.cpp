@@ -116,6 +116,7 @@ TokenType Lexer::identifierType(const std::string& lexeme) {
         {"sampler", TokenType::Sampler},
         {"vertex", TokenType::Vertex},
         {"fragment", TokenType::Fragment},
+        {"compute", TokenType::Compute},
         {"let", TokenType::Let},
         {"if", TokenType::If},
         {"else", TokenType::Else},

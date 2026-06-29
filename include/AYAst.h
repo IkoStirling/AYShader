@@ -44,6 +44,7 @@ class UniformDecl;
 class TextureDecl;
 class VertexFunc;
 class FragmentFunc;
+class ComputeDecl;
 class ShaderParam;
 class VariantAttribute;
 
@@ -258,6 +259,29 @@ public:
     std::vector<StmtPtr> body;
 };
 
+// Top-level GPGPU compute kernel declaration. Phase 2.5 introduces
+// this in the parser / AST and surfaces a friendly diagnostic from
+// the BGFX backend ("HLSL / WGSL backend required (Phase 3)"). The
+// actual HLSL / WGSL backend that lowers this to platform-native
+// compute shader source is Phase 3 work.
+//
+// Compute is *not* a Material: there is no implicit output slot, no
+// in/out semantic binding, no gl_Position / gl_FragColor analogue.
+// `return` in a compute body is early-exit (the thread has nothing
+// to do) — it does NOT bind a return value to a fixed output. There
+// is no `params` / `inputs` vector because storage buffers and
+// thread-id builtins will be Phase 3 additions alongside the HLSL
+// backend (`storage T : structuredbuffer` declarations and
+// `thread_id` / `group_id` builtins live in the body).
+class ComputeDecl : public Stmt {
+public:
+    ComputeDecl(const std::string& name, std::vector<StmtPtr> body)
+        : name(name), body(std::move(body)) {}
+    void accept(AstVisitor& visitor) override;
+    std::string name;
+    std::vector<StmtPtr> body;
+};
+
 class VariantAttribute : public Stmt {
 public:
     explicit VariantAttribute(const std::string& name) : name(name) {}
@@ -285,6 +309,7 @@ public:
     virtual void visit(ShaderParam& node) = 0;
     virtual void visit(VertexFunc& node) = 0;
     virtual void visit(FragmentFunc& node) = 0;
+    virtual void visit(ComputeDecl& node) = 0;
 
     virtual void visit(BinaryExpr& node) = 0;
     virtual void visit(UnaryExpr& node) = 0;
@@ -323,6 +348,7 @@ inline void TextureDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void ShaderParam::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void VertexFunc::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void FragmentFunc::accept(AstVisitor& visitor) { visitor.visit(*this); }
+inline void ComputeDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void VariantAttribute::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void Program::accept(AstVisitor& visitor) { visitor.visit(*this); }
 

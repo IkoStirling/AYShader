@@ -460,4 +460,140 @@ TEST_CASE(pbr_geometry_smith_inlined_in_fs) {
     CHECK(files.fs.find("geometrySmith") == std::string::npos);
 }
 
+// ===== Scalar×vector broadcasting emission =====
+//
+// GLSL accepts component-wise arithmetic in either operand order
+// (`vec3 * float` and `float * vec3` both yield vec3). The BGFX
+// converter just emits the AST as a left-associative chain of
+// parenthesized BinaryExprs, so the GLSL text preserves the user's
+// operand order. These tests pin the emission shape so a refactor
+// that reorders operands (e.g. always normalizing to `vec OP scalar`)
+// is caught.
+TEST_CASE(scalar_times_vec3_emits_scalar_first) {
+    const char* src = R"(
+        material X {
+            vertex { return vec4(0.0) }
+            fragment {
+                let s = 2.0
+                let v = vec3(1.0, 2.0, 3.0)
+                let r = s * v
+                return vec4(r, 1.0)
+            }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    // The let initializer is the user's expression verbatim. We just
+    // want to see (s * v) or ((s) * (v)) in the output — the
+    // ordering of operands within the `*` should match the source.
+    CHECK(files.fs.find("r = (s * v);") != std::string::npos);
+}
+
+TEST_CASE(vec3_times_scalar_emits_vec3_first) {
+    const char* src = R"(
+        material X {
+            vertex { return vec4(0.0) }
+            fragment {
+                let s = 2.0
+                let v = vec3(1.0, 2.0, 3.0)
+                let r = v * s
+                return vec4(r, 1.0)
+            }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    CHECK(files.fs.find("r = (v * s);") != std::string::npos);
+}
+
+TEST_CASE(vec3_plus_scalar_emits_in_source_order) {
+    const char* src = R"(
+        material X {
+            vertex { return vec4(0.0) }
+            fragment {
+                let s = 1.0
+                let v = vec3(2.0, 3.0, 4.0)
+                let r = v + s
+                return vec4(r, 1.0)
+            }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    CHECK(files.fs.find("r = (v + s);") != std::string::npos);
+}
+
+// ===== Phase 2.5: compute declaration stub =====
+//
+// BGFX .sc does not support compute. The converter's contract is:
+//   - `result.success == false`
+//   - `result.errors` contains a clear "HLSL / WGSL required (Phase 3)"
+//     message that names the offending declaration
+//   - The error is non-fatal to other declarations in the same program
+//     (a material in the same file still converts; compute doesn't
+//      block the rest of the pipeline)
+//
+// These tests pin that contract so the BGFX-stub behavior is
+// regression-proof — if a refactor accidentally makes compute fatal
+// (throws) or silent (no error), these fail.
+
+TEST_CASE(compute_declaration_produces_clear_error) {
+    const char* src = R"(
+        compute ParticleUpdate { return 0 }
+    )";
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    auto ast = parser.parse();
+    AYBGFXConverter conv;
+    auto res = conv.convertBGFX(*ast);
+    CHECK(!res.success);
+    CHECK(!res.errors.empty());
+    // The error must reference both the compute declaration name
+    // and the "BGFX .sc does not support compute" diagnostic.
+    bool foundName = false, foundDiagnostic = false;
+    for (const auto& err : res.errors) {
+        if (err.find("ParticleUpdate") != std::string::npos) foundName = true;
+        if (err.find("BGFX .sc does not support compute") != std::string::npos) {
+            foundDiagnostic = true;
+        }
+    }
+    CHECK(foundName);
+    CHECK(foundDiagnostic);
+}
+
+TEST_CASE(compute_alongside_material_converts_material) {
+    // Non-fatal: the compute declaration reports the diagnostic, but
+    // the material in the same program still converts. The error
+    // path must not abort the dispatch loop.
+    const char* src = R"(
+        material Unlit {
+            vertex { return vec4(0.0) }
+            fragment { return vec4(1.0, 0.0, 0.0, 1.0) }
+        }
+        compute ParticleUpdate { return 0 }
+    )";
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    auto ast = parser.parse();
+    AYBGFXConverter conv;
+    auto res = conv.convertBGFX(*ast);
+    // Overall success is false because of the compute diagnostic, but
+    // the material still produced a three-piece set.
+    CHECK(!res.success);
+    CHECK(res.materialFiles.size() == 1);
+    CHECK(!res.materialFiles[0].vs.empty());
+    CHECK(!res.materialFiles[0].fs.empty());
+    // The error must reference the *compute* declaration, not the
+    // material — i.e. the diagnostic is correctly attributed.
+    bool errorIsAboutCompute = false;
+    for (const auto& err : res.errors) {
+        if (err.find("compute") != std::string::npos &&
+            err.find("ParticleUpdate") != std::string::npos) {
+            errorIsAboutCompute = true;
+        }
+    }
+    CHECK(errorIsAboutCompute);
+}
+
 TEST_SUITE_END

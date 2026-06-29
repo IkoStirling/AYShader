@@ -517,6 +517,22 @@ BGFXConvertResult AYBGFXConverter::convertBGFX(const phoskia::Program& ast) {
         for (const auto& decl : ast.declarations) {
             if (auto mat = dynamic_cast<const phoskia::MaterialDecl*>(decl.get())) {
                 result.materialFiles.push_back(convertMaterial(*mat));
+            } else if (auto cmp = dynamic_cast<const phoskia::ComputeDecl*>(decl.get())) {
+                // Phase 2.5: BGFX .sc backend does not support compute.
+                // The HLSL / WGSL compute backend (Phase 3) handles these.
+                // We surface a clear, non-fatal diagnostic so authors
+                // writing GPGPU kernels don't silently get a no-op
+                // conversion. The loop continues so any material
+                // declarations that follow still get converted — the
+                // error is reported in `result.errors` and `success`
+                // flips to false. The caller can then dispatch to a
+                // compute-capable backend via the IAYBackendConverter
+                // registry.
+                result.errors.push_back(
+                    "Compute declaration '" + cmp->name +
+                    "' requires HLSL / WGSL backend (Phase 3); "
+                    "BGFX .sc does not support compute");
+                result.success = false;
             }
         }
     } catch (const std::exception& e) {

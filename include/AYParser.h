@@ -34,6 +34,7 @@ private:
     std::unique_ptr<Expr> parseIndex();
 
     std::unique_ptr<Stmt> parseMaterialDecl();
+    std::unique_ptr<Stmt> parseComputeDecl();
     std::unique_ptr<Stmt> parsePropertyDecl();
     std::unique_ptr<Stmt> parseUniformDecl();
     std::unique_ptr<Stmt> parseTextureDecl();

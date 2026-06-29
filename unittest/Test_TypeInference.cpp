@@ -104,6 +104,112 @@ TEST_CASE(binary_arithmetic_unifies_operands) {
     CHECK(t->equals(*BuiltinTypes::Float));
 }
 
+// ===== Scalar×vector broadcasting (commutative) =====
+//
+// GLSL supports component-wise arithmetic between a scalar and a
+// vector in either operand position: `vec3 * float` and
+// `float * vec3` both yield vec3 (per-component multiply). The
+// same applies to `+` / `-` / `/`. Phoskia's TypeInference mirrors
+// this: the result of a scalar×vector op is the vector side, no
+// matter which side the vector sits on. These tests pin the
+// behaviour so a refactor that breaks commutativity (e.g. always
+// picking the left side) is caught.
+
+namespace {
+// Build a vec3 CallExpr with three float literal components.
+std::unique_ptr<Expr> mkVec3(float x, float y, float z) {
+    std::vector<ExprPtr> args;
+    args.push_back(std::make_unique<LiteralExpr>(x));
+    args.push_back(std::make_unique<LiteralExpr>(y));
+    args.push_back(std::make_unique<LiteralExpr>(z));
+    return std::make_unique<CallExpr>(
+        std::make_unique<IdentifierExpr>("vec3"), std::move(args));
+}
+// Build a vec4 CallExpr.
+std::unique_ptr<Expr> mkVec4(float x, float y, float z, float w) {
+    std::vector<ExprPtr> args;
+    args.push_back(std::make_unique<LiteralExpr>(x));
+    args.push_back(std::make_unique<LiteralExpr>(y));
+    args.push_back(std::make_unique<LiteralExpr>(z));
+    args.push_back(std::make_unique<LiteralExpr>(w));
+    return std::make_unique<CallExpr>(
+        std::make_unique<IdentifierExpr>("vec4"), std::move(args));
+}
+std::unique_ptr<Expr> mkFloat(float v) {
+    return std::make_unique<LiteralExpr>(v);
+}
+Token mkOp(TokenType tt) { Token op; op.type = tt; return op; }
+}  // namespace
+
+TEST_CASE(scalar_times_vec3_returns_vec3) {
+    InferenceEnv e;
+    BinaryExpr bin(mkFloat(2.0f), mkOp(TokenType::Star), mkVec3(1, 2, 3));
+    auto t = resolve(e.inference.infer(bin));
+    CHECK(t->equals(*BuiltinTypes::Vec3()));
+}
+
+TEST_CASE(vec3_times_scalar_returns_vec3) {
+    InferenceEnv e;
+    BinaryExpr bin(mkVec3(1, 2, 3), mkOp(TokenType::Star), mkFloat(2.0f));
+    auto t = resolve(e.inference.infer(bin));
+    CHECK(t->equals(*BuiltinTypes::Vec3()));
+}
+
+TEST_CASE(scalar_plus_vec3_returns_vec3) {
+    InferenceEnv e;
+    BinaryExpr bin(mkFloat(1.0f), mkOp(TokenType::Plus), mkVec3(2, 3, 4));
+    auto t = resolve(e.inference.infer(bin));
+    CHECK(t->equals(*BuiltinTypes::Vec3()));
+}
+
+TEST_CASE(vec3_minus_scalar_returns_vec3) {
+    InferenceEnv e;
+    BinaryExpr bin(mkVec3(2, 3, 4), mkOp(TokenType::Minus), mkFloat(1.0f));
+    auto t = resolve(e.inference.infer(bin));
+    CHECK(t->equals(*BuiltinTypes::Vec3()));
+}
+
+TEST_CASE(scalar_over_vec3_returns_vec3) {
+    InferenceEnv e;
+    BinaryExpr bin(mkFloat(6.0f), mkOp(TokenType::Slash), mkVec3(2, 3, 6));
+    auto t = resolve(e.inference.infer(bin));
+    CHECK(t->equals(*BuiltinTypes::Vec3()));
+}
+
+TEST_CASE(vec3_over_scalar_returns_vec3) {
+    InferenceEnv e;
+    BinaryExpr bin(mkVec3(2, 3, 6), mkOp(TokenType::Slash), mkFloat(2.0f));
+    auto t = resolve(e.inference.infer(bin));
+    CHECK(t->equals(*BuiltinTypes::Vec3()));
+}
+
+TEST_CASE(scalar_times_vec4_returns_vec4) {
+    InferenceEnv e;
+    BinaryExpr bin(mkFloat(0.5f), mkOp(TokenType::Star), mkVec4(1, 1, 1, 1));
+    auto t = resolve(e.inference.infer(bin));
+    CHECK(t->equals(*BuiltinTypes::Vec4()));
+}
+
+TEST_CASE(vec4_times_scalar_returns_vec4) {
+    InferenceEnv e;
+    BinaryExpr bin(mkVec4(1, 1, 1, 1), mkOp(TokenType::Star), mkFloat(0.5f));
+    auto t = resolve(e.inference.infer(bin));
+    CHECK(t->equals(*BuiltinTypes::Vec4()));
+}
+
+// Chained scalar×vector (e.g. PBR `D * G * F / max(4*NdotV, 0.001)`):
+// the result of each step is the wider type, and the next op
+// broadcasts from the other side again.
+TEST_CASE(chained_scalar_vector_vector_returns_vector) {
+    InferenceEnv e;
+    // ((float * vec3) * vec3) — left-assoc parse.
+    auto inner = std::make_unique<BinaryExpr>(
+        mkFloat(2.0f), mkOp(TokenType::Star), mkVec3(1, 1, 1));
+    BinaryExpr outer(std::move(inner), mkOp(TokenType::Star), mkVec3(3, 3, 3));
+    auto t = resolve(e.inference.infer(outer));
+    CHECK(t->equals(*BuiltinTypes::Vec3()));
+}
+
 TEST_CASE(binary_comparison_returns_bool) {
     InferenceEnv e;
     auto a = std::make_unique<LiteralExpr>(1.0f);

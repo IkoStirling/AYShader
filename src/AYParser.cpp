@@ -15,6 +15,7 @@ static const char* tokenTypeName(TokenType t) {
         case TokenType::Sampler: return "Sampler";
         case TokenType::Vertex: return "Vertex";
         case TokenType::Fragment: return "Fragment";
+        case TokenType::Compute: return "Compute";
         case TokenType::Let: return "Let";
         case TokenType::If: return "If";
         case TokenType::Else: return "Else";
@@ -98,6 +99,13 @@ std::unique_ptr<Program> Parser::parse() {
 std::unique_ptr<Stmt> Parser::parseStatement() {
     if (match(TokenType::Material)) {
         return parseMaterialDecl();
+    }
+    if (match(TokenType::Compute)) {
+        // Top-level `compute Name { <body> }` — Phase 2.5 introduction.
+        // The BGFX backend stub reports "HLSL / WGSL required" so authors
+        // get a friendly diagnostic; the actual HLSL / WGSL compute
+        // backend is Phase 3.
+        return parseComputeDecl();
     }
     if (match(TokenType::Property)) {
         return parsePropertyDecl();
@@ -314,6 +322,37 @@ std::unique_ptr<Stmt> Parser::parseMaterialDecl() {
     }
 
     return std::make_unique<MaterialDecl>(name.lexeme, std::move(declarations));
+}
+
+std::unique_ptr<Stmt> Parser::parseComputeDecl() {
+    // Top-level `compute Name { <body> }` (Phase 2.5). Body is the same
+    // statement syntax as a vertex / fragment block — `let`, `return`,
+    // `if`, `for`, expression statements. No in/out semantic binding,
+    // no implicit output slot, no gl_Position / gl_FragColor analogue.
+    // Storage buffers and thread-id builtins (Phase 3 additions) live
+    // alongside the HLSL backend; for now the body is just statements.
+    Token name = consumeName("Expected compute name");
+    consume(TokenType::LeftBrace, "Expected '{' before compute body");
+
+    std::vector<StmtPtr> body;
+    while (!check(TokenType::RightBrace) && !isAtEnd()) {
+        size_t before = _current;
+        if (auto stmt = parseStatement()) {
+            // Guard against the same null-ExprStmt trap that
+            // parseVertexFunc / parseFragmentFunc handle: an empty
+            // expression parse shouldn't enter the body.
+            if (stmt) body.push_back(std::move(stmt));
+        } else {
+            synchronize();
+        }
+        if (_current == before) {
+            // Stuck — force advance to avoid an infinite loop.
+            advance();
+        }
+    }
+
+    consume(TokenType::RightBrace, "Expected '}' after compute body");
+    return std::make_unique<ComputeDecl>(name.lexeme, std::move(body));
 }
 
 std::unique_ptr<Stmt> Parser::parsePropertyDecl() {
@@ -723,6 +762,7 @@ void Parser::synchronize() {
     while (!isAtEnd()) {
         switch (current().type) {
             case TokenType::Material:
+            case TokenType::Compute:
             case TokenType::Property:
             case TokenType::Uniform:
             case TokenType::Texture2D:

@@ -117,6 +117,85 @@ TEST_CASE(multiple_materials) {
     CHECK(countDecls<MaterialDecl>(*prog) == 2);
 }
 
+// ===== Compute declaration (Phase 2.5) =====
+//
+// `compute Name { <body> }` is a top-level declaration that mirrors
+// `material` but defines a GPGPU kernel rather than a renderable
+// surface. Phase 2.5 introduces the parser / AST half; the BGFX
+// backend reports a friendly "HLSL / WGSL required (Phase 3)"
+// diagnostic. These tests pin the parser shape so a refactor that
+// accidentally puts compute inside `material { }` or breaks the
+// body parsing is caught.
+
+TEST_CASE(compute_declaration_minimal) {
+    auto prog = parseSource("compute Foo { }");
+    CHECK(prog != nullptr);
+    CHECK(prog->declarations.size() == 1);
+    auto* cmp = dynamic_cast<ComputeDecl*>(prog->declarations[0].get());
+    CHECK(cmp != nullptr);
+    CHECK(cmp->name == "Foo");
+    CHECK(cmp->body.empty());
+    // Compute is not a Material — the dispatch must NOT treat it as one.
+    CHECK(dynamic_cast<MaterialDecl*>(prog->declarations[0].get()) == nullptr);
+}
+
+TEST_CASE(compute_declaration_with_body) {
+    const char* src = R"(
+        compute Foo {
+            let x = 0
+            return x
+        }
+    )";
+    auto prog = parseSource(src);
+    auto* cmp = dynamic_cast<ComputeDecl*>(prog->declarations[0].get());
+    CHECK(cmp != nullptr);
+    CHECK(cmp->name == "Foo");
+    CHECK(cmp->body.size() == 2);
+    CHECK(dynamic_cast<LetStmt*>(cmp->body[0].get()) != nullptr);
+    CHECK(dynamic_cast<ReturnStmt*>(cmp->body[1].get()) != nullptr);
+}
+
+TEST_CASE(compute_keyword_recognized) {
+    // The lexer's keyword table must classify `compute` as
+    // TokenType::Compute (not Identifier) so the parser dispatch
+    // catches it. Without this, parseStatement falls through to the
+    // bare-expression path and fails the test.
+    Lexer lexer("compute Foo { }");
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    CHECK(tokens[0].type == TokenType::Compute);
+    CHECK(tokens[0].lexeme == "compute");
+}
+
+TEST_CASE(compute_top_level_alongside_material) {
+    // `compute` is a top-level decl — it sits next to `material`, not
+    // inside it. The dispatcher must produce one MaterialDecl and one
+    // ComputeDecl in the program's declarations list.
+    const char* src = R"(
+        material A { vertex { } fragment { } }
+        compute B { let x = 1.0; return x }
+    )";
+    auto prog = parseSource(src);
+    CHECK(prog != nullptr);
+    CHECK(prog->declarations.size() == 2);
+    CHECK(dynamic_cast<MaterialDecl*>(prog->declarations[0].get()) != nullptr);
+    auto* cmp = dynamic_cast<ComputeDecl*>(prog->declarations[1].get());
+    CHECK(cmp != nullptr);
+    CHECK(cmp->name == "B");
+    CHECK(cmp->body.size() == 2);
+}
+
+TEST_CASE(compute_missing_brace_is_error) {
+    // No closing '}' — the parser must report a structural error
+    // rather than silently accept the partial program.
+    Lexer lexer("compute Foo { let x = 0");
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    parser.parse();
+    CHECK(parser.hasErrors());
+}
+
 // ===== Vertex block =====
 
 TEST_CASE(vertex_with_in_params) {
