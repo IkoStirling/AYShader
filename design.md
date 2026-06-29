@@ -349,6 +349,45 @@ Compute is dispatched via the HLSL / WGSL backend (Phase 3). The BGFX `.sc` back
 
 **Phase 3 additions** (out of scope for Phase 2.5): storage buffer declarations (`storage T : structuredbuffer` / `storage T : rwstructuredbuffer`), thread-id builtins (`thread_id` / `group_id` / `dispatch_id`), `[numthreads(...)]` attribute, HLSL `StructuredBuffer<T>` / `RWStructuredBuffer<T>` emission.
 
+## 6.7 Phoskia IR (Phase 3.1)
+
+**Motivation.** Before Phase 3.1, the BGFX backend consumed the Phoskia AST directly via manual `for`-loop + `dynamic_cast` (`src/AYBGFXConverter.cpp`, 891 lines). The next backend (HLSL / WGSL) would have had to duplicate that traversal. Phase 3.1 inserts a **target-neutral IR** between AST and backends so adding a backend is "implement one `IAYBackendConverter`" rather than "rewrite AST traversal from scratch".
+
+**Shape.** The IR lives in `namespace ayt::shader::phoskia::ir` (see `include/AYIr.h`). It is a **1:1 mirror of the AST** with one key addition: every `IRExpr` carries a `std::shared_ptr<Type> resolvedType` populated at IR-generation time. The discriminator wrapper `IRDeclaration` unifies `UniformDecl` / `PropertyDecl` / `TextureDecl` into a single tagged struct (kind: `Uniform | Property | Texture`), each with its target-neutral fields (no GLSL lexeme strings leaking out of the AST). `SamplerKind { Sampler2D, Sampler3D, SamplerCube }` is the IR-side counterpart of the future `texture3d` / `textureCube` lexer keywords.
+
+| AST (Phase 2) | IR (Phase 3.1) |
+|---|---|
+| `phoskia::Program` | `ir::IRProgram { materials, computes, warnings }` |
+| `MaterialDecl` | `IRMaterialDecl { name, declarations, vertex, fragment }` (declarations pre-sorted; vertex/fragment are first-class fields) |
+| `VertexFunc` / `FragmentFunc` | `IRVertexFunc` / `IRFragmentFunc` |
+| `ComputeDecl` | `IRComputeDecl` (unchanged shape — Phase 3.2 HLSL backend implements it) |
+| `UniformDecl { type: GLSL lexeme, name }` | `IRDeclaration { kind: Uniform, name, uniformType: Type ptr }` |
+| `PropertyDecl { name, initializer }` | `IRDeclaration { kind: Property, name, propertyInit }` |
+| `TextureDecl { name }` | `IRDeclaration { kind: Texture, name, samplerKind }` |
+| `ShaderParam` | `IRShaderParam` |
+| 7 Expr subclasses | 7 IRExpr subclasses + `resolvedType` |
+| 7 body Stmt subclasses | 7 IRStmt subclasses (no resolvedType — only expressions have types) |
+
+**Type resolution.** `IRGenerator::generate(ast, typeEnv)` (see `src/AYIr.cpp`) walks the AST exactly once. For each expression it sets `resolvedType` by:
+1. **Identifier lookup** in the caller-supplied `TypeEnvironment` (when `SemanticAnalyzer` ran), or
+2. **On-demand `TypeInference::infer`** as a graceful-degradation path when no env is supplied. The result is a `TypeVar` chain resolved to its concrete root via `resolveTypeVar`.
+
+This eliminates the previous pattern where the BGFX converter re-ran `TypeInference` per LetStmt at emission time (the bug history at `b9723a5` for `vec3` property initializers was rooted in this re-inference cost).
+
+**Why mirror, not SSA?** A previous TODO comment in `include/AYPhoskia.h` sketched an SSA-style instruction stream (`Load/Store/Add/Mul/Phi/BasicBlock`). SSA requires designing memory model, dominance frontiers, and phi placement — real work for an optimization pass. For backend emission, the mirror-IR with pre-resolved types is sufficient. If/when cross-backend optimization (constant folding, DCE, redundancy elimination) becomes a goal, an SSA layer can be added **on top of** this IR.
+
+**What the IR does NOT do** (deferred to later phases):
+- No SSA-style instruction stream / dominance frontiers / phi nodes (Phase 3.x optimization)
+- No cross-backend optimization passes (constant folding, DCE) — requires SSA first
+- No HLSL backend (Phase 3.2)
+- No WGSL backend (Phase 3.3)
+- No `storage` declarations inside `compute` (Phase 3.2 — comes with the HLSL backend that needs them)
+- No backend-registry improvements (single-backend dispatch works fine today)
+
+**Pipeline integration.** `Compiler::runPipeline` (in `src/AYPhoskia.cpp`) now inserts `IRGenerator::generate` between the parse / semantic phases and backend dispatch. The IR is always generated; backends consume `result.ir` instead of `result.ast`. The Phoskia **surface language is unchanged** — IR is internal.
+
+**API break.** `IAYBackendConverter::convert` now takes `const phoskia::ir::IRProgram& program` instead of `const phoskia::Program& ast`. The only implementer today (`AYBGFXConverter`) was retargeted; the behavior is byte-for-byte identical to the AST path (golden + shaderc e2e tests pass).
+
 ## 7. 改语法的"链路"
 
 Phoskia 的语法控制在以下 5 个文件里。**改一个语法特性需要同步修改这一组文件**：
@@ -695,6 +734,7 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 - [x] **Shader type 动态输出变量**（`gl_Position` / `gl_FragColor`，已完成 `_shadingOutputVar`）
 
 ### Phase 3: IR 与多后端
+- [x] **IR 层定义 + AST→IR 降级 + BGFX 后端 retarget**（Phase 3.1）：IR 是 AST 的 1:1 镜像（`include/AYIr.h`），每个 IR 表达式携带 `resolvedType` 在降级时由 IRGenerator 一次性 resolve；backends 读 `expr.resolvedType` 不再跑 TypeInference。BGFX 已 retarget 完毕，golden + shaderc e2e 全部通过。详见 §6.7。
 - [ ] IR 设计实现（SSA 形式）
 - [ ] HLSL 后端 (`AYHLSLConverter`) — 含 Compute / Ray shader 支持
 - [ ] WGSL 后端 (`AYWGLSConverter`)

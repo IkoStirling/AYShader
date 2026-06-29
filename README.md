@@ -22,7 +22,9 @@ AYShader 是 AY Engine 的着色器子系统：接受 **Phoskia** DSL 源码，�
 | Phase 2.5 | Token 降级重构（`vec3`/`float`/... → `Identifier`） | ✅ |
 | Phase 2 收尾 | Golden file 验证 + PBR 端到端 demo | ✅ |
 | Phase 2.6 | Compute declaration (`compute Foo { }`) — AST + Parser + BGFX stub | ✅ |
-| Phase 3 | IR + HLSL/WGSL 多后端 | 🔜 待开始 |
+| Phase 3.1 | Phoskia IR (`AYIr`) + AST→IR 降级 + BGFX retarget | ✅ |
+| Phase 3.2 | HLSL 后端（material + 完整 compute） | 🔜 待开始 |
+| Phase 3.3 | WGSL 后端（material + 完整 compute） | 🔜 待开始 |
 
 ---
 
@@ -32,14 +34,14 @@ AYShader 是 AY Engine 的着色器子系统：接受 **Phoskia** DSL 源码，�
 # Build（CMake 已配置 AYShader / AYShader_Test）
 cmake --build <build-dir>
 
-# 跑全部测试（默认 opt-in：564 测试，包含 shaderc e2e 自动跳过若 shaderc 不可用）
+# 跑全部测试（默认 opt-in：624 测试，包含 shaderc e2e 自动跳过若 shaderc 不可用）
 <build-dir>/AYShader_Test.exe
 
 # 重生成 golden baseline（converter 改动后用一次）
 AY_SHADER_REGEN_GOLDEN=1 <build-dir>/AYShader_Test.exe
 ```
 
-最后一次完整跑：**564 / 564 PASS**（截至 commit `ae1028d`）。
+最后一次完整跑：**624 / 624 PASS**（截至 Phase 3.1 commit）。
 
 ### 测试套件
 
@@ -56,6 +58,7 @@ AY_SHADER_REGEN_GOLDEN=1 <build-dir>/AYShader_Test.exe
 | `Test_PBRFunctions.cpp` | FresnelSchlick / GGX / Smith 的数学性质 |
 | `Test_BuiltinTypes.cpp` | `AYBuiltinTypes::isBuiltinType` 全覆盖 |
 | `Test_GoldenFiles.cpp` | 5 个 Phoskia fixture 输出 byte-equal 比对 baseline |
+| `Test_IrGenerator.cpp` | Phase 3.1 IR 层：AST→IR 降级 + resolvedType + 完整 BGFX retarget |
 
 ### Golden fixture
 
@@ -139,6 +142,7 @@ AYShader/
 │   ├── AYBuiltinFunctions.h
 │   ├── AYCompilerError.h
 │   ├── AYPhoskia.h
+│   ├── AYIr.h
 │   ├── IAYBackendConverter.h
 │   ├── AYBGFXConverter.h
 │   ├── AYShaderProgram.h

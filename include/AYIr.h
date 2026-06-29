@@ -1,0 +1,348 @@
+#pragma once
+// AYIr.h - Phoskia Intermediate Representation (IR)
+//
+// Phase 3.1 introduces a target-neutral IR layer between the Phoskia AST
+// and backend converters. The IR is a 1:1 mirror of the AST nodes — every
+// AST node has exactly one IR node counterpart — with one key addition:
+// every IR expression carries a `resolvedType` populated at IR-generation
+// time. Backends consume the IR instead of the AST; they read types from
+// the pre-resolved fields rather than re-running type inference.
+//
+// This is deliberately NOT SSA-style. SSA (Load/Store/Add/Mul/Phi/BasicBlock)
+// requires deciding memory model, dominance frontiers, and phi placement,
+// which is real design work for an optimization pass. The AST-mirror IR is
+// sufficient for backend emission today; if cross-backend optimization
+// (constant folding, dead-code elimination) becomes a goal, an SSA layer
+// can be added ON TOP of this IR.
+//
+// Class layout follows AYAst.h: forward declarations first, then base
+// classes, then concrete node classes, then accept() out-of-line.
+
+#include "AYAst.h"   // PhoskiaSemantic, Token reused for IRBinaryExpr.op etc.
+#include "AYType.h"
+#include <memory>
+#include <vector>
+#include <string>
+#include <unordered_map>
+
+namespace ayt::shader::phoskia::ir
+{
+
+// (1) Forward declarations
+class IRNode;
+class IRExpr;
+class IRStmt;
+class IRDeclaration;
+
+class IRBinaryExpr;
+class IRUnaryExpr;
+class IRCallExpr;
+class IRIdentifierExpr;
+class IRLiteralExpr;
+class IRMemberExpr;
+class IRIndexExpr;
+
+class IRLetStmt;
+class IRReturnStmt;
+class IRIfStmt;
+class IRForStmt;
+class IRExprStmt;
+class IRVariantAttribute;
+class IRShaderParam;
+class IRVertexFunc;
+class IRFragmentFunc;
+class IRMaterialDecl;
+class IRComputeDecl;
+
+// Sampler kind for texture declarations. The AST's TextureDecl has no
+// sampler-kind field (BGFX hardcodes sampler2D), but the IR is the right
+// place to carry it so HLSL (Texture2D + SamplerState) and WGSL
+// (texture_2d<f32>) backends can map correctly. The IRGenerator infers
+// Sampler2D from the existing `texture2d` keyword today; future texture
+// types add new lexer keywords without IR changes.
+enum class SamplerKind : uint8_t {
+    Sampler2D,
+    Sampler3D,
+    SamplerCube,
+};
+
+// (2) Base class
+class IRNode {
+public:
+    virtual ~IRNode() = default;
+};
+
+// (3) Concrete Expr nodes — all carry resolvedType.
+class IRExpr : public IRNode {
+public:
+    virtual ~IRExpr() = default;
+    // Resolved at IR-generation time. nullptr means the IRGenerator could
+    // not infer a concrete type (e.g. unresolved identifier). Backends
+    // must treat nullptr as "unknown" and fall back to defaults.
+    std::shared_ptr<Type> resolvedType;
+};
+using IRExprPtr = std::unique_ptr<IRExpr>;
+
+class IRBinaryExpr : public IRExpr {
+public:
+    IRBinaryExpr(IRExprPtr left, Token op, IRExprPtr right)
+        : left(std::move(left)), op(op), right(std::move(right)) {}
+    IRExprPtr left;
+    Token op;
+    IRExprPtr right;
+};
+
+class IRUnaryExpr : public IRExpr {
+public:
+    IRUnaryExpr(Token op, IRExprPtr operand)
+        : op(op), operand(std::move(operand)) {}
+    Token op;
+    IRExprPtr operand;
+};
+
+class IRCallExpr : public IRExpr {
+public:
+    IRCallExpr(IRExprPtr callee, std::vector<IRExprPtr> args)
+        : callee(std::move(callee)), args(std::move(args)) {}
+    IRExprPtr callee;
+    std::vector<IRExprPtr> args;
+};
+
+class IRIdentifierExpr : public IRExpr {
+public:
+    explicit IRIdentifierExpr(const std::string& name) : name(name) {}
+    std::string name;
+};
+
+class IRLiteralExpr : public IRExpr {
+public:
+    IRLiteralExpr(std::variant<std::monostate, bool, float, int, std::string> value)
+        : value(value) {}
+    std::variant<std::monostate, bool, float, int, std::string> value;
+};
+
+class IRMemberExpr : public IRExpr {
+public:
+    IRMemberExpr(IRExprPtr object, const std::string& member)
+        : object(std::move(object)), member(member) {}
+    IRExprPtr object;
+    std::string member;
+};
+
+class IRIndexExpr : public IRExpr {
+public:
+    IRIndexExpr(IRExprPtr object, IRExprPtr index)
+        : object(std::move(object)), index(std::move(index)) {}
+    IRExprPtr object;
+    IRExprPtr index;
+};
+
+// (4) Concrete Stmt nodes — no resolvedType (only expressions have types).
+class IRStmt : public IRNode {
+public:
+    virtual ~IRStmt() = default;
+};
+using IRStmtPtr = std::unique_ptr<IRStmt>;
+
+class IRLetStmt : public IRStmt {
+public:
+    IRLetStmt(const std::string& name, IRExprPtr initializer)
+        : name(name), initializer(std::move(initializer)) {}
+    std::string name;
+    IRExprPtr initializer;
+};
+
+class IRReturnStmt : public IRStmt {
+public:
+    explicit IRReturnStmt(IRExprPtr value) : value(std::move(value)) {}
+    IRExprPtr value;
+};
+
+class IRIfStmt : public IRStmt {
+public:
+    IRIfStmt() = default;
+    IRIfStmt(IRExprPtr condition,
+             std::vector<IRStmtPtr> thenBranch,
+             std::vector<IRStmtPtr> elseBranch)
+        : condition(std::move(condition)),
+          thenBranch(std::move(thenBranch)),
+          elseBranch(std::move(elseBranch)) {}
+    IRExprPtr condition;
+    std::vector<IRStmtPtr> thenBranch;
+    std::vector<IRStmtPtr> elseBranch;
+};
+
+class IRForStmt : public IRStmt {
+public:
+    IRForStmt() = default;
+    IRForStmt(const std::string& variable, IRExprPtr iterable, std::vector<IRStmtPtr> body)
+        : variable(variable), iterable(std::move(iterable)), body(std::move(body)) {}
+    std::string variable;
+    IRExprPtr iterable;
+    std::vector<IRStmtPtr> body;
+};
+
+class IRExprStmt : public IRStmt {
+public:
+    explicit IRExprStmt(IRExprPtr expr) : expr(std::move(expr)) {}
+    IRExprPtr expr;
+};
+
+class IRVariantAttribute : public IRStmt {
+public:
+    explicit IRVariantAttribute(const std::string& name) : name(name) {}
+    std::string name;
+};
+
+// (5) Declaration node (discriminated wrapper for Uniform / Property /
+// Texture). The IR unifies these three AST classes into a single tagged
+// struct because they share the same emission pattern in backends
+// (emit-as-uniform-decl, emit-as-uniform-with-init, emit-as-sampler)
+// and the discriminator simplifies backend dispatch.
+//
+// Why unify now (Phase 3.1)?
+// - The AST's three classes leak a GLSL lexeme string in UniformDecl
+//   (`type: "float"`, `"vec3"`, ...) and have no sampler-kind on
+//   TextureDecl. The IR fixes both: `uniformType` is a Type pointer
+//   (target-agnostic) and `samplerKind` is an enum.
+// - The backends (BGFX today, HLSL/WGSL in 3.2/3.3) iterate one vector
+//   of declarations per material rather than three sequential scans.
+class IRDeclaration : public IRNode {
+public:
+    enum class Kind : uint8_t { Uniform, Property, Texture };
+
+    Kind kind;
+    std::string name;
+
+    // === Uniform ===
+    std::shared_ptr<Type> uniformType;     // non-null only when kind == Uniform
+    IRExprPtr uniformInit;                 // optional initializer (some uniforms default-init)
+
+    // === Property ===
+    IRExprPtr propertyInit;                // non-null only when kind == Property
+
+    // === Texture ===
+    SamplerKind samplerKind = SamplerKind::Sampler2D;  // only when kind == Texture
+    int binding = -1;                                   // optional; backends may override
+
+    IRDeclaration() : kind(Kind::Uniform) {}
+};
+
+// (6) ShaderParam — same shape as AST but living in the IR namespace.
+// Carries PhoskiaSemantic so each backend does its own slot mapping
+// (bgfx: POSITION/NORMAL/COLOR0/TEXCOORD0; HLSL: SV_Position/SV_Normal/etc;
+// WGSL: @builtin(position) / @location(0) etc).
+class IRShaderParam : public IRStmt {
+public:
+    enum class Direction { In, Out };
+    Direction dir;
+    std::string name;
+    PhoskiaSemantic semantic;
+    IRExprPtr defaultValue;  // only meaningful for `out`
+};
+
+// (7) Vertex/Fragment/Compute/Function decls — same shape as AST.
+class IRVertexFunc : public IRStmt {
+public:
+    IRVertexFunc() = default;
+    IRVertexFunc(std::vector<IRStmtPtr> params, std::vector<IRStmtPtr> body)
+        : params(std::move(params)), body(std::move(body)) {}
+    std::vector<IRStmtPtr> params;  // contains IRShaderParam entries
+    std::vector<IRStmtPtr> body;    // contains IRLetStmt / IRReturnStmt / IRExprStmt / IRVariantAttribute
+};
+
+class IRFragmentFunc : public IRStmt {
+public:
+    IRFragmentFunc() = default;
+    IRFragmentFunc(std::vector<IRStmtPtr> inputs, std::vector<IRStmtPtr> body)
+        : inputs(std::move(inputs)), body(std::move(body)) {}
+    std::vector<IRStmtPtr> inputs;  // IRShaderParam (In only)
+    std::vector<IRStmtPtr> body;
+};
+
+// Material: contains declarations (uniforms / properties / textures) plus
+// a single vertex function and a single fragment function. The IR separates
+// the four decl kinds into pre-sorted fields so backends don't have to
+// scan a single vector twice.
+class IRMaterialDecl : public IRStmt {
+public:
+    std::string name;
+    std::vector<std::unique_ptr<IRDeclaration>> declarations;  // Uniform / Property / Texture
+    std::unique_ptr<IRVertexFunc> vertex;
+    std::unique_ptr<IRFragmentFunc> fragment;
+};
+
+// Compute: GPGPU kernel. Phase 3.2 HLSL backend will add storage buffer
+// declarations and thread_id/group_id builtins; the IR carries this shape
+// unchanged from the AST (Phase 2.5 ComputeDecl) so HLSL can implement
+// compute lowering without revisiting the AST/parser.
+class IRComputeDecl : public IRStmt {
+public:
+    std::string name;
+    std::vector<IRStmtPtr> body;
+};
+
+// (8) Top-level IR container.
+struct IRProgram {
+    std::vector<std::unique_ptr<IRMaterialDecl>> materials;
+    std::vector<std::unique_ptr<IRComputeDecl>> computes;
+    // Non-fatal diagnostics from IR generation (e.g. "could not infer
+    // type for X; defaulting to vec4"). Backends can ignore these;
+    // callers can surface them via CompileResult.
+    std::vector<std::string> warnings;
+};
+
+// (9) IRGenerator — single entry point that lowers a parsed Phoskia
+// Program (AST) into an IRProgram. Optionally takes a pre-populated
+// TypeEnvironment from SemanticAnalyzer; if absent, it runs TypeInference
+// on demand (graceful degradation).
+class IRGenerator {
+public:
+    IRProgram generate(const phoskia::Program& ast,
+                       std::shared_ptr<phoskia::TypeEnvironment> typeEnv = nullptr);
+
+private:
+    // Lowering helpers — one per AST node class. Mirrors the AST shape;
+    // no big-picture transformations (those are backend work / future SSA).
+    std::unique_ptr<IRExpr> lowerExpr(const phoskia::Expr& e,
+                                      phoskia::TypeEnvironment* scopeEnv = nullptr);
+    std::unique_ptr<IRStmt> lowerStmt(const phoskia::Stmt& s,
+                                      phoskia::TypeEnvironment* scopeEnv = nullptr);
+    std::unique_ptr<IRDeclaration> lowerDecl(const phoskia::Stmt& s);
+
+    // Helpers for shader-param + vertex/fragment decl lowering. These
+    // extract pre-sorted IR fields directly into the IRMaterialDecl.
+    std::unique_ptr<IRShaderParam> lowerShaderParam(const phoskia::ShaderParam& p);
+    std::unique_ptr<IRVertexFunc> lowerVertexFuncWithEnv(const phoskia::VertexFunc& vf,
+                                                         phoskia::TypeEnvironment& env);
+    std::unique_ptr<IRFragmentFunc> lowerFragmentFuncWithEnv(const phoskia::FragmentFunc& ff,
+                                                             phoskia::TypeEnvironment& env);
+    std::unique_ptr<IRMaterialDecl> lowerMaterialDecl(const phoskia::MaterialDecl& m);
+    std::unique_ptr<IRComputeDecl> lowerComputeDecl(const phoskia::ComputeDecl& c);
+
+    // Resolve type for a single expression. Runs TypeInference when no
+    // pre-resolved type is available; returns nullptr when even
+    // TypeInference can't infer a concrete type. `scopeEnv` (when
+    // non-null) is the per-block env that has accumulated uniform +
+    // property + in/out + let-stmt bindings — passing it ensures
+    // identifier references resolve to concrete types instead of
+    // fresh TypeVars (critical for chain-of-arithmetic on prior lets).
+    std::shared_ptr<Type> resolveType(const phoskia::Expr& e,
+                                      phoskia::TypeEnvironment* scopeEnv = nullptr);
+
+    // Resolve a TypeVar chain to a concrete Type (walks solution ptrs).
+    std::shared_ptr<Type> resolveTypeVar(std::shared_ptr<Type> t) const;
+
+    // Convert a Phoskia AST type-pointer (or GLSL lexeme) to a Type
+    // pointer. Used for uniform type bindings.
+    std::shared_ptr<Type> typeFromGLSLLexeme(const std::string& lex) const;
+
+    // Warnings accumulated during generation.
+    std::vector<std::string> _warnings;
+
+    // Caller-supplied TypeEnvironment (from SemanticAnalyzer); nullptr
+    // means "no env — fall back to running TypeInference per expression".
+    std::shared_ptr<phoskia::TypeEnvironment> _env;
+};
+
+} // namespace ayt::shader::phoskia::ir

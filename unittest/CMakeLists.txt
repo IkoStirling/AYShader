@@ -15,6 +15,7 @@ set(TEST_FILES
     Test_ParserRecovery.cpp
     Test_BuiltinTypes.cpp
     Test_GoldenFiles.cpp
+    Test_IrGenerator.cpp
 )
 
 add_executable(${TEST_NAME} ${TEST_FILES})

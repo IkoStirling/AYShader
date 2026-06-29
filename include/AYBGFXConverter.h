@@ -7,6 +7,7 @@
 
 #include "IAYBackendConverter.h"
 #include "AYAst.h"
+#include "AYIr.h"
 #include <string>
 #include <vector>
 
@@ -60,11 +61,11 @@ public:
     Platform targetPlatform() const override { return Platform::BGFX; }
     const char* targetExtension() const override { return ".sc"; }
 
-    BGFXConvertResult convertBGFX(const phoskia::Program& ast);
-    ConvertResult convert(const phoskia::Program& ast) override;
+    BGFXConvertResult convertBGFX(const phoskia::ir::IRProgram& program);
+    ConvertResult convert(const phoskia::ir::IRProgram& program) override;
 
     // Compile one material into its three-piece set.
-    BGFXShaderFiles convertMaterial(const phoskia::MaterialDecl& material);
+    BGFXShaderFiles convertMaterial(const phoskia::ir::IRMaterialDecl& material);
 
     std::vector<std::string_view> getCompilerArgs() const override {
         // BGFX backend emits a three-piece set per material; the frontend
@@ -78,8 +79,8 @@ public:
     const std::vector<BGFXTexture>& getTextures() const { return _textures; }
 
 private:
-    void generateProperty(const phoskia::PropertyDecl& prop);
-    void generateExpr(const phoskia::Expr& expr);
+    void generateProperty(const phoskia::ir::IRDeclaration& decl);
+    void generateExpr(const phoskia::ir::IRExpr& expr);
 
     // Temporary state used during convertMaterial(); populated by the
     // helper methods above and consumed when assembling the three files.

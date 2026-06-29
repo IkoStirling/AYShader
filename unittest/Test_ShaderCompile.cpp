@@ -20,6 +20,7 @@
 #include "AYLexer.h"
 #include "AYParser.h"
 #include "AYAst.h"
+#include "AYIr.h"
 #include "AYTest.h"
 
 #include <cstdio>
@@ -320,13 +321,14 @@ TEST_CASE(shaderc_compiles_minimal_unlit) {
     CHECK(compileResult.success);
 
     AYBGFXConverter conv;
-    auto ast = conv.convertBGFX(*compiler.parse(
+    ir::IRGenerator gen;
+    auto ast = conv.convertBGFX(gen.generate(*compiler.parse(
         [&]{
             Lexer lx(src);
             std::vector<Token> tk;
             lx.tokenize(tk);
             return tk;
-        }()));
+        }())));
     CHECK(ast.success);
     CHECK(ast.materialFiles.size() == 1);
 
@@ -418,8 +420,9 @@ TEST_CASE(shaderc_compiles_material_with_texture) {
     std::vector<Token> tokens;
     lexer.tokenize(tokens);
     auto ast = compiler.parse(tokens);
+    ir::IRGenerator gen;
     AYBGFXConverter conv;
-    auto bgfxRes = conv.convertBGFX(*ast);
+    auto bgfxRes = conv.convertBGFX(gen.generate(*ast));
     CHECK(bgfxRes.success);
     CHECK(bgfxRes.materialFiles.size() == 1);
 
@@ -551,8 +554,9 @@ TEST_CASE(shaderc_compiles_pbr_with_ggx_and_fresnel) {
     std::vector<Token> tokens;
     lexer.tokenize(tokens);
     auto ast = compiler.parse(tokens);
+    ir::IRGenerator gen;
     AYBGFXConverter conv;
-    auto bgfxRes = conv.convertBGFX(*ast);
+    auto bgfxRes = conv.convertBGFX(gen.generate(*ast));
     CHECK(bgfxRes.success);
     CHECK(bgfxRes.materialFiles.size() == 1);
 

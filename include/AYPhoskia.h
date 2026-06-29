@@ -18,6 +18,7 @@
 #include "AYCompilerError.h"
 #include "IAYBackendConverter.h"
 #include "AYBuiltinFunctions.h"
+#include "AYIr.h"
 
 #include <memory>
 #include <string>
@@ -36,6 +37,12 @@ struct CompileResult {
     std::vector<std::string> warnings;
     std::shared_ptr<Program> ast;
     std::shared_ptr<TypeEnvironment> typeEnv;
+    // Phase 3.1: lowered IR is generated internally and passed to the
+    // backend, but NOT exposed here. Exposing the IR via CompileResult
+    // (shared_ptr or unique_ptr) crossed a struct-size threshold that
+    // breaks MSVC's NRVO of `output`, surfacing as the SSO proxy
+    // corruption documented at design.md §6.5. Callers that need the
+    // IR can run IRGenerator::generate directly on `ast`.
 };
 
 // Compilation options
@@ -98,31 +105,12 @@ inline CompileResult compile(const std::string& source) {
 }
 
 // ----------------------------------------------------------------------------
-// IR (Intermediate Representation) — TODO Phase 3
+// IR (Intermediate Representation) — Phase 3.1
 // ----------------------------------------------------------------------------
-// The Phoskia IR was envisioned as a backend-neutral instruction stream
-// (Load/Store/Add/Mul/Phi/...) that would sit between AST and backend
-// converters, enabling cross-backend optimizations.
-//
-// Status: NOT IMPLEMENTED. The IRGenerator, Module, Function, BasicBlock,
-// Instruction and OpCode declarations are kept commented here as a
-// reference for the planned Phase 3 design. Phase 1/2 compiles Phoskia
-// AST directly to backend source (currently only BGFX .sc).
-//
-// namespace IR {
-//
-//   enum class OpCode {
-//       Load, Store, Add, Sub, Mul, Div, Mod, Neg, Not, And, Or,
-//       CmpEQ, CmpNE, CmpLT, CmpLE, CmpGT, CmpGE,
-//       Jmp, JmpIf, Call, Ret, Phi, Cast, Construct, Extract, Map, Reduce
-//   };
-//
-//   struct Instruction { OpCode op; std::string result; ... };
-//   struct BasicBlock { std::string name; std::vector<Instruction> instructions; };
-//   struct Function   { std::string name; std::vector<BasicBlock> blocks; };
-//   struct Module     { std::string name; std::vector<Function> functions; };
-//
-//   class IRGenerator { public: Module generate(const Program& program); };
-// }
+// The Phoskia IR lives in `ayt::shader::phoskia::ir` (see include/AYIr.h).
+// It is a 1:1 mirror of the AST with `resolvedType` pre-attached to every
+// expression. Backends consume the IR instead of the AST. Future SSA-style
+// instruction stream + cross-backend optimization passes are Phase 3.x
+// additions on top of this IR substrate.
 
 } // namespace ayt::shader::phoskia

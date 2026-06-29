@@ -190,11 +190,24 @@ CompileResult Compiler::runPipeline(const std::string& source, const std::string
         result.errors = _errorReporter.errors();
         return result;
     }
+
+    // Phase 3.1: lower the AST to the Phoskia IR before backend
+    // dispatch. Backends consume IR instead of AST. The IRGenerator
+    // gracefully handles a missing TypeEnvironment by running
+    // TypeInference on demand for each expression. The IR is held in
+    // a local `irProgram` (not stored on `result`) — exposing it via
+    // CompileResult crosses a struct-size threshold that breaks MSVC's
+    // NRVO of `output` (see design.md §6.5).
+    ir::IRProgram irProgram = [&] {
+        ir::IRGenerator gen;
+        return gen.generate(*result.ast, _typeEnv);
+    }();
+
     // DEBUG: retained — confirms backend dispatch happens on the success path
     // for end-to-end compile tests in Phase 1.
     std::cerr << "[Compiler::runPipeline] dispatching backend '"
               << backendName << "'\n";
-    auto backendResult = backend->convert(*result.ast);
+    auto backendResult = backend->convert(irProgram);
     std::cerr << "[Compiler::runPipeline] backend returned success="
               << (backendResult.success ? 1 : 0) << "\n";
     result.output = std::move(backendResult.output);

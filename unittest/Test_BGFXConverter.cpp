@@ -11,6 +11,7 @@
 #include "AYLexer.h"
 #include "AYParser.h"
 #include "AYAst.h"
+#include "AYIr.h"
 #include "AYTest.h"
 #include <stdexcept>
 
@@ -21,15 +22,17 @@ TEST_SUITE(BGFXConverterTests)
 
 // ===== Helpers =====
 
-// End-to-end: source → AST → first material's three-piece set.
+// End-to-end: source → AST → IR → first material's three-piece set.
 static BGFXShaderFiles compileFirstMaterial(const std::string& src) {
     Lexer lexer(src);
     std::vector<Token> tokens;
     lexer.tokenize(tokens);
     Parser parser(tokens);
     auto ast = parser.parse();
+    ir::IRGenerator gen;
+    auto ir = gen.generate(*ast);
     AYBGFXConverter conv;
-    BGFXConvertResult res = conv.convertBGFX(*ast);
+    BGFXConvertResult res = conv.convertBGFX(ir);
     if (!res.success) {
         throw std::runtime_error("convertBGFX failed: " +
             (res.errors.empty() ? std::string("?") : res.errors.front()));
@@ -222,8 +225,9 @@ TEST_CASE(compute_throws_not_implemented) {
     CHECK(parser.hasErrors());
     // Even if the AST is partial, the converter must still refuse to
     // emit silently — a malformed material cannot yield valid bgfx code.
+    ir::IRGenerator gen;
     AYBGFXConverter conv;
-    auto res = conv.convertBGFX(*ast);
+    auto res = conv.convertBGFX(gen.generate(*ast));
     CHECK(!res.success);
     CHECK(!res.errors.empty());
 }
@@ -246,8 +250,9 @@ TEST_CASE(multiple_materials_each_get_three_pieces) {
     lexer.tokenize(tokens);
     Parser parser(tokens);
     auto ast = parser.parse();
+    ir::IRGenerator gen;
     AYBGFXConverter conv;
-    auto res = conv.convertBGFX(*ast);
+    auto res = conv.convertBGFX(gen.generate(*ast));
     CHECK(res.success);
     CHECK(res.materialFiles.size() == 2);
     CHECK(!res.materialFiles[0].vs.empty());
@@ -543,8 +548,9 @@ TEST_CASE(compute_declaration_produces_clear_error) {
     lexer.tokenize(tokens);
     Parser parser(tokens);
     auto ast = parser.parse();
+    ir::IRGenerator gen;
     AYBGFXConverter conv;
-    auto res = conv.convertBGFX(*ast);
+    auto res = conv.convertBGFX(gen.generate(*ast));
     CHECK(!res.success);
     CHECK(!res.errors.empty());
     // The error must reference both the compute declaration name
@@ -576,8 +582,9 @@ TEST_CASE(compute_alongside_material_converts_material) {
     lexer.tokenize(tokens);
     Parser parser(tokens);
     auto ast = parser.parse();
+    ir::IRGenerator gen;
     AYBGFXConverter conv;
-    auto res = conv.convertBGFX(*ast);
+    auto res = conv.convertBGFX(gen.generate(*ast));
     // Overall success is false because of the compute diagnostic, but
     // the material still produced a three-piece set.
     CHECK(!res.success);

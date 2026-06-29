@@ -64,7 +64,7 @@ semanticTable() {
 }
 
 // Forward decl of helper used by emit* functions.
-void emitExpr(std::ostringstream& out, const phoskia::Expr& e);
+void emitExpr(std::ostringstream& out, const phoskia::ir::IRExpr& e);
 
 // RenameContext maps a Phoskia identifier to its bgfx-side counterpart.
 // Built per-shader-block from the in/out ShaderParam declarations: the
@@ -103,19 +103,22 @@ std::shared_ptr<phoskia::Type> phoskiaGLSLTypeToPhoskiaType(const std::string& l
     return nullptr;
 }
 
-void emitExpr(std::ostringstream& out, const phoskia::Expr& e,
+// Phase 3.1: emit* helpers consume IR nodes. Each IR expression already
+// carries a pre-resolved type (filled by IRGenerator); backends read the
+// type from `expr.resolvedType` directly instead of re-running inference.
+void emitExpr(std::ostringstream& out, const phoskia::ir::IRExpr& e,
               const RenameContext& ctx);
 
-void emitStmt(std::ostringstream& out, const phoskia::Stmt& s,
+void emitStmt(std::ostringstream& out, const phoskia::ir::IRStmt& s,
               const RenameContext& ctx, const char* outputVar,
               phoskia::TypeEnvironment& env);
 
-void emitStmt(std::ostringstream& out, const phoskia::Stmt& s,
+void emitStmt(std::ostringstream& out, const phoskia::ir::IRStmt& s,
               const RenameContext& ctx, phoskia::TypeEnvironment& env) {
     emitStmt(out, s, ctx, nullptr, env);
 }
 
-void emitStmt(std::ostringstream& out, const phoskia::Stmt& s,
+void emitStmt(std::ostringstream& out, const phoskia::ir::IRStmt& s,
               const RenameContext& ctx) {
     // Forward-compat overload retained only for the property / texture
     // emitExpr paths which don't participate in the let-stmt type
@@ -124,34 +127,25 @@ void emitStmt(std::ostringstream& out, const phoskia::Stmt& s,
     emitStmt(out, s, ctx, nullptr, throwaway);
 }
 
-void emitStmt(std::ostringstream& out, const phoskia::Stmt& s,
+void emitStmt(std::ostringstream& out, const phoskia::ir::IRStmt& s,
               const RenameContext& ctx, const char* outputVar,
               phoskia::TypeEnvironment& env) {
-    if (auto let = dynamic_cast<const phoskia::LetStmt*>(&s)) {
+    if (auto let = dynamic_cast<const phoskia::ir::IRLetStmt*>(&s)) {
         // GLSL (and bgfx's GLSL profile) requires an explicit type on
-        // every local declaration. We run the type-inference engine on
-        // the initializer to recover the right GLSL type, then register
-        // the binding in `env` so later statements that reference
-        // `let->name` see a concrete type instead of a fresh TypeVar
-        // (chain-of-arithmetic propagation). Phase 2 Step 2 built that
-        // engine; Step 5 made builtin constructors (vec3 / mat4)
-        // resolve through it.
+        // every local declaration. With Phase 3.1 the type is read
+        // directly from `let->initializer->resolvedType` (populated by
+        // IRGenerator). We then register the binding in `env` so later
+        // statements that reference `let->name` see a concrete type
+        // instead of a fresh TypeVar (chain-of-arithmetic propagation).
         std::string glslType;
         std::shared_ptr<phoskia::Type> resolvedType;
         if (let->initializer) {
-            phoskia::TypeInference inference(env);
-            auto inferred = inference.infer(*let->initializer);
-            std::shared_ptr<phoskia::Type> concrete = inferred;
-            while (auto tv = std::dynamic_pointer_cast<phoskia::TypeVar>(concrete)) {
-                if (tv->hasSolution()) concrete = tv->getSolution();
-                else break;
-            }
-            resolvedType = concrete;
-            if (auto vec = std::dynamic_pointer_cast<phoskia::VectorType>(concrete)) {
+            resolvedType = let->initializer->resolvedType;
+            if (auto vec = std::dynamic_pointer_cast<phoskia::VectorType>(resolvedType)) {
                 glslType = vec->toString();  // "vec2" / "vec3" / "vec4" / "ivec3" / ...
-            } else if (auto mat = std::dynamic_pointer_cast<phoskia::MatrixType>(concrete)) {
+            } else if (auto mat = std::dynamic_pointer_cast<phoskia::MatrixType>(resolvedType)) {
                 glslType = mat->toString();  // "mat2" / "mat3" / "mat4"
-            } else if (auto p = std::dynamic_pointer_cast<phoskia::PrimitiveType_>(concrete)) {
+            } else if (auto p = std::dynamic_pointer_cast<phoskia::PrimitiveType_>(resolvedType)) {
                 glslType = p->toString();   // "float" / "int" / "bool"
             }
         }
@@ -166,7 +160,7 @@ void emitStmt(std::ostringstream& out, const phoskia::Stmt& s,
         }
         if (let->initializer) emitExpr(out, *let->initializer, ctx);
         out << ";\n";
-    } else if (auto ret = dynamic_cast<const phoskia::ReturnStmt*>(&s)) {
+    } else if (auto ret = dynamic_cast<const phoskia::ir::IRReturnStmt*>(&s)) {
         out << "    ";
         // Phoskia source: `return <vec4-expr>`. The compiler implicitly
         // binds the return value to the block's output slot — `gl_Position`
@@ -175,20 +169,24 @@ void emitStmt(std::ostringstream& out, const phoskia::Stmt& s,
         if (outputVar) out << outputVar << " = ";
         if (ret->value) emitExpr(out, *ret->value, ctx);
         out << ";\n";
-    } else if (auto es = dynamic_cast<const phoskia::ExprStmt*>(&s)) {
+    } else if (auto es = dynamic_cast<const phoskia::ir::IRExprStmt*>(&s)) {
         if (es->expr) {
             out << "    ";
             emitExpr(out, *es->expr, ctx);
             out << ";\n";
         }
     }
-    // ShaderParam / IfStmt / ForStmt at the body level should not appear
-    // (they live in the params/inputs vector before body). Ignore if seen.
+    // ShaderParam / IfStmt / ForStmt / VariantAttribute at the body level
+    // should not appear in IRVertexFunc::body / IRFragmentFunc::body —
+    // ShaderParams live in params/inputs, VariantAttribute is consumed by
+    // the per-block body loops in convertMaterial. IfStmt / ForStmt are
+    // accepted by the IR but the BGFX backend has no path for them (the
+    // previous AST path silently skipped them too).
 }
 
-void emitExpr(std::ostringstream& out, const phoskia::Expr& e,
+void emitExpr(std::ostringstream& out, const phoskia::ir::IRExpr& e,
               const RenameContext& ctx) {
-    if (auto bin = dynamic_cast<const phoskia::BinaryExpr*>(&e)) {
+    if (auto bin = dynamic_cast<const phoskia::ir::IRBinaryExpr*>(&e)) {
         // Parenthesize the whole subexpression so operator precedence
         // is preserved in the emitted GLSL. Without the parens, a
         // chain like `a * (b - c) * d` (parsed as `((a * (b-c)) * d)`)
@@ -200,10 +198,10 @@ void emitExpr(std::ostringstream& out, const phoskia::Expr& e,
         out << " " << bin->op.lexeme << " ";
         emitExpr(out, *bin->right, ctx);
         out << ")";
-    } else if (auto un = dynamic_cast<const phoskia::UnaryExpr*>(&e)) {
+    } else if (auto un = dynamic_cast<const phoskia::ir::IRUnaryExpr*>(&e)) {
         out << un->op.lexeme;
         emitExpr(out, *un->operand, ctx);
-    } else if (auto call = dynamic_cast<const phoskia::CallExpr*>(&e)) {
+    } else if (auto call = dynamic_cast<const phoskia::ir::IRCallExpr*>(&e)) {
         // Builtin mapping: Phoskia's `sample(tex, uv)` → bgfx `texture2D(tex, uv)`.
         // PBR math functions (fresnelSchlick / distributionGGX /
         // geometrySchlickGGX / geometrySmith) registered as Phase 2
@@ -213,7 +211,7 @@ void emitExpr(std::ostringstream& out, const phoskia::Expr& e,
         // signatures for type-checking; the converter handles
         // emission. After inline, the result is the same GLSL a
         // user would have written by hand from the math.
-        if (auto callee = dynamic_cast<const phoskia::IdentifierExpr*>(call->callee.get())) {
+        if (auto callee = dynamic_cast<const phoskia::ir::IRIdentifierExpr*>(call->callee.get())) {
             if (callee->name == "sample") {
                 out << "texture2D";
             } else if (callee->name == "fresnelSchlick") {
@@ -333,7 +331,7 @@ void emitExpr(std::ostringstream& out, const phoskia::Expr& e,
                         emitExpr(out, *call->args[2], ctx);
                         out << " + 1.0)) / 8.0";
                     };
-                    auto emitGSub = [&](const phoskia::Expr& ndot) {
+                    auto emitGSub = [&](const phoskia::ir::IRExpr& ndot) {
                         out << "(";
                         emitExpr(out, ndot, ctx);
                         out << " / (";
@@ -363,10 +361,10 @@ void emitExpr(std::ostringstream& out, const phoskia::Expr& e,
             emitExpr(out, *call->args[i], ctx);
         }
         out << ")";
-    } else if (auto ident = dynamic_cast<const phoskia::IdentifierExpr*>(&e)) {
+    } else if (auto ident = dynamic_cast<const phoskia::ir::IRIdentifierExpr*>(&e)) {
         // Apply rename map for in-param identifiers (Phoskia → bgfx).
         out << ctx.lookup(ident->name);
-    } else if (auto lit = dynamic_cast<const phoskia::LiteralExpr*>(&e)) {
+    } else if (auto lit = dynamic_cast<const phoskia::ir::IRLiteralExpr*>(&e)) {
         std::visit([&out](auto&& arg) {
             using T = std::decay_t<decltype(arg)>;
             if constexpr (std::is_same_v<T, std::monostate>) {
@@ -388,10 +386,10 @@ void emitExpr(std::ostringstream& out, const phoskia::Expr& e,
                 out << "\"" << arg << "\"";
             }
         }, lit->value);
-    } else if (auto mem = dynamic_cast<const phoskia::MemberExpr*>(&e)) {
+    } else if (auto mem = dynamic_cast<const phoskia::ir::IRMemberExpr*>(&e)) {
         emitExpr(out, *mem->object, ctx);
         out << "." << mem->member;
-    } else if (auto idx = dynamic_cast<const phoskia::IndexExpr*>(&e)) {
+    } else if (auto idx = dynamic_cast<const phoskia::ir::IRIndexExpr*>(&e)) {
         emitExpr(out, *idx->object, ctx);
         out << "[";
         emitExpr(out, *idx->index, ctx);
@@ -399,22 +397,22 @@ void emitExpr(std::ostringstream& out, const phoskia::Expr& e,
     }
 }
 
-const phoskia::ShaderParam* findInParam(const std::vector<phoskia::StmtPtr>& params,
-                                        phoskia::PhoskiaSemantic sem) {
+const phoskia::ir::IRShaderParam* findInParam(const std::vector<phoskia::ir::IRStmtPtr>& params,
+                                              phoskia::PhoskiaSemantic sem) {
     for (const auto& s : params) {
-        auto* p = dynamic_cast<const phoskia::ShaderParam*>(s.get());
-        if (p && p->dir == phoskia::ShaderParam::Direction::In && p->semantic == sem) {
+        auto* p = dynamic_cast<const phoskia::ir::IRShaderParam*>(s.get());
+        if (p && p->dir == phoskia::ir::IRShaderParam::Direction::In && p->semantic == sem) {
             return p;
         }
     }
     return nullptr;
 }
 
-const phoskia::ShaderParam* findOutParam(const std::vector<phoskia::StmtPtr>& params,
-                                         phoskia::PhoskiaSemantic sem) {
+const phoskia::ir::IRShaderParam* findOutParam(const std::vector<phoskia::ir::IRStmtPtr>& params,
+                                               phoskia::PhoskiaSemantic sem) {
     for (const auto& s : params) {
-        auto* p = dynamic_cast<const phoskia::ShaderParam*>(s.get());
-        if (p && p->dir == phoskia::ShaderParam::Direction::Out && p->semantic == sem) {
+        auto* p = dynamic_cast<const phoskia::ir::IRShaderParam*>(s.get());
+        if (p && p->dir == phoskia::ir::IRShaderParam::Direction::Out && p->semantic == sem) {
             return p;
         }
     }
@@ -462,40 +460,31 @@ static std::string variantMacroName(const std::string& name) {
 // properties; tests that need a non-vec4 property now drive this
 // from the initializer shape).
 //
-// Run the type-inference engine on the initializer to recover the
-// right type. shaderc (GLSL 1.20 in particular) rejects uniforms
-// whose declared type doesn't match the initializer type with
-// `initializer of type T cannot be assigned to variable of type U`,
-// so this must match exactly.
-std::string inferPropertyGLSLType(const phoskia::PropertyDecl& prop) {
+// Phase 3.1: the IRGenerator pre-attaches `resolvedType` to the
+// property initializer, so we read the type directly instead of
+// running a fresh TypeInference pass.
+std::string inferPropertyGLSLType(const phoskia::ir::IRDeclaration& decl) {
     std::string glslType = "vec4";
-    if (prop.initializer) {
-        phoskia::TypeEnvironment env;  // empty: properties don't see body lets
-        phoskia::TypeInference inference(env);
-        auto inferred = inference.infer(*prop.initializer);
-        std::shared_ptr<phoskia::Type> concrete = inferred;
-        while (auto tv = std::dynamic_pointer_cast<phoskia::TypeVar>(concrete)) {
-            if (tv->hasSolution()) concrete = tv->getSolution();
-            else break;
-        }
-        if (auto vec = std::dynamic_pointer_cast<phoskia::VectorType>(concrete)) {
-            glslType = vec->toString();
-        } else if (auto mat = std::dynamic_pointer_cast<phoskia::MatrixType>(concrete)) {
-            glslType = mat->toString();
-        } else if (auto p = std::dynamic_pointer_cast<phoskia::PrimitiveType_>(concrete)) {
-            glslType = p->toString();
-        }
+    if (decl.kind != phoskia::ir::IRDeclaration::Kind::Property) return glslType;
+    if (!decl.propertyInit) return glslType;
+    auto concrete = decl.propertyInit->resolvedType;
+    if (auto vec = std::dynamic_pointer_cast<phoskia::VectorType>(concrete)) {
+        glslType = vec->toString();
+    } else if (auto mat = std::dynamic_pointer_cast<phoskia::MatrixType>(concrete)) {
+        glslType = mat->toString();
+    } else if (auto p = std::dynamic_pointer_cast<phoskia::PrimitiveType_>(concrete)) {
+        glslType = p->toString();
     }
     return glslType;
 }
 
-void emitPropertyUniform(std::ostream& out, const phoskia::PropertyDecl& prop) {
-    std::string glslType = inferPropertyGLSLType(prop);
-    out << "uniform " << glslType << " " << prop.name << " = ";
-    if (prop.initializer) {
+void emitPropertyUniform(std::ostream& out, const phoskia::ir::IRDeclaration& decl) {
+    std::string glslType = inferPropertyGLSLType(decl);
+    out << "uniform " << glslType << " " << decl.name << " = ";
+    if (decl.propertyInit) {
         std::ostringstream tmp;
         RenameContext empty;  // properties don't reference in/out params
-        emitExpr(tmp, *prop.initializer, empty);
+        emitExpr(tmp, *decl.propertyInit, empty);
         out << tmp.str();
     } else {
         out << "0.0";
@@ -509,31 +498,31 @@ void emitPropertyUniform(std::ostream& out, const phoskia::PropertyDecl& prop) {
 // Top-level conversion
 // --------------------------------------------------------------------------
 
-BGFXConvertResult AYBGFXConverter::convertBGFX(const phoskia::Program& ast) {
+BGFXConvertResult AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program) {
     BGFXConvertResult result;
     result.success = true;
 
     try {
-        for (const auto& decl : ast.declarations) {
-            if (auto mat = dynamic_cast<const phoskia::MaterialDecl*>(decl.get())) {
-                result.materialFiles.push_back(convertMaterial(*mat));
-            } else if (auto cmp = dynamic_cast<const phoskia::ComputeDecl*>(decl.get())) {
-                // Phase 2.5: BGFX .sc backend does not support compute.
-                // The HLSL / WGSL compute backend (Phase 3) handles these.
-                // We surface a clear, non-fatal diagnostic so authors
-                // writing GPGPU kernels don't silently get a no-op
-                // conversion. The loop continues so any material
-                // declarations that follow still get converted — the
-                // error is reported in `result.errors` and `success`
-                // flips to false. The caller can then dispatch to a
-                // compute-capable backend via the IAYBackendConverter
-                // registry.
-                result.errors.push_back(
-                    "Compute declaration '" + cmp->name +
-                    "' requires HLSL / WGSL backend (Phase 3); "
-                    "BGFX .sc does not support compute");
-                result.success = false;
-            }
+        for (const auto& mat : program.materials) {
+            if (mat) result.materialFiles.push_back(convertMaterial(*mat));
+        }
+        for (const auto& cmp : program.computes) {
+            if (!cmp) continue;
+            // Phase 2.5: BGFX .sc backend does not support compute.
+            // The HLSL / WGSL compute backend (Phase 3) handles these.
+            // We surface a clear, non-fatal diagnostic so authors
+            // writing GPGPU kernels don't silently get a no-op
+            // conversion. The loop continues so any material
+            // declarations that follow still get converted — the
+            // error is reported in `result.errors` and `success`
+            // flips to false. The caller can then dispatch to a
+            // compute-capable backend via the IAYBackendConverter
+            // registry.
+            result.errors.push_back(
+                "Compute declaration '" + cmp->name +
+                "' requires HLSL / WGSL backend (Phase 3); "
+                "BGFX .sc does not support compute");
+            result.success = false;
         }
     } catch (const std::exception& e) {
         result.errors.push_back(e.what());
@@ -548,9 +537,9 @@ BGFXConvertResult AYBGFXConverter::convertBGFX(const phoskia::Program& ast) {
     return result;
 }
 
-ConvertResult AYBGFXConverter::convert(const phoskia::Program& ast) {
+ConvertResult AYBGFXConverter::convert(const phoskia::ir::IRProgram& program) {
     ConvertResult result;
-    auto bgfx = convertBGFX(ast);
+    auto bgfx = convertBGFX(program);
     result.success = bgfx.success;
     result.errors = bgfx.errors;
     std::ostringstream oss;
@@ -583,7 +572,7 @@ ConvertResult AYBGFXConverter::convert(const phoskia::Program& ast) {
 // Per-material conversion
 // --------------------------------------------------------------------------
 
-BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::MaterialDecl& mat) {
+BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::ir::IRMaterialDecl& mat) {
     _uniformDecls.clear();
     _textureDecls.clear();
     _propertyUniforms.clear();
@@ -604,63 +593,81 @@ BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::MaterialDecl& ma
     RenameContext vsCtx;
     RenameContext fsCtx;
 
-    // First pass: material-level declarations.
-    const phoskia::VertexFunc*   vf = nullptr;
-    const phoskia::FragmentFunc* ff = nullptr;
-    for (const auto& d : mat.declarations) {
-        if (auto u = dynamic_cast<const phoskia::UniformDecl*>(d.get())) {
-            _uniformDecls += "uniform " + u->type + " " + u->name + ";\n";
-            BGFXUniform bu; bu.name = u->name; bu.type = u->type;
-            _uniforms.push_back(std::move(bu));
-            // Register uniform type into both envs so the let-stmt
-            // type inference in either block resolves `roughness` to
-            // float (or whichever GLSL type `u->type` maps to).
-            auto t = phoskiaGLSLTypeToPhoskiaType(u->type);
-            if (t) {
-                vsEnv.addVariable(u->name, t);
-                fsEnv.addVariable(u->name, t);
+    // Phase 3.1: IR separates uniform / property / texture into a
+    // discriminated IRDeclaration, and vertex / fragment are first-class
+    // fields on IRMaterialDecl — no more two-pass scan.
+    for (const auto& decl : mat.declarations) {
+        if (!decl) continue;
+        switch (decl->kind) {
+            case phoskia::ir::IRDeclaration::Kind::Uniform: {
+                // The IR carries the uniformType as a Type pointer
+                // (target-agnostic). For BGFX we need the GLSL lexeme
+                // string to emit `uniform <type> <name>;`. The
+                // Type->toString() methods on PrimitiveType_/VectorType
+                // produce "float"/"vec3" as expected. MatrixType
+                // produces "mat4x4" (canonical GLSL form) but bgfx's
+                // GLSL 1.20 profile accepts the single-number form
+                // "mat4" — fall back to that for square matrices so
+                // the emitted uniform matches the user-written source.
+                std::string glslLex = "vec4";
+                if (decl->uniformType) {
+                    if (auto mat = std::dynamic_pointer_cast<phoskia::MatrixType>(decl->uniformType)) {
+                        if (mat->rows() == mat->cols()) {
+                            glslLex = "mat" + std::to_string(mat->rows());
+                        } else {
+                            glslLex = mat->toString();  // "mat3x4" etc.
+                        }
+                    } else {
+                        glslLex = decl->uniformType->toString();
+                    }
+                }
+                _uniformDecls += "uniform " + glslLex + " " + decl->name + ";\n";
+                BGFXUniform bu; bu.name = decl->name; bu.type = glslLex;
+                _uniforms.push_back(std::move(bu));
+                if (decl->uniformType) {
+                    vsEnv.addVariable(decl->name, decl->uniformType);
+                    fsEnv.addVariable(decl->name, decl->uniformType);
+                }
+                break;
             }
-        } else if (auto t = dynamic_cast<const phoskia::TextureDecl*>(d.get())) {
-            uint8_t slot = static_cast<uint8_t>(_textures.size());
-            _textureDecls += "SAMPLER2D(" + t->name + ", " + std::to_string(slot) + ");\n";
-            BGFXTexture bt; bt.name = t->name; bt.binding = slot;
-            _textures.push_back(std::move(bt));
-            // Textures are opaque to the type system (Phase 2 Step 2
-            // deferred TextureType); register as Dynamic so lookup
-            // succeeds even though sample() body-side checks pass
-            // through the builtin registry directly.
-            vsEnv.addVariable(t->name, phoskia::BuiltinTypes::Dynamic);
-            fsEnv.addVariable(t->name, phoskia::BuiltinTypes::Dynamic);
-        } else if (auto p = dynamic_cast<const phoskia::PropertyDecl*>(d.get())) {
-            std::ostringstream tmp;
-            emitPropertyUniform(tmp, *p);
-            _propertyUniforms += tmp.str();
-            // The uniform type matches the GLSL type we emit — driven
-            // by the initializer's inferred type so e.g. `property
-            // emission = vec3(0.0)` becomes `uniform vec3 emission`.
-            std::string glslType = inferPropertyGLSLType(*p);
-            BGFXUniform bu; bu.name = p->name; bu.type = glslType;
-            _uniforms.push_back(std::move(bu));
-            // Register in both per-block type envs so the let-stmt
-            // type inference in either block resolves references to
-            // this property to the right GLSL type.
-            std::shared_ptr<phoskia::Type> ptype;
-            if      (glslType == "vec2") ptype = phoskia::BuiltinTypes::Vec2();
-            else if (glslType == "vec3") ptype = phoskia::BuiltinTypes::Vec3();
-            else if (glslType == "vec4") ptype = phoskia::BuiltinTypes::Vec4();
-            if (ptype) {
-                vsEnv.addVariable(p->name, ptype);
-                fsEnv.addVariable(p->name, ptype);
+            case phoskia::ir::IRDeclaration::Kind::Texture: {
+                uint8_t slot = static_cast<uint8_t>(_textures.size());
+                _textureDecls += "SAMPLER2D(" + decl->name + ", " + std::to_string(slot) + ");\n";
+                BGFXTexture bt; bt.name = decl->name; bt.binding = slot;
+                _textures.push_back(std::move(bt));
+                // Textures are opaque to the type system (Phase 2 Step 2
+                // deferred TextureType); register as Dynamic so lookup
+                // succeeds even though sample() body-side checks pass
+                // through the builtin registry directly.
+                vsEnv.addVariable(decl->name, phoskia::BuiltinTypes::Dynamic);
+                fsEnv.addVariable(decl->name, phoskia::BuiltinTypes::Dynamic);
+                break;
             }
-        } else if (auto v = dynamic_cast<const phoskia::VertexFunc*>(d.get())) {
-            vf = v;
-        } else if (auto f = dynamic_cast<const phoskia::FragmentFunc*>(d.get())) {
-            ff = f;
+            case phoskia::ir::IRDeclaration::Kind::Property: {
+                std::ostringstream tmp;
+                emitPropertyUniform(tmp, *decl);
+                _propertyUniforms += tmp.str();
+                std::string glslType = inferPropertyGLSLType(*decl);
+                BGFXUniform bu; bu.name = decl->name; bu.type = glslType;
+                _uniforms.push_back(std::move(bu));
+                // Register in both per-block type envs so the let-stmt
+                // type inference in either block resolves references to
+                // this property to the right GLSL type.
+                std::shared_ptr<phoskia::Type> ptype;
+                if      (glslType == "vec2") ptype = phoskia::BuiltinTypes::Vec2();
+                else if (glslType == "vec3") ptype = phoskia::BuiltinTypes::Vec3();
+                else if (glslType == "vec4") ptype = phoskia::BuiltinTypes::Vec4();
+                if (ptype) {
+                    vsEnv.addVariable(decl->name, ptype);
+                    fsEnv.addVariable(decl->name, ptype);
+                }
+                break;
+            }
         }
-        // VariantAttribute at material level: ignored (variants only
-        // appear inside vertex/fragment blocks, where they're consumed
-        // by the per-block body loops below).
     }
+
+    const phoskia::ir::IRVertexFunc*   vf = mat.vertex.get();
+    const phoskia::ir::IRFragmentFunc* ff = mat.fragment.get();
 
     if (!vf) {
         _uniforms = std::move(uniformSave);
@@ -680,9 +687,9 @@ BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::MaterialDecl& ma
     // needs `nrm: vec3` to be a known Float anchor so the GLSL type
     // prefix resolves).
     for (const auto& s : vf->params) {
-        if (auto* p = dynamic_cast<const phoskia::ShaderParam*>(s.get())) {
+        if (auto* p = dynamic_cast<const phoskia::ir::IRShaderParam*>(s.get())) {
             const auto& info = tbl.at(p->semantic);
-            const char* bgfxName = (p->dir == phoskia::ShaderParam::Direction::In)
+            const char* bgfxName = (p->dir == phoskia::ir::IRShaderParam::Direction::In)
                                        ? info.attrName : info.varyingName;
             vsCtx.map[p->name] = bgfxName;
             // Register both the Phoskia-side name and the bgfx-side
@@ -700,7 +707,7 @@ BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::MaterialDecl& ma
         }
     }
     for (const auto& s : ff->inputs) {
-        if (auto* p = dynamic_cast<const phoskia::ShaderParam*>(s.get())) {
+        if (auto* p = dynamic_cast<const phoskia::ir::IRShaderParam*>(s.get())) {
             const auto& info = tbl.at(p->semantic);
             fsCtx.map[p->name] = info.varyingName;
             std::shared_ptr<phoskia::Type> t;
@@ -742,18 +749,18 @@ BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::MaterialDecl& ma
              << "= " << info.defaultExpr << ";\n";
     };
     for (const auto& s : vf->params) {
-        if (auto* p = dynamic_cast<const phoskia::ShaderParam*>(s.get())) {
-            if (p->dir == phoskia::ShaderParam::Direction::Out) writeVarying(p->semantic);
+        if (auto* p = dynamic_cast<const phoskia::ir::IRShaderParam*>(s.get())) {
+            if (p->dir == phoskia::ir::IRShaderParam::Direction::Out) writeVarying(p->semantic);
         }
     }
     for (const auto& s : ff->inputs) {
-        if (auto* p = dynamic_cast<const phoskia::ShaderParam*>(s.get())) {
-            if (p->dir == phoskia::ShaderParam::Direction::In) writeVarying(p->semantic);
+        if (auto* p = dynamic_cast<const phoskia::ir::IRShaderParam*>(s.get())) {
+            if (p->dir == phoskia::ir::IRShaderParam::Direction::In) writeVarying(p->semantic);
         }
     }
     for (const auto& s : vf->params) {
-        if (auto* p = dynamic_cast<const phoskia::ShaderParam*>(s.get())) {
-            if (p->dir == phoskia::ShaderParam::Direction::In) {
+        if (auto* p = dynamic_cast<const phoskia::ir::IRShaderParam*>(s.get())) {
+            if (p->dir == phoskia::ir::IRShaderParam::Direction::In) {
                 const auto& info = tbl.at(p->semantic);
                 vdef << info.glslType << " " << pad(info.attrName, kNameWidth)
                      << ": " << info.bgfxSemantic << ";\n";
@@ -767,8 +774,8 @@ BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::MaterialDecl& ma
         vs << "$input";
         bool first = true;
         for (const auto& s : vf->params) {
-            if (auto* p = dynamic_cast<const phoskia::ShaderParam*>(s.get())) {
-                if (p->dir != phoskia::ShaderParam::Direction::In) continue;
+            if (auto* p = dynamic_cast<const phoskia::ir::IRShaderParam*>(s.get())) {
+                if (p->dir != phoskia::ir::IRShaderParam::Direction::In) continue;
                 const auto& info = tbl.at(p->semantic);
                 vs << (first ? " " : ", ") << info.attrName;
                 first = false;
@@ -780,8 +787,8 @@ BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::MaterialDecl& ma
         vs << "$output";
         bool first = true;
         for (const auto& s : vf->params) {
-            if (auto* p = dynamic_cast<const phoskia::ShaderParam*>(s.get())) {
-                if (p->dir != phoskia::ShaderParam::Direction::Out) continue;
+            if (auto* p = dynamic_cast<const phoskia::ir::IRShaderParam*>(s.get())) {
+                if (p->dir != phoskia::ir::IRShaderParam::Direction::Out) continue;
                 const auto& info = tbl.at(p->semantic);
                 vs << (first ? " " : ", ") << info.varyingName;
                 first = false;
@@ -806,7 +813,7 @@ BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::MaterialDecl& ma
         // statements that follow it within the same block.
         std::vector<std::string> openVariants;
         for (const auto& stmt : vf->body) {
-            if (auto va = dynamic_cast<const phoskia::VariantAttribute*>(stmt.get())) {
+            if (auto va = dynamic_cast<const phoskia::ir::IRVariantAttribute*>(stmt.get())) {
                 vs << "#ifndef " << variantMacroName(va->name) << "\n";
                 vs << "    // variant: skipped unless --define " << variantMacroName(va->name) << "\n";
                 vs << "#else\n";
@@ -828,8 +835,8 @@ BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::MaterialDecl& ma
         fs << "$input";
         bool first = true;
         for (const auto& s : ff->inputs) {
-            if (auto* p = dynamic_cast<const phoskia::ShaderParam*>(s.get())) {
-                if (p->dir != phoskia::ShaderParam::Direction::In) continue;
+            if (auto* p = dynamic_cast<const phoskia::ir::IRShaderParam*>(s.get())) {
+                if (p->dir != phoskia::ir::IRShaderParam::Direction::In) continue;
                 const auto& info = tbl.at(p->semantic);
                 fs << (first ? " " : ", ") << info.varyingName;
                 first = false;
@@ -848,7 +855,7 @@ BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::MaterialDecl& ma
         // `--define BGFX_VARIANT_<NAME>` to shaderc.
         std::vector<std::string> openVariants;
         for (const auto& stmt : ff->body) {
-            if (auto va = dynamic_cast<const phoskia::VariantAttribute*>(stmt.get())) {
+            if (auto va = dynamic_cast<const phoskia::ir::IRVariantAttribute*>(stmt.get())) {
                 fs << "#ifndef " << variantMacroName(va->name) << "\n";
                 fs << "    // variant: skipped unless --define " << variantMacroName(va->name) << "\n";
                 fs << "#else\n";
@@ -871,17 +878,17 @@ BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::MaterialDecl& ma
     return out;
 }
 
-void AYBGFXConverter::generateProperty(const phoskia::PropertyDecl& prop) {
+void AYBGFXConverter::generateProperty(const phoskia::ir::IRDeclaration& decl) {
     // Used only when called outside convertMaterial; convertMaterial does
     // its own property emission via emitPropertyUniform().
     std::ostringstream tmp;
-    emitPropertyUniform(tmp, prop);
+    emitPropertyUniform(tmp, decl);
     _propertyUniforms += tmp.str();
-    BGFXUniform bu; bu.name = prop.name; bu.type = inferPropertyGLSLType(prop);
+    BGFXUniform bu; bu.name = decl.name; bu.type = inferPropertyGLSLType(decl);
     _uniforms.push_back(std::move(bu));
 }
 
-void AYBGFXConverter::generateExpr(const phoskia::Expr& expr) {
+void AYBGFXConverter::generateExpr(const phoskia::ir::IRExpr& expr) {
     std::ostringstream tmp;
     RenameContext empty;
     emitExpr(tmp, expr, empty);

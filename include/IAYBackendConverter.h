@@ -8,6 +8,7 @@
 // to allow additional backends without changes to the Phoskia core.
 
 #include "AYAst.h"
+#include "AYIr.h"
 #include <string>
 #include <vector>
 #include <string_view>
@@ -59,8 +60,10 @@ public:
     // File extension for the intermediate source (e.g. ".sc" for BGFX).
     virtual const char* targetExtension() const = 0;
 
-    // Convert Phoskia AST to target shader source.
-    virtual ConvertResult convert(const phoskia::Program& ast) = 0;
+    // Convert a Phoskia IR (post-Phase 3.1) to target shader source.
+    // Phase 3.1+ backends consume the IR — see AYIr.h. The IR carries
+    // pre-resolved types so backends do not re-run TypeInference.
+    virtual ConvertResult convert(const phoskia::ir::IRProgram& program) = 0;
 
     // Compiler arguments for the platform's shaderc invocation.
     virtual std::vector<std::string_view> getCompilerArgs() const = 0;
