@@ -113,6 +113,12 @@ TokenType Lexer::identifierType(const std::string& lexeme) {
         {"property", TokenType::Property},
         {"uniform", TokenType::Uniform},
         {"storage", TokenType::Storage},
+        // Phase 3.3 Block 4: workgroup-shared local memory.
+        //   shared <type> <name>[<size>];
+        // Lowers to GLSL `shared <type> <name>[<size>];` inside a
+        // compute body. The keyword name matches GLSL exactly (HLSL
+        // uses `groupshared`; the bgfx GLSL profile accepts `shared`).
+        {"shared", TokenType::Shared},
         {"texture2d", TokenType::Texture2D},
         {"sampler", TokenType::Sampler},
         {"vertex", TokenType::Vertex},

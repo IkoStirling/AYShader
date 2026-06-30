@@ -185,6 +185,94 @@ TEST_CASE(compute_top_level_alongside_material) {
     CHECK(cmp->body.size() == 2);
 }
 
+// ===== Phase 3.3 Block 4: workgroup-shared local memory =====
+
+TEST_CASE(shared_keyword_recognized) {
+    // `shared` must be a dedicated TokenType, not Identifier —
+    // the parser dispatch relies on it to route to parseSharedDecl.
+    Lexer lexer("shared float tile[64]");
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    CHECK(tokens[0].type == TokenType::Shared);
+    CHECK(tokens[0].lexeme == "shared");
+}
+
+TEST_CASE(compute_with_shared_declaration) {
+    const char* src = R"(
+        compute Reduce {
+            shared float tile[64]
+            let i = thread_id.x
+            tile[i] = i
+            return tile[0]
+        }
+    )";
+    auto prog = parseSource(src);
+    auto* cmp = dynamic_cast<ComputeDecl*>(prog->declarations[0].get());
+    CHECK(cmp != nullptr);
+    CHECK(cmp->name == "Reduce");
+    // First child is the SharedDecl; the rest are let / assignments.
+    CHECK(cmp->body.size() == 4);
+    auto* sh = dynamic_cast<SharedDecl*>(cmp->body[0].get());
+    CHECK(sh != nullptr);
+    CHECK(sh->elementType == "float");
+    CHECK(sh->name == "tile");
+    CHECK(sh->size == 64);
+}
+
+TEST_CASE(shared_with_uint_element_type) {
+    // The uint builtin type (Block 1) is a valid element type for
+    // shared arrays. Catches a regression where parseSharedDecl
+    // hardcodes the float type.
+    const char* src = R"(
+        compute UintTile {
+            shared uint histogram[256]
+            return 0
+        }
+    )";
+    auto prog = parseSource(src);
+    auto* cmp = dynamic_cast<ComputeDecl*>(prog->declarations[0].get());
+    auto* sh = dynamic_cast<SharedDecl*>(cmp->body[0].get());
+    CHECK(sh != nullptr);
+    CHECK(sh->elementType == "uint");
+    CHECK(sh->name == "histogram");
+    CHECK(sh->size == 256);
+}
+
+TEST_CASE(shared_missing_size_is_error) {
+    // `shared float tile;` — no size, no brackets. Parser must
+    // surface the error (it consumes `tile` and then expects `[`).
+    const char* src = R"(
+        compute NoSize {
+            shared float tile
+            return 0
+        }
+    )";
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    parser.parse();
+    CHECK(parser.hasErrors());
+}
+
+TEST_CASE(shared_non_integer_size_is_error) {
+    // `shared float tile[3.14];` — float literal as size. Parser
+    // consumes `tile[`, then expects an IntLiteral but gets
+    // FloatLiteral, so it must report an error.
+    const char* src = R"(
+        compute FloatSize {
+            shared float tile[3.14]
+            return 0
+        }
+    )";
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    parser.parse();
+    CHECK(parser.hasErrors());
+}
+
 TEST_CASE(compute_missing_brace_is_error) {
     // No closing '}' — the parser must report a structural error
     // rather than silently accept the partial program.

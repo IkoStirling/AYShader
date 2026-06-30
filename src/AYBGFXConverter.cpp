@@ -1014,26 +1014,44 @@ BGFXComputeFile AYBGFXConverter::convertComputeDecl(const phoskia::ir::IRCompute
     // When the IRGenerator couldn't resolve the element type (unknown
     // lexeme), it falls back to vec4 — same fallback as property
     // emission, kept consistent so storage reads / writes type-check.
+    //
+    // Phase 3.3 Block 4: Shared-kind declarations emit as GLSL
+    // `shared T name[N];` (workgroup local memory). All threads in
+    // the same workgroup see the same array; reads / writes from one
+    // thread become visible to peers after a barrier (barrier syntax
+    // is a separate extension; the memory itself is just declared
+    // here).
     for (const auto& decl : compute.declarations) {
         if (!decl) continue;
-        if (decl->kind != phoskia::ir::IRDeclaration::Kind::Storage) {
-            // Only Storage declarations live in IRComputeDecl today.
-            // Forward-compatible: silently skip anything else (future
-            // uniform / property support will be handled when added).
-            continue;
+        if (decl->kind == phoskia::ir::IRDeclaration::Kind::Storage) {
+            std::string elementLex = "vec4";
+            if (decl->storageElementType) {
+                elementLex = decl->storageElementType->toString();
+            }
+            // GLSL storage buffer syntax:
+            //   buffer Name { Type data[]; } Name;
+            // Note: the trailing `Name;` (instance name) is required by
+            // GLSL — the block's declared name and the instance name can
+            // differ in principle but conventionally match.
+            cs << "buffer " << decl->name << " { "
+               << elementLex << " data[]; } "
+               << decl->name << ";\n";
+        } else if (decl->kind == phoskia::ir::IRDeclaration::Kind::Shared) {
+            std::string elementLex = "vec4";
+            if (decl->sharedElementType) {
+                elementLex = decl->sharedElementType->toString();
+            }
+            // GLSL workgroup-shared array:
+            //   shared T name[N];
+            // The size is a compile-time constant int (the parser
+            // already enforced that). bgfx's GLSL profile accepts the
+            // standard GLSL form; HLSL would need `groupshared` (a
+            // Phase 5+ HLSL emitter concern).
+            cs << "shared " << elementLex << " " << decl->name
+               << "[" << decl->sharedSize << "];\n";
         }
-        std::string elementLex = "vec4";
-        if (decl->storageElementType) {
-            elementLex = decl->storageElementType->toString();
-        }
-        // GLSL storage buffer syntax:
-        //   buffer Name { Type data[]; } Name;
-        // Note: the trailing `Name;` (instance name) is required by
-        // GLSL — the block's declared name and the instance name can
-        // differ in principle but conventionally match.
-        cs << "buffer " << decl->name << " { "
-           << elementLex << " data[]; } "
-           << decl->name << ";\n";
+        // Other decl kinds are silently skipped here — compute
+        // uniforms / properties land in a future block.
     }
     if (!compute.declarations.empty()) cs << "\n";
 

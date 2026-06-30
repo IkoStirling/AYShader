@@ -224,4 +224,34 @@ TEST_CASE(ir_thread_id_x_resolves_to_uint) {
     CHECK(prim->primitive() == PrimitiveType::Uint);
 }
 
+// ===== Phase 3.3 Block 4: workgroup-shared local memory =====
+TEST_CASE(ir_compute_shared_decl_lowers_to_shared_kind) {
+    auto ir = generateIR(R"(
+        compute Reduce {
+            shared float tile[64]
+            let i = thread_id.x
+            tile[i] = i
+            return tile[0]
+        }
+    )");
+    CHECK(ir.computes.size() == 1);
+    const auto& cmp = ir.computes.front();
+    // The SharedDecl is in the IR's declarations vector (not in body)
+    // because the BGFX converter emits shared arrays as
+    // top-of-compute declarations, not inside main().
+    CHECK(cmp->declarations.size() == 1);
+    const auto& decl = cmp->declarations.front();
+    CHECK_NOT_NULL(decl.get());
+    CHECK(decl->kind == IRDeclaration::Kind::Shared);
+    CHECK(decl->name == "tile");
+    CHECK(decl->sharedSize == 64);
+    auto vec = std::dynamic_pointer_cast<VectorType>(decl->sharedElementType);
+    // sharedElementType for `shared float tile[64]` is
+    // PrimitiveType_(Float) (the scalar), not VectorType — same
+    // shape as StorageDecl's element type.
+    auto prim = std::dynamic_pointer_cast<PrimitiveType_>(decl->sharedElementType);
+    CHECK_NOT_NULL(prim.get());
+    CHECK(prim->primitive() == PrimitiveType::Float);
+}
+
 }

@@ -44,6 +44,7 @@ class PropertyDecl;
 class UniformDecl;
 class TextureDecl;
 class StorageDecl;
+class SharedDecl;
 class VertexFunc;
 class FragmentFunc;
 class ComputeDecl;
@@ -247,6 +248,25 @@ public:
     std::string elementType;
 };
 
+// Phase 3.3 Block 4: workgroup-shared local memory (GLSL `shared T name[N]`).
+//
+// Lives inside a compute body. All threads in the same workgroup see
+// the same memory; reads / writes from one thread are visible to
+// peers after a barrier (Phase 3.3+ — barrier syntax is a separate
+// extension). Element type is a builtin scalar / vector (float / int
+// / uint / vec3 / etc.) carried as a GLSL lexeme, just like
+// StorageDecl. The array size is a literal int — workgroup memory is
+// statically sized at compile time.
+class SharedDecl : public Stmt {
+public:
+    SharedDecl(const std::string& elementType, const std::string& name, int size)
+        : elementType(elementType), name(name), size(size) {}
+    void accept(AstVisitor& visitor) override;
+    std::string elementType;
+    std::string name;
+    int size;
+};
+
 // Parameter declaration inside vertex { } or fragment { }.
 // `in`  → input attribute (vertex) or input varying (fragment)
 // `out` → output varying (vertex only; fragment has no out)
@@ -340,6 +360,7 @@ public:
     virtual void visit(UniformDecl& node) = 0;
     virtual void visit(TextureDecl& node) = 0;
     virtual void visit(StorageDecl& node) = 0;
+    virtual void visit(SharedDecl& node) = 0;
     virtual void visit(ShaderParam& node) = 0;
     virtual void visit(VertexFunc& node) = 0;
     virtual void visit(FragmentFunc& node) = 0;
@@ -380,6 +401,7 @@ inline void PropertyDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void UniformDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void TextureDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void StorageDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
+inline void SharedDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void ShaderParam::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void VertexFunc::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void FragmentFunc::accept(AstVisitor& visitor) { visitor.visit(*this); }

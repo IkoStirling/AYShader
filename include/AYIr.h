@@ -217,7 +217,7 @@ public:
     // Read → `StructuredBuffer<T>` and ReadWrite → `RWStructuredBuffer<T>`.
     enum class StorageAccess : uint8_t { Read, ReadWrite };
 
-    enum class Kind : uint8_t { Uniform, Property, Texture, Storage };
+    enum class Kind : uint8_t { Uniform, Property, Texture, Storage, Shared };
 
     Kind kind;
     std::string name;
@@ -236,6 +236,14 @@ public:
     // === Storage (Phase 3.2 Block 3) ===
     std::shared_ptr<Type> storageElementType;     // non-null only when kind == Storage
     StorageAccess storageAccess = StorageAccess::Read;  // only when kind == Storage
+
+    // === Shared (Phase 3.3 Block 4) ===
+    // Workgroup-shared local memory. `shared T name[N];` in GLSL.
+    // All threads in the same workgroup see the same memory; the
+    // array size is fixed at compile time. Element type is a builtin
+    // scalar / vector (float / int / uint / vec3 / etc.).
+    std::shared_ptr<Type> sharedElementType;      // non-null only when kind == Shared
+    int sharedSize = 0;                          // only when kind == Shared
 
     IRDeclaration() : kind(Kind::Uniform) {}
 };

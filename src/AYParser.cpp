@@ -156,6 +156,12 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
         // compute bodies anyway — only convertComputeDecl emits them).
         return parseStorageDecl();
     }
+    if (match(TokenType::Shared)) {
+        // Phase 3.3 Block 4: workgroup-shared local memory. Same
+        // scope-loose policy as `storage` — the parser emits the AST
+        // node and only convertComputeDecl turns it into GLSL.
+        return parseSharedDecl();
+    }
     if (match(TokenType::Texture2D)) {
         return parseTextureDecl();
     }
@@ -541,6 +547,42 @@ std::unique_ptr<Stmt> Parser::parseStorageDecl() {
 
     match(TokenType::Semicolon);  // ';' is optional (Python-like)
     return std::make_unique<StorageDecl>(access, name.lexeme, elementType.lexeme);
+}
+
+// Phase 3.3 Block 4: parse a workgroup-shared local-memory declaration.
+//
+//   shared <type> <name>[<size>];
+//
+// Element type is a builtin scalar / vector GLSL lexeme (float / int /
+// uint / vec3 / etc.). The size must be a positive int literal —
+// workgroup memory is statically sized at compile time; a runtime
+// size would either need a `let shared_arr_size = ...` indirection
+// (not supported) or a const-expression (out of scope for Phase 3.3).
+//
+// The parser does not validate the element-type lexeme — the
+// IRGenerator's `lexemeToType` table covers builtin forms and falls
+// back with a warning for anything else (then the BGFX converter
+// defaults to `vec4` for the emit, just like StorageDecl's unknown
+// element type).
+std::unique_ptr<Stmt> Parser::parseSharedDecl() {
+    Token elementType = consumeName("Expected shared element type");
+    Token name = consumeName("Expected shared array name");
+    consume(TokenType::LeftBracket, "Expected '[' before shared array size");
+    Token sizeTok = consume(TokenType::IntLiteral, "Expected integer literal for shared array size");
+    consume(TokenType::RightBracket, "Expected ']' after shared array size");
+    int size = 0;
+    try {
+        size = static_cast<int>(std::stol(sizeTok.lexeme));
+    } catch (const std::exception&) {
+        error("shared array size must be a non-negative integer");
+        return nullptr;
+    }
+    if (size <= 0) {
+        error("shared array size must be positive (got " + std::to_string(size) + ")");
+        return nullptr;
+    }
+    match(TokenType::Semicolon);  // ';' is optional (Python-like)
+    return std::make_unique<SharedDecl>(elementType.lexeme, name.lexeme, size);
 }
 
 std::unique_ptr<Stmt> Parser::parseShaderParam(ShaderParam::Direction dir) {

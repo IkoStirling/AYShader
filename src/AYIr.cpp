@@ -210,6 +210,20 @@ std::unique_ptr<IRDeclaration> IRGenerator::lowerDecl(const phoskia::Stmt& s) {
                 "' has unrecognized element type lexeme '" + st->elementType +
                 "'; BGFX emission will fall back to vec4");
         }
+    } else if (auto sh = dynamic_cast<const phoskia::SharedDecl*>(&s)) {
+        // Phase 3.3 Block 4: workgroup-shared local memory.
+        // Mirrors StorageDecl's element-type plumbing. The size is
+        // already a literal int on the AST node (parser enforces),
+        // so we just copy it forward — no expression lowering needed.
+        out->kind = IRDeclaration::Kind::Shared;
+        out->name = sh->name;
+        out->sharedElementType = lexemeToType(sh->elementType);
+        out->sharedSize = sh->size;
+        if (!out->sharedElementType) {
+            _warnings.push_back("Shared '" + sh->name +
+                "' has unrecognized element type lexeme '" + sh->elementType +
+                "'; BGFX emission will fall back to vec4");
+        }
     } else {
         return nullptr;
     }
@@ -377,11 +391,12 @@ std::unique_ptr<IRComputeDecl> IRGenerator::lowerComputeDecl(const phoskia::Comp
     }
     for (const auto& s : c.body) {
         // Skip decl-typed entries (already handled above) — lowerDecl
-        // returns non-null for Uniform/Property/Texture/Storage.
+        // returns non-null for Uniform/Property/Texture/Storage/Shared.
         if (dynamic_cast<const phoskia::UniformDecl*>(s.get()) ||
             dynamic_cast<const phoskia::PropertyDecl*>(s.get()) ||
             dynamic_cast<const phoskia::TextureDecl*>(s.get()) ||
-            dynamic_cast<const phoskia::StorageDecl*>(s.get())) {
+            dynamic_cast<const phoskia::StorageDecl*>(s.get()) ||
+            dynamic_cast<const phoskia::SharedDecl*>(s.get())) {
             continue;
         }
         auto ir = lowerStmt(*s, &env);

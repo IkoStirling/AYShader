@@ -50,6 +50,9 @@ private:
     std::unique_ptr<Stmt> parseTextureDecl();
     // Phase 3.2 Block 3: `storage <name> : structuredbuffer<T>` etc.
     std::unique_ptr<Stmt> parseStorageDecl();
+    // Phase 3.3 Block 4: `shared <type> <name>[<size>];` workgroup
+    // local memory (compute body only; ignored outside compute).
+    std::unique_ptr<Stmt> parseSharedDecl();
     std::unique_ptr<Stmt> parseVertexFunc();
     std::unique_ptr<Stmt> parseFragmentFunc();
     std::unique_ptr<Stmt> parseShaderParam(ShaderParam::Direction dir);

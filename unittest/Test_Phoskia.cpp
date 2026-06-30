@@ -588,4 +588,84 @@ TEST_CASE(compile_uvec3_constructor_emits_uvec3_call) {
     CHECK(result.output.find("uvec3(") != std::string::npos);
 }
 
+// ===== Phase 3.3 Block 4: workgroup-shared local memory =====
+TEST_CASE(compile_compute_with_shared_array) {
+    // `shared float tile[64];` declares a workgroup-local array.
+    // The BGFX emit is `shared float tile[64];` placed before
+    // `void main()`. All threads in the same workgroup see the same
+    // memory; reads / writes from one thread become visible to
+    // peers after a barrier (barrier syntax is a separate extension).
+    Compiler compiler;
+    const char* src = R"(
+        compute Reduce {
+            shared float tile[64]
+            let i = thread_id.x
+            tile[i] = float(i)
+            return tile[0]
+        }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    // Emit must contain the GLSL shared array declaration.
+    CHECK(result.output.find("shared float tile[64];") != std::string::npos);
+    // The Phoskia `shared` keyword must not appear inside a `buffer`
+    // (storage buffer emission is separate; they share the source
+    // text but the BGFX emit is two different shapes).
+    CHECK(result.output.find("rwstructuredbuffer") == std::string::npos);
+    // The shared array must appear BEFORE `void main()` — the
+    // declaration is at the top of the compute file, not inside the
+    // body. A regression that placed it inside main() would still
+    // compile (GLSL accepts it) but it would be re-initialised per
+    // thread, defeating the workgroup-shared semantics.
+    auto posShared = result.output.find("shared float tile[64];");
+    auto posMain = result.output.find("void main()");
+    CHECK(posShared != std::string::npos);
+    CHECK(posMain != std::string::npos);
+    CHECK(posShared < posMain);
+}
+
+TEST_CASE(compile_compute_with_uint_shared_array) {
+    // The uint element type (Phase 3.3 Block 1) is valid for shared
+    // arrays. Catches a regression where the emit hardcodes float.
+    Compiler compiler;
+    const char* src = R"(
+        compute Histogram {
+            shared uint bins[256]
+            let i = thread_id.x
+            bins[i] = uint(0)
+            return 0
+        }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    CHECK(result.output.find("shared uint bins[256];") != std::string::npos);
+}
+
+TEST_CASE(compile_compute_shared_and_storage_coexist) {
+    // Shared arrays and storage buffers can both live in the same
+    // compute body. The BGFX emit must produce BOTH declarations
+    // (one as a GLSL `shared T name[N];` line, the other as a
+    // `buffer Name { T data[]; } Name;` block). The order between
+    // them doesn't matter to GLSL; we just verify both shapes are
+    // present.
+    Compiler compiler;
+    const char* src = R"(
+        compute Scan {
+            shared float tile[64]
+            storage inBuf : structuredbuffer<float>
+            let i = thread_id.x
+            tile[i] = inBuf[i]
+            return 0
+        }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    CHECK(result.output.find("shared float tile[64];") != std::string::npos);
+    CHECK(result.output.find("buffer inBuf") != std::string::npos);
+    CHECK(result.output.find("float data[]") != std::string::npos);
+}
+
 TEST_SUITE_END

@@ -21,6 +21,7 @@ enum class TokenType : uint8_t {
     Property,
     Uniform,
     Storage,
+    Shared,
     Texture2D,
     Sampler,
     Vertex,
