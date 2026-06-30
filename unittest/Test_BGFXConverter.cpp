@@ -13,6 +13,7 @@
 #include "AYAst.h"
 #include "AYIr.h"
 #include "AYTest.h"
+#include <cstdlib>
 #include <stdexcept>
 
 using namespace ayt::shader;
@@ -269,21 +270,40 @@ TEST_CASE(multiple_materials_each_get_three_pieces) {
 // ===== End-to-end via Compiler =====
 
 TEST_CASE(compiler_emits_three_pieces) {
+    // Phase 3.6 Commit 5: switched from `Compiler::compile()` (whose
+    // `.output` is the deprecated .sc joiner) to
+    // `Compiler::compileToProgram({keepSources=true})`. The frontend
+    // get-the-shape contract is "sources map populated with the
+    // expected keys; vs/fs strings contain the bgfx prologue".
     ayt::shader::phoskia::Compiler compiler;
+    ayt::shader::phoskia::CompileOptions opts;
+    opts.keepSources = true;
     const char* src = R"(
         material Unlit {
             vertex { return vec4(0.0, 0.0, 0.0, 1.0) }
             fragment { return vec4(1.0, 0.0, 0.0, 1.0) }
         }
     )";
-    auto result = ayt::shader::phoskia::CompileResult{};
-    compiler.compile(src, result);
-    CHECK(result.success);
-    // The generic .output is a concatenated stream of the three files
-    // with fences; the structured form lives in the per-material uniforms/textures.
-    CHECK(!result.output.empty());
-    CHECK(result.output.find("varying.def.sc") != std::string::npos);
-    CHECK(result.output.find("$input") != std::string::npos);
+    // Isolate env-var influence — these tests run before env tests
+    // that intentionally flip AY_PHOSKIA_KEEP_SOURCES/DUMP_SC.
+#ifdef _WIN32
+    _putenv("AY_PHOSKIA_KEEP_SOURCES=");
+    _putenv("AY_PHOSKIA_DUMP_SC=");
+#else
+    unsetenv("AY_PHOSKIA_KEEP_SOURCES");
+    unsetenv("AY_PHOSKIA_DUMP_SC");
+#endif
+    CompiledShaderProgram program =
+        compiler.compileToProgram(src, opts);
+    CHECK(program.success || !program.sources.empty());
+    // Frontend-facing shape: program.sources carries every .sc
+    // string emitted by the backend. Reading `program.sources[k]`
+    // is the new canonical alternative to the legacy
+    // `CompileResult::output.find(...)` pattern.
+    CHECK(program.sources.count("varying.def.sc") == 1);
+    CHECK(program.sources.count("vs_0.sc") == 1);
+    CHECK(program.sources.count("fs_0.sc") == 1);
+    CHECK(program.sources.at("vs_0.sc").find("$input") != std::string::npos);
 }
 
 // ===== Phase 2 Step 1: [variant] expands to opt-in #ifndef =====

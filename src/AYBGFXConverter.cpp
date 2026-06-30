@@ -731,6 +731,32 @@ void AYBGFXConverter::compileToBinary(const phoskia::ir::IRProgram& program,
         return;
     }
 
+    // 1a) Phase 3.6 Commit 5: when keepSources=true, populate the
+    //     in-memory sources map immediately after convertBGFX
+    //     succeeds — independent of shaderc availability. The .sc
+    //     strings produced by convertBGFX are complete and stable
+    //     (they're the same strings the post-Phase-3.6 frontend tests
+    //     want to read instead of `ConvertResult::output`). Frontend
+    //     tests must NOT depend on shaderc being installed to inspect
+    //     the emit shape.
+    if (opts.keepSources) {
+        for (size_t i = 0; i < conv.materialFiles.size(); ++i) {
+            const auto& mf = conv.materialFiles[i];
+            out.sources["vs_" + std::to_string(i) + ".sc"] = mf.vs;
+            out.sources["fs_" + std::to_string(i) + ".sc"] = mf.fs;
+        }
+        if (!conv.materialFiles.empty()) {
+            // Last material's varyingdef wins — bgfx varyingdef is
+            // per-program, single-key shape locked in design.md §8.4.
+            out.sources["varying.def.sc"] =
+                conv.materialFiles.back().varyingDef;
+        }
+        for (size_t i = 0; i < conv.computeFiles.size(); ++i) {
+            out.sources["cs_" + std::to_string(i) + ".sc"] =
+                conv.computeFiles[i].cs;
+        }
+    }
+
     // 2) Lazy-init the shaderc driver. Per-call
     //    `opts.shadercPath` (if non-empty) wins over the
     //    process-wide default configured via
@@ -817,19 +843,13 @@ void AYBGFXConverter::compileToBinary(const phoskia::ir::IRProgram& program,
             break;
         }
 
-        // 5) In-memory debug sources (only after a successful compile
-        //    of that stage — partial strings on failure are noise).
-        if (opts.keepSources) {
-            out.sources[vsKey] = mf.vs;
-            out.sources[fsKey] = mf.fs;
-            // The varying.def is per-material in the legacy BGFXConvertResult
-            // shape, but the program-level key is shared (single entry,
-            // last material wins if differ — the bgfx varyingdef is per
-            // program by design). Phase 4 may want per-material; for
-            // now keep the historical single-key shape to match the
-            // plan in design.md §8.4.
-            out.sources[vdKey] = mf.varyingDef;
-        }
+        // 5) In-memory debug sources: populated above (after convertBGFX
+        //    succeeded) regardless of shaderc availability. See the
+        //    pre-shaderc block at the top of compileToBinary — keeping
+        //    that populate point before the shaderc call makes the
+        //    debug map usable even on hosts where shaderc isn't
+        //    installed (frontend tests want to read .sc strings to
+        //    verify the emit shape without a real shaderc install).
 
         // 6) Disk dump (best-effort).
         if (opts.dumpIntermediate && dirExists(opts.dumpDir)) {
@@ -852,9 +872,10 @@ void AYBGFXConverter::compileToBinary(const phoskia::ir::IRProgram& program,
                 allOk = false;
                 break;
             }
-            if (opts.keepSources) {
-                out.sources[csKey] = cf.cs;
-            }
+            // In-memory sources already populated in the pre-shaderc
+            // block above (right after convertBGFX succeeded) so
+            // frontend tests can inspect .sc strings without a real
+            // shaderc install. Dump-only branch follows.
             if (opts.dumpIntermediate && dirExists(opts.dumpDir)) {
                 dumpScFile(opts.dumpDir, csKey, cf.cs, out.warnings);
             }
