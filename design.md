@@ -875,12 +875,54 @@ auto result = phoskia.compile(src);
 //   result.output 是 .sc 文本，frontend 自己存盘调 shaderc
 //   result.uniforms / textures 是 binding 元数据（保留）
 
-// Phase 3.6 frontend 视角（提议）
+// Phase 3.6 frontend 视角（默认路径：拿 .bin）
+Phoskia phoskia;
 auto program = phoskia.compileToProgram(src);  // 新方法
 //   program.vsBin / fsBin / csBin : std::vector<uint8_t>  (frontend 直接喂 bgfx::createShader)
 //   program.uniformBlocks / storageBuffers / uniforms / textures：binding 元数据（保留）
 //   不再有 .sc 字串出现在 frontend
 ```
+
+**Debug 路径：拿 `.sc` 在内存里（用户 2026-06-30 sign-off — 调试非常必要）**
+
+`.sc` 是 backend 内部产物，**默认不暴露**。但 debug 时不可避免要查（diff vs 上一次、错误排查、shader playground 复现）。提供两种 debug 入口，**两个正交**：
+
+```cpp
+// Debug 入口 A：直接在内存里看 .sc（不落盘）
+CompileOptions opts;
+opts.keepSources = true;
+auto program = phoskia.compileToProgram(src, opts);
+//   program.vsBin / fsBin / csBin  ← 同上，binary 也填了
+//   program.sources                 ← std::map<std::string, std::string>
+//        { "vs_PbrShader.sc": "...", "fs_PbrShader.sc": "...", "cs_Foo.sc": "..." }
+//   是 backend emit 出来的**完全相同**的字符串（byte-equal to what shaderc saw）
+
+// Debug 入口 B：落盘到 temp dir（与 A 独立）
+CompileOptions opts;
+opts.dumpIntermediate = true;
+opts.dumpDir = "D:/debug-shader-out";   // default = tempdir()/phoskia-sc/
+auto program = phoskia.compileToProgram(src, opts);
+//   .sc 写到 dumpDir 下；program.sources 仍空（落盘 ≠ 内存保留）
+```
+
+**环境变量快捷开关**（与 CompileOptions 等价，独立存在是为了脚本 / IDE 启动时一行加）：
+
+```cpp
+// AY_PHOSKIA_KEEP_SOURCES=1   → 全局 keepSources = true
+// AY_PHOSKIA_DUMP_SC=1       → 全局 dumpIntermediate = true
+```
+
+两者并存 / 任选其一 / 全关 — 都合法。
+
+**为什么 `program.sources` 是 `std::map<std::string, std::string>`**：
+- 键是 backend 内部标识（`"vs_<Material>.sc"`、`"cs_<Compute>.sc"` 等）。frontend 不应该 pin 这些名字（任何 backend 重构都可能变）
+- 值是 `.sc` 的完整 GLSL 文本（多行 string with `#include "common.sh"` 和 layout decl）
+- 用 map 而非 vector —— frontend 可以直接 `program.sources["vs_PbrShader.sc"]` 按字符串查，不用记 index
+
+**API surface 契约**：
+- `BGFXProgram::sources` 默认 fill（empty map）；只有 `keepSources == true` 才 non-empty
+- `BGFXProgram::sources` 的内容跟 backend emit 的 .sc 是 byte-equal；这意味着 frontend 可以把 `program.sources[k]` 写盘再 spawn shaderc —— 跟 Phase 3.5 行为一致但前端不需要 spawn
+- `BGFXProgram::sources` 是**只读快照**：Phase 3.6 不暴露 streaming / lazy API
 
 **Backend 内部细节**（用户看不到）：
 
@@ -912,14 +954,17 @@ AYBGFXConverter::convertBGFX(program)
 ```cpp
 struct CompileOptions {
     // ... 已有 fields
-    bool dumpIntermediate = false;     // 显式同意才写 .sc 到 temp dir
-    std::string dumpDir;              // 默认 = tempdir()/phoskia-sc/
+    bool keepSources = false;          // 显式 opt-in 才把 .sc 字符串保留到 program.sources
+    bool dumpIntermediate = false;     // 显式 opt-in 才把 .sc 写到 dumpDir
+    std::string dumpDir;               // 仅在 dumpIntermediate=true 时用，默认 = tempdir()/phoskia-sc/
 };
 
 Phoskia phoskia;
 auto program = phoskia.compileToProgram(src, opts);
 // program.vsBin / fsBin / csBin 总是 fill（成功时）
-// .sc 默认不落盘；opts.dumpIntermediate == true 时写到 opts.dumpDir/<name>.sc
+// program.sources 在 keepSources=false 时为空 map
+// 落盘仅在 dumpIntermediate=true 时发生
+// 两个开关正交，可以单独 / 一起 / 都不开
 ```
 
 **测试 hygiene**：当前 `Test_ShaderCompile` 把 .sc 写盘 → spawn shaderc 读盘的模式重构后是"内调 `AYShadercDriver` 直接编 `.sc` → 拿 `.bin`"，少一个 IO 层。
@@ -934,7 +979,11 @@ auto program = phoskia.compileToProgram(src, opts);
 | 3.6-D | `AY_PHOSKIA_DUMP_SC=1` env 解析 + 实现 + unit tests | 0.25 天 |
 | **总计** | **3-3.5 天** | — |
 
-**验收**：frontend 能写 `phoskia.compileToProgram(src).vsBin` 一行拿到 binary，完全不知道 `.sc` 存在过。
+**验收**：
+- 默认路径：frontend 写 `phoskia.compileToProgram(src).vsBin` 一行拿到 binary，完全不知道 `.sc` 存在过。
+- Debug 路径 A（in-memory）：`opts.keepSources = true` 让 `program.sources` 拿到 in-memory `.sc`，**不**落盘
+- Debug 路径 B（落盘）：`opts.dumpIntermediate = true` 或 env `AY_PHOSKIA_DUMP_SC=1` 落盘 `.sc` 到 temp dir
+- 两个 debug 入口正交 — 都开 / 单开 / 都不开 都合法
 
 
 ### 新增后端步骤
@@ -1292,7 +1341,7 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 | 3.6-A | design.md §8.4（本文） | 0.25 天 ✅ |
 | 3.6-B | `AYShadercDriver` 抽象 + `AYBGFXConverter::compileToBinary()` 内化 shaderc 调用 + `.sc` 字段从公开移到 private + frontend `compileToProgram()` 暴露 binary API | 1.5-2 天 |
 | 3.6-C | Test_ShaderCompile plumbing 重设计（in-memory `.sc` → driver → bin，少写盘层） | 1 天 |
-| 3.6-D | `AY_PHOSKIA_DUMP_SC=1` 落盘 .sc 到 temp dir（默认不写盘）| 0.25 天 |
+| 3.6-D | `AY_PHOSKIA_DUMP_SC=1`（落盘）+ `AY_PHOSKIA_KEEP_SOURCES=1`（in-memory）双 env 解析与 opts 互转 + unit tests | 0.25 天 |
 | **总计** | — | **3-3.5 天** |
 
 #### 🟢 Phase 3.7 — Compute + Texture 补完（**第二优先**，覆盖 90% 真实项目需求）
