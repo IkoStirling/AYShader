@@ -238,6 +238,111 @@ TEST_CASE(shared_with_uint_element_type) {
     CHECK(sh->size == 256);
 }
 
+// ===== Phase 3.5-A: storage decl explicit binding slot =====
+
+TEST_CASE(storage_with_explicit_binding) {
+    // `storage foo : rwstructuredbuffer<int> binding 2;` — the
+    // optional `binding <int>` suffix parses into StorageDecl::binding.
+    const char* src = R"(
+        compute Foo {
+            storage counters : rwstructuredbuffer<int> binding 2
+            return 0
+        }
+    )";
+    auto prog = parseSource(src);
+    auto* cmp = dynamic_cast<ComputeDecl*>(prog->declarations[0].get());
+    CHECK(cmp != nullptr);
+    auto* st = dynamic_cast<StorageDecl*>(cmp->body[0].get());
+    CHECK(st != nullptr);
+    CHECK(st->name == "counters");
+    CHECK(st->elementType == "int");
+    CHECK(st->binding == 2);
+}
+
+TEST_CASE(storage_without_binding_keeps_default_minus_one) {
+    // Absence of the `binding` suffix must default to -1 so the
+    // BGFX backend's auto-assign path stays live.
+    const char* src = R"(
+        compute Foo {
+            storage counters : rwstructuredbuffer<int>
+            return 0
+        }
+    )";
+    auto prog = parseSource(src);
+    auto* cmp = dynamic_cast<ComputeDecl*>(prog->declarations[0].get());
+    CHECK(cmp != nullptr);
+    auto* st = dynamic_cast<StorageDecl*>(cmp->body[0].get());
+    CHECK(st != nullptr);
+    CHECK(st->binding == -1);
+}
+
+TEST_CASE(storage_binding_keyword_recognized) {
+    // `binding` is a new keyword. Verify the lexer classifies it
+    // as TokenType::Binding (not as a generic Identifier), so the
+    // parser's match(TokenType::Binding) check works.
+    const char* src = "binding";
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    CHECK(tokens.size() == 2);  // keyword + EOF
+    CHECK(tokens[0].type == TokenType::Binding);
+    CHECK(tokens[0].lexeme == "binding");
+}
+
+TEST_CASE(storage_binding_negative_int_is_error) {
+    // `binding -1;` — a negative literal after the keyword. The
+    // parser should reject (storageBinding must be >= 0).
+    const char* src = R"(
+        compute Foo {
+            storage counters : rwstructuredbuffer<int> binding -1
+            return 0
+        }
+    )";
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    parser.parse();
+    CHECK(parser.hasErrors());
+}
+
+TEST_CASE(storage_binding_non_int_is_error) {
+    // `binding foo;` — an identifier instead of an integer literal.
+    // The parser must report the error (consume(IntLiteral, ...)
+    // fails when the next token is `foo`).
+    const char* src = R"(
+        compute Foo {
+            storage counters : rwstructuredbuffer<int> binding foo
+            return 0
+        }
+    )";
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    parser.parse();
+    CHECK(parser.hasErrors());
+}
+
+TEST_CASE(storage_binding_works_with_structuredbuffer_too) {
+    // Same binding suffix applies to the read-only `structuredbuffer`
+    // variant (Read access). Confirms binding is a property of the
+    // decl, not of the access mode.
+    const char* src = R"(
+        compute Foo {
+            storage inputs : structuredbuffer<float> binding 7
+            return 0
+        }
+    )";
+    auto prog = parseSource(src);
+    auto* cmp = dynamic_cast<ComputeDecl*>(prog->declarations[0].get());
+    CHECK(cmp != nullptr);
+    auto* st = dynamic_cast<StorageDecl*>(cmp->body[0].get());
+    CHECK(st != nullptr);
+    CHECK(st->access == StorageDecl::Access::Read);
+    CHECK(st->binding == 7);
+}
+
 TEST_CASE(shared_missing_size_is_error) {
     // `shared float tile;` — no size, no brackets. Parser must
     // surface the error (it consumes `tile` and then expects `[`).

@@ -238,15 +238,27 @@ public:
 // syntax (GLSL doesn't distinguish read-only storage buffers at the
 // source level — that's a HLSL-only thing), but the access field is
 // preserved in the IR for future HLSL emitter use.
+//
+// Phase 3.5-A: optional explicit GLSL `binding = N` slot.
+//   storage <name> : rwstructuredbuffer<T> binding N;
+// `binding` (the new keyword) is followed by a non-negative int literal.
+// The default of -1 preserves the Phase 3.2-3.4 behavior: backend
+// auto-assigns at emit time. With explicit binding >= 0, the backend
+// emits `layout(std430, binding = N) buffer ...;` and detects duplicate
+// bindings at compile time.
 class StorageDecl : public Stmt {
 public:
     enum class Access { Read, ReadWrite };
-    StorageDecl(Access access, const std::string& name, const std::string& elementType)
-        : access(access), name(name), elementType(elementType) {}
+    StorageDecl(Access access, const std::string& name, const std::string& elementType,
+                int binding = -1)
+        : access(access), name(name), elementType(elementType), binding(binding) {}
     void accept(AstVisitor& visitor) override;
     Access access;
     std::string name;
     std::string elementType;
+    // Phase 3.5-A: -1 = no explicit binding (backend auto-assigns);
+    // >= 0 = user wrote `binding N;` and we propagate the literal.
+    int binding = -1;
 };
 
 // Phase 3.3 Block 4: workgroup-shared local memory (GLSL `shared T name[N]`).

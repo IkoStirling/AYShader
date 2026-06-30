@@ -62,6 +62,7 @@ static const char* tokenTypeName(TokenType t) {
         case TokenType::StringLiteral: return "StringLiteral";
         case TokenType::EndOfFile: return "EndOfFile";
         case TokenType::Unknown: return "Unknown";
+        case TokenType::Binding: return "Binding";   // Phase 3.5-A
     }
     return "?";
 }
@@ -556,8 +557,34 @@ std::unique_ptr<Stmt> Parser::parseStorageDecl() {
     Token elementType = consumeName("Expected storage buffer element type name");
     consume(TokenType::Greater, "Expected '>' after storage buffer element type");
 
+    // Phase 3.5-A: optional `binding <int>` suffix. When the user
+    // writes `binding N;`, the parser records N as an explicit GLSL
+    // binding slot; the BGFX backend emits
+    // `layout(std430, binding = N)` and validates uniqueness at
+    // compile time. Absence (-1) preserves the Phase 3.2-3.4
+    // auto-assign behaviour (the BGFX backend assigns sequential
+    // slots starting from 0, skipping any user-declared ones).
+    int binding = -1;
+    if (match(TokenType::Binding)) {
+        Token bTok = consume(TokenType::IntLiteral,
+            "Expected integer literal after 'binding'");
+        try {
+            binding = static_cast<int>(std::stol(bTok.lexeme));
+        } catch (const std::exception&) {
+            error("storage binding must be a non-negative integer, got '"
+                  + bTok.lexeme + "'");
+            return nullptr;
+        }
+        if (binding < 0) {
+            error("storage binding must be non-negative (got "
+                  + std::to_string(binding) + ")");
+            return nullptr;
+        }
+    }
+
     match(TokenType::Semicolon);  // ';' is optional (Python-like)
-    return std::make_unique<StorageDecl>(access, name.lexeme, elementType.lexeme);
+    return std::make_unique<StorageDecl>(access, name.lexeme,
+                                         elementType.lexeme, binding);
 }
 
 // Phase 3.3 Block 4: parse a workgroup-shared local-memory declaration.

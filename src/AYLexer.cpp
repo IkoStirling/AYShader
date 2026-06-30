@@ -126,6 +126,16 @@ TokenType Lexer::identifierType(const std::string& lexeme) {
         // the instance name (GLSL convention) — users access fields
         // as `<Name>.<field>` from shader bodies.
         {"uniformblock", TokenType::UniformBlock},
+        // Phase 3.5-A: storage decl explicit binding slot.
+        //   storage NAME : rwstructuredbuffer<T> binding N;
+        // The keyword is `binding` (not `slot` / `index`) to keep
+        // 1:1 alignment with GLSL `layout(std430, binding = N)`.
+        // The keyword makes it unambiguous vs user identifiers (a
+        // user can still have a uniform / variable named `binding`
+        // — the keyword form is only recognized at the start of an
+        // explicit binding suffix, where a regular identifier would
+        // be a syntax error anyway).
+        {"binding", TokenType::Binding},
         {"texture2d", TokenType::Texture2D},
         {"sampler", TokenType::Sampler},
         {"vertex", TokenType::Vertex},
