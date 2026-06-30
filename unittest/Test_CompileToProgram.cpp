@@ -15,6 +15,7 @@
 // Test_CompileToBinary.cpp; here we test the Compiler-level glue.
 
 #include "AYPhoskia.h"
+#include "AYShadercDriver.h"  // for AYShadercDriver::clearDefaultExecutable()
 #include "AYTest.h"
 
 #include <cstdlib>
@@ -56,6 +57,14 @@ void clearPhase36Env() {
     PUTENV_S("AY_PHOSKIA_DUMP_SC", "");
 }
 
+// Reset the process-wide shaderc default so each test sees a
+// known starting point. (Other test files in the same binary
+// set/clear this; we don't want test ordering to leak into
+// env-var precedence results.)
+void clearShadercDefault() {
+    AYShadercDriver::clearDefaultExecutable();
+}
+
 } // namespace
 
 TEST_SUITE(CompileToProgramTests)
@@ -67,6 +76,7 @@ TEST_SUITE(CompileToProgramTests)
 // errors vector carries the diagnostic and success is false).
 TEST_CASE(compileToProgram_default_opts_returns_shape) {
     clearPhase36Env();
+    clearShadercDefault();
 
     Compiler c;
     CompiledShaderProgram program = c.compileToProgram(kMinimalUnlit);
@@ -101,6 +111,7 @@ TEST_CASE(compileToProgram_default_opts_returns_shape) {
 // map (when shaderc is available). SKIPs when shaderc missing.
 TEST_CASE(compileToProgram_keep_sources_via_opts) {
     clearPhase36Env();
+    clearShadercDefault();
 
     Compiler c;
     CompileOptions opts;
@@ -119,6 +130,7 @@ TEST_CASE(compileToProgram_keep_sources_via_opts) {
 // still results in keepSources=true (true-wins OR).
 TEST_CASE(env_AY_PHOSKIA_KEEP_SOURCES_overrides_opts_false) {
     clearPhase36Env();
+    clearShadercDefault();
     PUTENV_S("AY_PHOSKIA_KEEP_SOURCES", "1");
 
     Compiler c;
@@ -139,6 +151,7 @@ TEST_CASE(env_AY_PHOSKIA_KEEP_SOURCES_overrides_opts_false) {
 // AND env=1 — still works (idempotent).
 TEST_CASE(env_AY_PHOSKIA_KEEP_SOURCES_combines_with_opts_true) {
     clearPhase36Env();
+    clearShadercDefault();
     PUTENV_S("AY_PHOSKIA_KEEP_SOURCES", "1");
 
     Compiler c;
@@ -158,6 +171,7 @@ TEST_CASE(env_AY_PHOSKIA_KEEP_SOURCES_combines_with_opts_true) {
 // the asymmetry: opts.keepSources=true always wins regardless of env.
 TEST_CASE(env_AY_PHOSKIA_KEEP_SOURCES_zero_opts_true_wins) {
     clearPhase36Env();
+    clearShadercDefault();
     PUTENV_S("AY_PHOSKIA_KEEP_SOURCES", "0");
 
     Compiler c;
@@ -176,6 +190,7 @@ TEST_CASE(env_AY_PHOSKIA_KEEP_SOURCES_zero_opts_true_wins) {
 // off). This is the "no override" baseline.
 TEST_CASE(env_AY_PHOSKIA_KEEP_SOURCES_zero_opts_false_is_off) {
     clearPhase36Env();
+    clearShadercDefault();
     PUTENV_S("AY_PHOSKIA_KEEP_SOURCES", "0");
 
     Compiler c;
@@ -197,6 +212,7 @@ TEST_CASE(env_AY_PHOSKIA_KEEP_SOURCES_zero_opts_false_is_off) {
 // Parse error surfaces in program.errors without throwing.
 TEST_CASE(compileToProgram_parser_error_surfaces) {
     clearPhase36Env();
+    clearShadercDefault();
 
     Compiler c;
     // Unclosed brace → parser error.
@@ -213,6 +229,7 @@ TEST_CASE(compileToProgram_parser_error_surfaces) {
 // happy path.
 TEST_CASE(compileToProgram_return_value_matches_out_param) {
     clearPhase36Env();
+    clearShadercDefault();
 
     Compiler c;
 

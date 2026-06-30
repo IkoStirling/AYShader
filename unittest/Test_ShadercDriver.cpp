@@ -1,13 +1,15 @@
-// Test_ShadercDriver.cpp — Phase 3.6 Commit 1 (B1)
+// Test_ShadercDriver.cpp — Phase 3.6 (revised Commit 4)
 //
-// Tests the promoted AYShadercDriver: path discovery, in-memory .sc
-// -> .bin bytes round-trip, and the env-var precedence contract.
+// Tests AYShadercDriver's explicit-path policy (sign-off 2026-07-01):
+//   * setDefaultExecutable / clearDefaultExecutable process-wide state
+//   * Default ctor uses the global default; throws on unset / missing
+//   * Explicit-path ctor takes its own path; throws on empty / missing
+//   * In-memory .sc → .bin bytes round-trip (skips when shaderc missing)
 //
-// These tests are independent of the rest of AYShader — the driver
-// only needs shaderc.exe to exist on the machine. If shaderc is not
-// installed, the constructor tests skip gracefully (mirroring the
-// historical shadercPath() test behavior); the round-trip test
-// fails hard because there is nothing to compile with.
+// The pre-Commit-4 "auto-discovery" tests (env var, PATH search,
+// CMake hint) are gone — the driver no longer does any of that.
+// The host engine is responsible for resolving the shaderc path
+// from its own config and calling setDefaultExecutable at startup.
 
 #include "AYShadercDriver.h"
 #include "AYTest.h"
@@ -16,19 +18,18 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <sys/stat.h>
 
 #ifdef _WIN32
 #  include <io.h>
 #  include <windows.h>
-#  define PUTENV_S(name, val) _putenv_s(name, val)
-#else
-#  include <unistd.h>
-#  define PUTENV_S(name, val) setenv(name, val, 1)
 #endif
 
 using namespace ayt::shader;
+
+namespace {
 
 // stat()-based file existence check (avoids std::filesystem::exists
 // ambiguity that surfaces when the engine's pre-C++17 headers leak
@@ -36,17 +37,14 @@ using namespace ayt::shader;
 inline bool fileExists(const std::string& p) {
     if (p.empty()) return false;
     struct stat st;
-#ifdef _WIN32
     return ::stat(p.c_str(), &st) == 0;
-#else
-    return ::stat(p.c_str(), &st) == 0;
-#endif
 }
 
-namespace {
-
-// CMake-injected fall-back path for shaderc — same convention the
-// pre-Phase-3.6 Test_ShaderCompile.cpp used.
+// CMake-injected absolute path to the vendored shaderc binary.
+// Same convention the pre-Phase-3.6 Test_ShaderCompile.cpp used.
+// Tests use this to call setDefaultExecutable() so the round-trip
+// test can run end-to-end. When the vendored binary doesn't exist
+// (CI without bgfx) the round-trip test SKIPs gracefully.
 #ifndef AY_SHADER_SHADERC_HINT
 #  ifdef _WIN32
 #    define AY_SHADER_SHADERC_HINT "thirdParty/bgfx-install/debug/bin/shaderc.exe"
@@ -67,34 +65,13 @@ namespace {
 // Clean the env-var surface that Phase 3.6 introduces. Caller's
 // shell may have these set; tests must see a known starting point.
 void clearPhase36Env() {
-    PUTENV_S("AY_PHOSKIA_KEEP_SOURCES", "");
-    PUTENV_S("AY_PHOSKIA_DUMP_SC", "");
-}
-
-// Probe AYShadercDriver's own path discovery by attempting a
-// throw-away construction in a try/catch. If shaderc isn't on disk,
-// the ctor throws std::runtime_error — we catch it and return false
-// so the caller SKIPs the test instead of letting the framework
-// count an uncaught exception as a test failure.
-//
-// Mirrors the historical Test_ShaderCompile.cpp pattern (env-var
-// only) but covers PATH discovery too so a CI box without the
-// CMake hint at the standard path can still find a globally-
-// installed shaderc and run the round-trip test.
-bool shadercAvailable() {
-    try {
-        AYShadercDriver probe;
-        return !probe.shadercPath().empty();
-    } catch (const std::runtime_error&) {
-        return false;
-    }
-}
-
-std::string shadercEnvOrHint() {
-    if (const char* p = std::getenv(AYShadercDriver::kShadercEnvVar)) {
-        if (*p) return p;
-    }
-    return AY_SHADER_SHADERC_HINT;
+#ifdef _WIN32
+    _putenv("AY_PHOSKIA_KEEP_SOURCES=");
+    _putenv("AY_PHOSKIA_DUMP_SC=");
+#else
+    unsetenv("AY_PHOSKIA_KEEP_SOURCES");
+    unsetenv("AY_PHOSKIA_DUMP_SC");
+#endif
 }
 
 std::vector<std::string> shadercIncludeDirs() {
@@ -112,46 +89,145 @@ std::vector<std::string> shadercIncludeDirs() {
 
 TEST_SUITE(ShadercDriverTests)
 
-TEST_CASE(shaderc_driver_ctor_succeeds_when_shaderc_present) {
-    clearPhase36Env();
-    if (!shadercAvailable()) {
-        std::cerr << "[shaderc test] SKIP: shaderc not available at '"
-                  << shadercEnvOrHint() << "'. Set " << AYShadercDriver::kShadercEnvVar << ".\n";
-        return;  // skip — same pattern Test_ShaderCompile.cpp uses
-    }
-    AYShadercDriver drv;
-    CHECK(!drv.shadercPath().empty());
-}
+// ---- setDefaultExecutable / clearDefaultExecutable ----
 
-TEST_CASE(shaderc_driver_throws_when_shaderc_missing) {
-    // Force the env var to a definitely-missing path. The constructor
-    // tries env first, so this short-circuits the CMake-hint /
-    // PATH-search fallbacks.
-    PUTENV_S(AYShadercDriver::kShadercEnvVar,
-             "D:/definitely/not/here/shaderc-no-such-binary");
-    bool threw = false;
-    try {
-        AYShadercDriver drv;
-    } catch (const std::runtime_error&) {
-        threw = true;
-    }
-    PUTENV_S(AYShadercDriver::kShadercEnvVar, "");  // reset
-    CHECK(threw);
-}
-
-TEST_CASE(shaderc_driver_in_memory_to_bytes_round_trip) {
+TEST_CASE(set_default_then_default_ctor_uses_it) {
     clearPhase36Env();
-    if (!shadercAvailable()) {
-        std::cerr << "[shaderc test] SKIP: shaderc not available — round-trip "
-                     "test requires shaderc.\n";
+    AYShadercDriver::clearDefaultExecutable();
+
+    const std::string path = AY_SHADER_SHADERC_HINT;
+    if (!fileExists(path)) {
+        std::cerr << "[shaderc test] SKIP: vendored shaderc not at '"
+                  << path << "'.\n";
         return;
     }
 
+    AYShadercDriver::setDefaultExecutable(path);
+    AYShadercDriver drv;  // default ctor — should pick up the default
+    CHECK(drv.shadercPath() == path);
+    AYShadercDriver::clearDefaultExecutable();
+}
+
+TEST_CASE(default_ctor_throws_when_no_default_configured) {
+    clearPhase36Env();
+    AYShadercDriver::clearDefaultExecutable();
+
+    bool threw = false;
+    try {
+        AYShadercDriver drv;  // no default set
+    } catch (const std::runtime_error&) {
+        threw = true;
+    } catch (...) {
+        // Driver may throw std::invalid_argument instead on some
+        // paths; the contract is "default ctor throws when no
+        // default is configured", exception type is intentionally
+        // permissive.
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+TEST_CASE(clear_default_resets_state) {
+    clearPhase36Env();
+    AYShadercDriver::clearDefaultExecutable();
+    AYShadercDriver::setDefaultExecutable("C:/some/path/shaderc.exe");
+    AYShadercDriver::clearDefaultExecutable();
+
+    bool threw = false;
+    try {
+        AYShadercDriver drv;
+    } catch (...) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+TEST_CASE(default_ctor_throws_when_default_points_to_missing_file) {
+    clearPhase36Env();
+    AYShadercDriver::clearDefaultExecutable();
+    AYShadercDriver::setDefaultExecutable("D:/definitely/not/here/shaderc-no-such-binary");
+
+    bool threw = false;
+    try {
+        AYShadercDriver drv;
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    AYShadercDriver::clearDefaultExecutable();
+    CHECK(threw);
+}
+
+TEST_CASE(default_ctor_throws_when_default_is_empty_string) {
+    clearPhase36Env();
+    AYShadercDriver::clearDefaultExecutable();
+    AYShadercDriver::setDefaultExecutable("");
+
+    bool threw = false;
+    try {
+        AYShadercDriver drv;
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    AYShadercDriver::clearDefaultExecutable();
+    CHECK(threw);
+}
+
+// ---- Explicit-path ctor ----
+
+TEST_CASE(explicit_path_ctor_uses_given_path) {
+    clearPhase36Env();
+    const std::string path = AY_SHADER_SHADERC_HINT;
+    if (!fileExists(path)) {
+        std::cerr << "[shaderc test] SKIP: vendored shaderc not at '"
+                  << path << "'.\n";
+        return;
+    }
+    AYShadercDriver drv(path);
+    CHECK(drv.shadercPath() == path);
+}
+
+TEST_CASE(explicit_path_ctor_throws_on_empty) {
+    bool threw = false;
+    try {
+        AYShadercDriver drv("");
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+TEST_CASE(explicit_path_ctor_throws_on_missing_file) {
+    bool threw = false;
+    try {
+        AYShadercDriver drv("D:/definitely/not/here/shaderc-no-such-binary");
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+// ---- Round-trip (skips when shaderc isn't installed) ----
+
+TEST_CASE(shaderc_driver_in_memory_to_bytes_round_trip) {
+    clearPhase36Env();
+    AYShadercDriver::clearDefaultExecutable();
+
+    const std::string path = AY_SHADER_SHADERC_HINT;
+    if (!fileExists(path)) {
+        std::cerr << "[shaderc test] SKIP: vendored shaderc not at '"
+                  << path << "' — round-trip test requires shaderc.\n";
+        return;
+    }
+
+    // Configure the global default so the test reflects how a real
+    // engine uses the driver. (Could also use the explicit-path
+    // ctor; both are equivalent here.)
+    AYShadercDriver::setDefaultExecutable(path);
     AYShadercDriver drv;
 
     // A tiny vertex shader that asks for GLSL 4.30 with bgfx common.sh.
-    // Uses the same `attribute vec3 a_position; gl_Position = ...` recipe
-    // as every Test_ShaderCompile.cpp e2e test, so a future comparative
+    // Same `attribute vec3 a_position; gl_Position = ...` recipe as
+    // every Test_ShaderCompile.cpp e2e test, so a future comparative
     // check between this driver path and the legacy spawn path stays
     // byte-equal.
     std::ostringstream vs;
@@ -174,13 +250,14 @@ TEST_CASE(shaderc_driver_in_memory_to_bytes_round_trip) {
     if (!r.ok) {
         std::cerr << "[shaderc test] round-trip FAILED: " << r.stderrText << "\n";
         CHECK(r.ok);
+        AYShadercDriver::clearDefaultExecutable();
         return;
     }
     CHECK(!r.bytes.empty());
-    // shaderc emits a small bin header; first 4 bytes are usually
-    // the bgfx magic. We don't pin exact bytes; non-empty is the
-    // contract for this commit.
+    // shaderc emits a small bin header; we don't pin exact bytes;
+    // non-empty is the contract for this commit.
     CHECK(r.stderrText.empty());
+    AYShadercDriver::clearDefaultExecutable();
 }
 
 TEST_SUITE_END

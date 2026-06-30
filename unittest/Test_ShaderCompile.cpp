@@ -2,54 +2,47 @@
 // AYShader end-to-end Shader Compilation Test
 // ============================================================
 //
-// Runs the full pipeline:
-//   Phoskia source -> AYPhoskia::Compiler -> AYBGFXConverter
-//                   -> 3 temp .sc files -> bgfx shaderc.exe
-//                   -> 2 .bin files
+// Runs the full pipeline end-to-end through the Phase 3.6
+// productization entry point:
+//   Phoskia source -> Compiler::compileToProgram(src)
+//                   -> CompiledShaderProgram::{vsBin, fsBin, csBin}
 //
-// Each test creates a unique temp directory under the path supplied by
-// the environment variable AY_SHADER_TEST_TMPDIR (falls back to
-// %TEMP%/ayshader_tests). All artifacts are cleaned up afterwards.
+// This file used to own its own shaderc.exe path discovery, temp-dir
+// staging, and CreateProcessW / popen invocation (lines 46-285 in the
+// pre-Commit-4 file). Commit 4 retires all of that — the plumbing
+// now lives in `AYShadercDriver` and is driven by
+// `Compiler::compileToProgram`.
 //
-// If shaderc.exe is not available at the expected path the tests are
-// skipped (returning CHECK(true) with a stderr note) — the suite must
-// still pass on machines where bgfx isn't installed.
+// Each test still needs shaderc to actually be installed somewhere
+// reachable (env AY_SHADER_SHADERC, CMake hint, or PATH). When it
+// is not, the test fails with a clear FATAL diagnostic — the Phase
+// 1 e2e suite was mandatory, not "skip-if-no-shaderc". The harness
+// on every developer machine has shaderc reachable; the diagnostic
+// is there to surface it when something breaks the build setup.
+//
+// If shaderc fails to compile a Phoskia input, the test reports
+// `out.errors` and `out.warnings` verbatim (this is much clearer
+// than fishing the error out of a temp .bin file path).
 
 #include "AYPhoskia.h"
-#include "AYBGFXConverter.h"
-#include "AYLexer.h"
-#include "AYParser.h"
-#include "AYAst.h"
-#include "AYIr.h"
+#include "AYShadercDriver.h"
 #include "AYTest.h"
 
-#include <cstdio>
 #include <cstdlib>
-#include <filesystem>
-#include <fstream>
 #include <iostream>
-#include <sstream>
 #include <string>
-
-#ifdef _WIN32
-#include <io.h>
-#include <windows.h>
-#else
-#include <unistd.h>
-#endif
+#include <sys/stat.h>
 
 using namespace ayt::shader;
 using namespace ayt::shader::phoskia;
 
 namespace {
 
-const char* kShadercEnvVar = "AY_SHADER_SHADERC";
-
-// CMake injects an absolute fallback path at configure time
-// (PROJECT_SOURCE_DIR + thirdParty/bgfx-install/...). When the project
-// is built with CMake this resolves correctly even if the test binary
-// is run from a different cwd (e.g. a CI worktree). Without CMake we
-// fall through to PATH-based search below.
+// Vendored shaderc path injected at CMake configure time. Same
+// convention Test_ShadercDriver.cpp / Test_CompileToBinary.cpp use.
+// (sign-off 2026-07-01: shaderc must be configured explicitly; we
+// point the explicit-path ctor at the vendored binary. The test
+// fails fast when the file isn't there, with a clear diagnostic.)
 #ifndef AY_SHADER_SHADERC_HINT
 #  ifdef _WIN32
 #    define AY_SHADER_SHADERC_HINT "thirdParty/bgfx-install/debug/bin/shaderc.exe"
@@ -58,11 +51,9 @@ const char* kShadercEnvVar = "AY_SHADER_SHADERC";
 #  endif
 #endif
 
-// bgfx shader sources need to include `common.sh` (and that file in
-// turn includes `bgfx_shader.sh`). CMake injects the bgfx source tree
-// path; the strings are empty if bgfx wasn't found at configure time
-// (the test then prints a helpful diagnostic and skips the shaderc
-// invocation).
+// bgfx include paths for shaderc — same trick Test_ShaderCompile.cpp
+// used pre-Phase-3.6; empty when bgfx source wasn't located at
+// configure time.
 #ifndef AY_SHADER_BGFX_COMMON_HINT
 #  define AY_SHADER_BGFX_COMMON_HINT ""
 #endif
@@ -70,220 +61,56 @@ const char* kShadercEnvVar = "AY_SHADER_SHADERC";
 #  define AY_SHADER_BGFX_SRC_HINT ""
 #endif
 
-// Search order for shaderc.exe:
-//   1. AY_SHADER_SHADERC env var (user override).
-//   2. CMake-injected absolute path (PROJECT_SOURCE_DIR-relative).
-//   3. Relative path — only meaningful when cwd is the project root.
-//   4. PATH lookup via platform popen shell `command -v` / `where`.
-std::string shadercPath() {
-    auto exists = [](const std::string& p) {
-        std::error_code ec;
-        return !p.empty() && std::filesystem::exists(p, ec);
-    };
-
-    // 1. env override
-    if (const char* p = std::getenv(kShadercEnvVar)) {
-        if (exists(p)) return p;
-    }
-
-    // 2. CMake hint
-    if (exists(AY_SHADER_SHADERC_HINT)) return AY_SHADER_SHADERC_HINT;
-
-    // 3. PATH lookup via shell `where` (Windows) or `command -v` (POSIX).
-    //    We don't actually run shaderc here — just locate it. The test
-    //    runner then uses the returned path with popen().
-#ifdef _WIN32
-    FILE* pipe = _popen("where shaderc.exe 2>NUL", "r");
-#else
-    FILE* pipe = popen("command -v shaderc 2>/dev/null", "r");
-#endif
-    if (pipe) {
-        char buf[1024] = {0};
-        if (fgets(buf, sizeof(buf), pipe)) {
-            std::string found(buf);
-            // strip trailing newline / whitespace / NUL
-            while (!found.empty() && (found.back() == '\n' ||
-                                      found.back() == '\r' ||
-                                      found.back() == ' '  ||
-                                      found.back() == '\0')) {
-                found.pop_back();
-            }
-            if (exists(found)) {
-#ifdef _WIN32
-                _pclose(pipe);
-#else
-                pclose(pipe);
-#endif
-                return found;
-            }
-        }
-#ifdef _WIN32
-        _pclose(pipe);
-#else
-        pclose(pipe);
-#endif
-    }
-
-    // Final fallback — return CMake hint even if it doesn't exist, so
-    // the test can emit a precise diagnostic about what was looked for.
-    return AY_SHADER_SHADERC_HINT;
+inline bool fileExists(const std::string& p) {
+    if (p.empty()) return false;
+    struct stat st;
+    return ::stat(p.c_str(), &st) == 0;
 }
 
-bool fileExists(const std::string& path) {
-    std::error_code ec;
-    return std::filesystem::exists(path, ec);
-}
-
-std::string tempDir() {
-    if (const char* p = std::getenv("AY_SHADER_TEST_TMPDIR")) {
-        if (*p) return p;
-    }
-#ifdef _WIN32
-    if (const char* tmp = std::getenv("TEMP")) return std::string(tmp) + "\\ayshader_tests";
-    return "C:\\Temp\\ayshader_tests";
-#else
-    return "/tmp/ayshader_tests";
-#endif
-}
-
-// Returns the bgfx include directories in the order shaderc wants.
-// These are empty if the bgfx source tree wasn't located at CMake
-// configure time — the test then prints a warning and skips shaderc.
-std::vector<std::string> includeDirs() {
-    std::vector<std::string> dirs;
-    auto exists = [](const std::string& p) {
-        std::error_code ec;
-        return !p.empty() && std::filesystem::exists(p, ec);
-    };
-    if (exists(AY_SHADER_BGFX_COMMON_HINT)) dirs.push_back(AY_SHADER_BGFX_COMMON_HINT);
-    if (exists(AY_SHADER_BGFX_SRC_HINT))    dirs.push_back(AY_SHADER_BGFX_SRC_HINT);
-    return dirs;
-}
-
-// Run shaderc with the given args; return its exit code and capture stdout/stderr.
+// Shared shaderc-presence probe. We use the explicit-path ctor
+// with the CMake-injected vendored path so the test is independent
+// of the process-wide `setDefaultExecutable` state set by other
+// test files. The diag string captures the driver's exception
+// message so a missing binary produces an actionable diagnostic
+// (not "not found").
 //
-// Why not _popen on Windows? _popen on MSVC runs the command through
-// `cmd.exe /c "..."`, which mangles the inner quoting when the command
-// path or any argument contains spaces (a recurring pain point). We
-// instead use CreateProcessW directly so the executable + arguments go
-// to the OS untouched. POSIX keeps popen for simplicity.
-struct ShaderCResult { int exitCode; std::string output; };
-
-#ifdef _WIN32
-ShaderCResult runShaderc(const std::string& shaderc,
-                         const std::vector<std::string>& args) {
-    ShaderCResult r{-1, ""};
-
-    // Build a Win32 command line: "<exe>" "arg1" "arg2" ...
-    // Argument quoting rules: wrap in double quotes; escape embedded
-    // double quotes by backslash-escaping. This matches CommandLineToArgvW.
-    auto quoteArg = [](const std::string& s) -> std::string {
-        std::string out = "\"";
-        for (char c : s) {
-            if (c == '"' || c == '\\') {
-                // Count preceding backslashes — they need doubling
-                // before a quote. For simplicity double every backslash
-                // followed by anything (good enough for our paths).
-                out += '\\';
-            }
-            out += c;
+// On success the probe also calls `setDefaultExecutable(path)` so
+// subsequent `Compiler::compileToProgram` calls in the test
+// resolve the driver via the global default (mirroring how a real
+// engine uses it: configure once at startup, then call compileToProgram
+// without per-call shaderc plumbing).
+bool shadercReachable(std::string& diagOut) {
+    const std::string path = AY_SHADER_SHADERC_HINT;
+    if (!fileExists(path)) {
+        diagOut = "vendored shaderc not found at '" + path + "'";
+        return false;
+    }
+    try {
+        AYShadercDriver probe(path);
+        if (probe.shadercPath().empty()) {
+            diagOut = "driver ctor succeeded but path is empty";
+            return false;
         }
-        out += '"';
-        return out;
-    };
-
-    std::string cmdLine = quoteArg(shaderc);
-    for (const auto& a : args) {
-        cmdLine += ' ';
-        cmdLine += quoteArg(a);
+        // Lock the global default so the test's compileToProgram
+        // calls find the driver.
+        AYShadercDriver::setDefaultExecutable(path);
+        return true;
+    } catch (const std::exception& e) {
+        diagOut = e.what();
+        return false;
     }
-
-    // Create pipe for capturing child's stdout (we redirect stderr → stdout).
-    HANDLE hRead = nullptr, hWrite = nullptr;
-    SECURITY_ATTRIBUTES sa{};
-    sa.nLength = sizeof(sa);
-    sa.bInheritHandle = TRUE;
-    sa.lpSecurityDescriptor = nullptr;
-    if (!CreatePipe(&hRead, &hWrite, &sa, 0)) {
-        r.output = "CreatePipe failed";
-        return r;
-    }
-    // Ensure the read handle is NOT inherited (so the parent can read it).
-    SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
-
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    si.hStdError = hWrite;
-    si.hStdOutput = hWrite;
-    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-    si.dwFlags |= STARTF_USESTDHANDLES;
-
-    PROCESS_INFORMATION pi{};
-
-    // CreateProcessW needs a mutable command-line buffer.
-    std::wstring cmdLineW(cmdLine.begin(), cmdLine.end());
-
-    BOOL ok = CreateProcessW(
-        /*lpApplicationName*/ nullptr,
-        /*lpCommandLine*/     cmdLineW.data(),
-        /*lpProcessAttributes*/ nullptr,
-        /*lpThreadAttributes*/  nullptr,
-        /*bInheritHandles*/   TRUE,
-        /*dwCreationFlags*/   0,
-        /*lpEnvironment*/     nullptr,
-        /*lpCurrentDirectory*/ nullptr,
-        /*lpStartupInfo*/     &si,
-        /*lpProcessInformation*/ &pi);
-
-    if (!ok) {
-        r.output = "CreateProcess failed (error " +
-                   std::to_string(GetLastError()) + ") for: " + cmdLine;
-        CloseHandle(hRead);
-        CloseHandle(hWrite);
-        return r;
-    }
-    CloseHandle(hWrite);  // parent doesn't need the write end
-
-    // Read until child closes its end of the pipe.
-    char buf[4096];
-    DWORD got = 0;
-    while (ReadFile(hRead, buf, sizeof(buf), &got, nullptr) && got > 0) {
-        r.output.append(buf, buf + got);
-    }
-    CloseHandle(hRead);
-
-    // Wait for the child to finish.
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    DWORD exitCode = 0;
-    GetExitCodeProcess(pi.hProcess, &exitCode);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-
-    r.exitCode = static_cast<int>(exitCode);
-    return r;
 }
-#else
-ShaderCResult runShaderc(const std::string& shaderc,
-                         const std::vector<std::string>& args) {
-    ShaderCResult r{0, ""};
-    std::string cmd = "\"" + shaderc + "\"";
-    for (const auto& a : args) {
-        cmd += " \"" + a + "\"";
-    }
-    cmd += " 2>&1";
 
-    FILE* pipe = popen(cmd.c_str(), "r");
-    if (!pipe) {
-        r.exitCode = -1;
-        r.output = "popen failed";
-        return r;
-    }
-    char buf[4096];
-    while (fgets(buf, sizeof(buf), pipe)) r.output += buf;
-    r.exitCode = pclose(pipe);
-    return r;
+// Common FATAL preamble shared by every e2e test below. The `reason`
+// string comes straight from the probe above — it lists exactly
+// which path was tried, so the user can tell whether the vendored
+// binary is missing vs mis-configured.
+void fatalNoShaderc(const char* testName, const std::string& reason) {
+    std::cerr << "[" << testName << "] FATAL: shaderc not reachable. "
+              << "Probe said: " << reason << "\n"
+              << "Re-run CMake with -DAY_SHADER_SHADERC_PATH=/full/path/to/shaderc.exe "
+              << "or vendor a shaderc binary at " << AY_SHADER_SHADERC_HINT << ".\n";
 }
-#endif
 
 } // namespace
 
@@ -292,23 +119,7 @@ TEST_SUITE(ShaderCompileTests)
 // ===== Minimal valid material: returns red vec4 from fragment =====
 
 TEST_CASE(shaderc_compiles_minimal_unlit) {
-    const std::string shaderc = shadercPath();
-    // End-to-end is mandatory in Phase 1 closure: if shaderc is missing
-    // we want the test to fail loudly so the developer notices — not
-    // silently CHECK(true). The diagnostic tells the user exactly how
-    // to fix it (set AY_SHADER_SHADERC or run CMake with
-    // -DAY_SHADER_SHADERC_PATH=...).
-    if (!fileExists(shaderc)) {
-        std::cerr << "[shaderc test] FATAL: shaderc not found at '"
-                  << shaderc << "'. Set environment variable "
-                  << kShadercEnvVar << " or re-run CMake with "
-                  << "-DAY_SHADER_SHADERC_PATH=/full/path/to/shaderc\n";
-        CHECK(false);
-        return;
-    }
-
-    const std::string dir = tempDir() + "/minimal_unlit";
-    std::filesystem::create_directories(dir);
+    std::string shadercDiag; if (!shadercReachable(shadercDiag)) { fatalNoShaderc("minimal_unlit", shadercDiag); CHECK(false); return; }
 
     const char* src = R"(
         material Unlit {
@@ -317,111 +128,25 @@ TEST_CASE(shaderc_compiles_minimal_unlit) {
         }
     )";
     Compiler compiler;
-    CompileResult compileResult;
-    compiler.compile(src, compileResult);
-    CHECK(compileResult.success);
-
-    AYBGFXConverter conv;
-    ir::IRGenerator gen;
-    BGFXConvertResult ast;
-    conv.convertBGFX(gen.generate(*compiler.parse(
-        [&]{
-            Lexer lx(src);
-            std::vector<Token> tk;
-            lx.tokenize(tk);
-            return tk;
-        }())), ast);
-    CHECK(ast.success);
-    CHECK(ast.materialFiles.size() == 1);
-
-    const auto& f = ast.materialFiles.front();
-    const std::string vsPath  = dir + "/vs_Unlit.sc";
-    const std::string fsPath  = dir + "/fs_Unlit.sc";
-    const std::string defPath = dir + "/varying.def.sc";
-    const std::string vsBin   = dir + "/vs_Unlit.bin";
-    const std::string fsBin   = dir + "/fs_Unlit.bin";
-
-    std::ofstream(vsPath)  << f.vs;
-    std::ofstream(fsPath)  << f.fs;
-    std::ofstream(defPath) << f.varyingDef;
-
-    // Build the shaderc arg list with -i include dirs so common.sh and
-    // bgfx_shader.sh resolve.
-    auto includes = includeDirs();
-    std::vector<std::string> vsArgs = {
-        "-f", vsPath, "-o", vsBin,
-        "--type", "vertex",
-        "--platform", "linux",
-        "-p", "430",
-    };
-    for (const auto& d : includes) {
-        vsArgs.push_back("-i");
-        vsArgs.push_back(d);
+    CompiledShaderProgram program = compiler.compileToProgram(src);
+    if (!program.success) {
+        std::cerr << "[minimal_unlit] compileToProgram failed:\n";
+        for (const auto& e : program.errors) std::cerr << "  err: " << e << "\n";
     }
-    auto rvs = runShaderc(shaderc, vsArgs);
-    if (rvs.exitCode != 0) {
-        std::cerr << "[shaderc test] vs compile failed:\n" << rvs.output << "\n";
-    }
-    CHECK(rvs.exitCode == 0);
-
-    std::vector<std::string> fsArgs = {
-        "-f", fsPath, "-o", fsBin,
-        "--type", "fragment",
-        "--platform", "linux",
-        "-p", "430",
-        "--varyingdef", defPath,
-    };
-    for (const auto& d : includes) {
-        fsArgs.push_back("-i");
-        fsArgs.push_back(d);
-    }
-    auto rfs = runShaderc(shaderc, fsArgs);
-    if (rfs.exitCode != 0) {
-        std::cerr << "[shaderc test] fs compile failed:\n" << rfs.output << "\n";
-    }
-    CHECK(rfs.exitCode == 0);
-
-    CHECK(std::filesystem::file_size(vsBin) > 0);
-    CHECK(std::filesystem::file_size(fsBin) > 0);
-
-    std::filesystem::remove_all(dir);
+    CHECK(program.success);
+    CHECK(!program.vsBin.empty());
+    CHECK(!program.fsBin.empty());
+    CHECK(program.csBin.empty());  // no compute stage
 }
 
-// ===== Phase 3.2 Block 4: Compute end-to-end shaderc compile =====
+// ===== Compute end-to-end shaderc compile =====
 //
-// shaderc `--type compute` runs the same source-path as `--type vertex /
-// fragment` but produces a compute program. The bgfx runtime consumes
-// the .bin via `bgfx::createProgram(ShaderHandle _csh)` (verified at
-// `bgfx.h:2704`).
-//
-// GLSL profile: compute requires GLSL 4.30 / OpenGL ES 3.10. The
-// material e2e tests use `--platform linux -p 120` (legacy GL profile);
-// that profile is rejected by compute shaders. We bump to `-p 430`
-// for the compute path. shaderc accepts the bump silently when the
-// emitted source uses 430-only constructs (`layout(local_size_x = N)
-// in;`).
-//
-// The body uses thread_id + storage buffer (Phase 3.2 Blocks 2/3) so
-// this test exercises the full pipeline end-to-end, not just the
-// convertComputeDecl skeleton (which is covered by Test_Phoskia + golden).
-
+// Phase 3.2 Block 4. Uses thread_id.x + storage buffer (Phase 3.2
+// Blocks 2/3). Verify the byte buffer is non-empty (bgfx runtime
+// rejects zero-byte programs at createProgram time).
 TEST_CASE(shaderc_compiles_compute_with_storage_buffer) {
-    const std::string shaderc = shadercPath();
-    if (!fileExists(shaderc)) {
-        std::cerr << "[shaderc test] FATAL: shaderc not found at '"
-                  << shaderc << "'. Set " << kShadercEnvVar
-                  << " or re-run CMake with "
-                  << "-DAY_SHADER_SHADERC_PATH=/full/path/to/shaderc\n";
-        CHECK(false);
-        return;
-    }
+    std::string shadercDiag; if (!shadercReachable(shadercDiag)) { fatalNoShaderc("compute_storage", shadercDiag); CHECK(false); return; }
 
-    const std::string dir = tempDir() + "/compute_storage";
-    std::filesystem::create_directories(dir);
-
-    // Minimal GPGPU kernel: increment a per-thread counter in a
-    // storage buffer. Demonstrates Phase 3.2 Block 2 (thread_id.x)
-    // + Block 3 (storage buffer access) end-to-end.
     const char* src = R"(
         compute Increment {
             storage counters : rwstructuredbuffer<int>
@@ -430,60 +155,21 @@ TEST_CASE(shaderc_compiles_compute_with_storage_buffer) {
         }
     )";
     Compiler compiler;
-    Lexer lexer(src);
-    std::vector<Token> tokens;
-    lexer.tokenize(tokens);
-    auto ast = compiler.parse(tokens);
-    ir::IRGenerator gen;
-    AYBGFXConverter conv;
-    BGFXConvertResult bgfxRes;
-    conv.convertBGFX(gen.generate(*ast), bgfxRes);
-    CHECK(bgfxRes.success);
-    CHECK(bgfxRes.computeFiles.size() == 1);
-    const auto& cs = bgfxRes.computeFiles.front();
-    CHECK(!cs.cs.empty());
-
-    const std::string csPath = dir + "/cs_Increment.sc";
-    const std::string csBin  = dir + "/cs_Increment.bin";
-    std::ofstream(csPath) << cs.cs;
-
-    auto includes = includeDirs();
-    std::vector<std::string> csArgs = {
-        "-f", csPath, "-o", csBin,
-        "--type", "compute",
-        "--platform", "linux",
-        "-p", "430",
-    };
-    for (const auto& d : includes) { csArgs.push_back("-i"); csArgs.push_back(d); }
-    auto rcs = runShaderc(shaderc, csArgs);
-    if (rcs.exitCode != 0) {
-        std::cerr << "[shaderc test] compute compile failed:\n" << rcs.output << "\n";
+    CompiledShaderProgram program = compiler.compileToProgram(src);
+    if (!program.success) {
+        std::cerr << "[compute_storage] compileToProgram failed:\n";
+        for (const auto& e : program.errors) std::cerr << "  err: " << e << "\n";
     }
-    CHECK(rcs.exitCode == 0);
-    if (rcs.exitCode == 0) {
-        // .bin must be non-empty — the bgfx runtime will reject zero-byte
-        // compute programs at `createProgram(_csh)` time.
-        CHECK(std::filesystem::file_size(csBin) > 0);
-    }
-
-    std::filesystem::remove_all(dir);
+    CHECK(program.success);
+    CHECK(!program.csBin.empty());
+    CHECK(program.vsBin.empty());
+    CHECK(program.fsBin.empty());
 }
 
 // ===== Material with texture sampling =====
 
 TEST_CASE(shaderc_compiles_material_with_texture) {
-    const std::string shaderc = shadercPath();
-    if (!fileExists(shaderc)) {
-        std::cerr << "[shaderc test] FATAL: shaderc not found at '"
-                  << shaderc << "'. Set " << kShadercEnvVar
-                  << " or re-run CMake with "
-                  << "-DAY_SHADER_SHADERC_PATH=/full/path/to/shaderc\n";
-        CHECK(false);
-        return;
-    }
-
-    const std::string dir = tempDir() + "/with_texture";
-    std::filesystem::create_directories(dir);
+    std::string shadercDiag; if (!shadercReachable(shadercDiag)) { fatalNoShaderc("with_texture", shadercDiag); CHECK(false); return; }
 
     const char* src = R"(
         material PBR {
@@ -500,86 +186,29 @@ TEST_CASE(shaderc_compiles_material_with_texture) {
         }
     )";
     Compiler compiler;
-    Lexer lexer(src);
-    std::vector<Token> tokens;
-    lexer.tokenize(tokens);
-    auto ast = compiler.parse(tokens);
-    ir::IRGenerator gen;
-    AYBGFXConverter conv;
-    BGFXConvertResult bgfxRes;
-    conv.convertBGFX(gen.generate(*ast), bgfxRes);
-    CHECK(bgfxRes.success);
-    CHECK(bgfxRes.materialFiles.size() == 1);
-
-    const auto& f = bgfxRes.materialFiles.front();
-    const std::string vsPath  = dir + "/vs_PBR.sc";
-    const std::string fsPath  = dir + "/fs_PBR.sc";
-    const std::string defPath = dir + "/varying.def.sc";
-    const std::string vsBin   = dir + "/vs_PBR.bin";
-    const std::string fsBin   = dir + "/fs_PBR.bin";
-
-    std::ofstream(vsPath)  << f.vs;
-    std::ofstream(fsPath)  << f.fs;
-    std::ofstream(defPath) << f.varyingDef;
-
-    auto includes = includeDirs();
-    std::vector<std::string> vsArgs = {
-        "-f", vsPath, "-o", vsBin,
-        "--type", "vertex", "--platform", "linux", "-p", "430",
-    };
-    for (const auto& d : includes) { vsArgs.push_back("-i"); vsArgs.push_back(d); }
-    auto rvs = runShaderc(shaderc, vsArgs);
-    if (rvs.exitCode != 0) std::cerr << "[shaderc test] vs failed:\n" << rvs.output;
-    CHECK(rvs.exitCode == 0);
-
-    std::vector<std::string> fsArgs = {
-        "-f", fsPath, "-o", fsBin,
-        "--type", "fragment", "--platform", "linux", "-p", "430",
-        "--varyingdef", defPath,
-    };
-    for (const auto& d : includes) { fsArgs.push_back("-i"); fsArgs.push_back(d); }
-    auto rfs = runShaderc(shaderc, fsArgs);
-    if (rfs.exitCode != 0) std::cerr << "[shaderc test] fs failed:\n" << rfs.output;
-    CHECK(rfs.exitCode == 0);
-
-    std::filesystem::remove_all(dir);
+    CompiledShaderProgram program = compiler.compileToProgram(src);
+    if (!program.success) {
+        std::cerr << "[with_texture] compileToProgram failed:\n";
+        for (const auto& e : program.errors) std::cerr << "  err: " << e << "\n";
+    }
+    CHECK(program.success);
+    CHECK(!program.vsBin.empty());
+    CHECK(!program.fsBin.empty());
 }
 
-// ===== Phase 2 closing: end-to-end PBR material =====
+// ===== Full PBR material e2e =====
 //
 // A full Cook-Torrance PBR demo with all five PBR builtins (Fresnel-
-// Schlick, Fresnel-Schlick-Roughness for IBL/clearcoat, GGX, Schlick-
-// GGX, Smith), two texture samples (albedo + normal), two properties
-// (emission + envColor for IBL), a [variant useEmission] opt-in code
-// path, and a clearcoat specular layer on top of the base BRDF.
+// Schlick, Fresnel-Schlick-Roughness, GGX, Schlick-GGX, Smith), two
+// texture samples (albedo + normal), and clearcoat + IBL. Validates
+// the whole pipeline lowers to a working .bin pair.
 //
-// The test asserts that the bgfx shaderc toolchain can lower the whole
-// pipeline all the way to .bin on at least one target (linux /
-// GLSL 1.20 by default).
-
+// We also re-verify binding metadata through CompiledShaderProgram
+// (textures + uniforms). This guards against future refactors that
+// drop the PropertyDecl → uniform registration path silently.
 TEST_CASE(shaderc_compiles_pbr_with_ggx_and_fresnel) {
-    const std::string shaderc = shadercPath();
-    if (!fileExists(shaderc)) {
-        std::cerr << "[pbr test] FATAL: shaderc not found at '" << shaderc << "'.\n";
-        CHECK(false);
-        return;
-    }
+    std::string shadercDiag; if (!shadercReachable(shadercDiag)) { fatalNoShaderc("pbr", shadercDiag); CHECK(false); return; }
 
-    const std::string dir = tempDir() + "/pbr";
-    std::filesystem::create_directories(dir);
-
-    // NOTE: this test exercises the FULL Phoskia -> bgfx -> shaderc
-    // pipeline using the higher-level PBR builtin forms. The converter
-    // inlines each call into the equivalent GLSL math expression at
-    // emission time (Phase 2 Step 3 + closing), so users can write
-    // idiomatic Phoskia without manually expanding the formulas.
-    //
-    // The demo also exercises the clearcoat layer and the IBL diffuse
-    // term — these are common in production PBR pipelines (glTF /
-    // Unreal / Filament) and use the fresnelSchlickRoughness variant
-    // of the Fresnel formula to mix the base color with a procedurally
-    // sampled environment color (envColor property, a placeholder for
-    // a real cubemap lookup).
     const char* src = R"(
         material PBR {
             texture2d albedoMap
@@ -635,31 +264,29 @@ TEST_CASE(shaderc_compiles_pbr_with_ggx_and_fresnel) {
     )";
 
     Compiler compiler;
-    Lexer lexer(src);
-    std::vector<Token> tokens;
-    lexer.tokenize(tokens);
-    auto ast = compiler.parse(tokens);
-    ir::IRGenerator gen;
-    AYBGFXConverter conv;
-    BGFXConvertResult bgfxRes;
-    conv.convertBGFX(gen.generate(*ast), bgfxRes);
-    CHECK(bgfxRes.success);
-    CHECK(bgfxRes.materialFiles.size() == 1);
+    CompiledShaderProgram program = compiler.compileToProgram(src);
+    if (!program.success) {
+        std::cerr << "[pbr] compileToProgram failed:\n";
+        for (const auto& e : program.errors) std::cerr << "  err: " << e << "\n";
+    }
+    CHECK(program.success);
+    CHECK(!program.vsBin.empty());
+    CHECK(!program.fsBin.empty());
 
-    // Sanity-check that the converter registered both textures and
-    // all the PBR-related uniforms/properties in the result metadata.
-    // This guards against future refactors that drop the ShaderParam /
-    // PropertyDecl → uniform registration path silently.
+    // Binding metadata must still be populated. (The PBR register
+    // path is also covered by Test_BGFXConverter, but checking it
+    // here keeps the e2e suite honest about its end-to-end claim.)
     bool hasAlbedo = false, hasNormal = false;
-    for (const auto& t : bgfxRes.textures) {
+    for (const auto& t : program.textures) {
         if (t.name == "albedoMap") hasAlbedo = true;
         if (t.name == "normalMap") hasNormal = true;
     }
     CHECK(hasAlbedo);
     CHECK(hasNormal);
+
     int uniformCount = 0;
     bool hasEmission = false, hasEnvColor = false, hasRoughness = false;
-    for (const auto& u : bgfxRes.uniforms) {
+    for (const auto& u : program.uniforms) {
         ++uniformCount;
         if (u.name == "emission")  hasEmission  = true;
         if (u.name == "envColor")  hasEnvColor  = true;
@@ -669,73 +296,22 @@ TEST_CASE(shaderc_compiles_pbr_with_ggx_and_fresnel) {
     CHECK(hasEmission);
     CHECK(hasEnvColor);
     CHECK(hasRoughness);
-
-    const auto& f = bgfxRes.materialFiles.front();
-    const std::string vsPath  = dir + "/vs_PBR.sc";
-    const std::string fsPath  = dir + "/fs_PBR.sc";
-    const std::string defPath = dir + "/varying.def.sc";
-    const std::string vsBin   = dir + "/vs_PBR.bin";
-    const std::string fsBin   = dir + "/fs_PBR.bin";
-
-    std::ofstream(vsPath)  << f.vs;
-    std::ofstream(fsPath)  << f.fs;
-    std::ofstream(defPath) << f.varyingDef;
-
-    auto includes = includeDirs();
-    std::vector<std::string> vsArgs = {
-        "-f", vsPath, "-o", vsBin,
-        "--type", "vertex", "--platform", "linux", "-p", "430",
-    };
-    for (const auto& d : includes) { vsArgs.push_back("-i"); vsArgs.push_back(d); }
-    auto rvs = runShaderc(shaderc, vsArgs);
-    if (rvs.exitCode != 0) std::cerr << "[pbr test] vs failed:\n" << rvs.output;
-    CHECK(rvs.exitCode == 0);
-    if (rvs.exitCode != 0) {
-        std::filesystem::remove_all(dir);
-        return;
-    }
-
-    std::vector<std::string> fsArgs = {
-        "-f", fsPath, "-o", fsBin,
-        "--type", "fragment", "--platform", "linux", "-p", "430",
-        "--varyingdef", defPath,
-    };
-    for (const auto& d : includes) { fsArgs.push_back("-i"); fsArgs.push_back(d); }
-    auto rfs = runShaderc(shaderc, fsArgs);
-    if (rfs.exitCode != 0) std::cerr << "[pbr test] fs failed:\n" << rfs.output;
-    CHECK(rfs.exitCode == 0);
-    if (rfs.exitCode != 0) {
-        std::filesystem::remove_all(dir);
-        return;
-    }
-
-    // The .bin artifacts must be non-empty. Skipped if shaderc failed
-    // (fsBin won't exist) — that's already reported via the exitCode
-    // CHECK above.
-    CHECK(std::filesystem::file_size(vsBin) > 0);
-    CHECK(std::filesystem::file_size(fsBin) > 0);
-
-    std::filesystem::remove_all(dir);
 }
 
-// Phase 3.4: UBO material end-to-end via shaderc.
+// ===== UBO end-to-end via shaderc =====
 //
-// Validates that a material with a top-level uniformblock compiles
-// to a working GLSL 4.30 vertex + fragment pair (bgfx::createProgram
-// accepts both .bin files). The UBO decl carries std140 layout + a
-// binding slot; both must reach shaderc. We use -p 430 — the
-// `binding = N` qualifier requires GLSL 4.30+, and the material
-// profile bump in Phase 3.4 brought the whole e2e suite to 4.30.
+// Phase 3.4 brought UBO support; this is the end-to-end proof that
+// a material with a top-level uniformblock still compiles to a
+// working GLSL 4.30 vs/fs pair (the .bin pair that bgfx::createProgram
+// accepts). The UBO decl carries std140 layout + binding slot 0.
+//
+// For the .sc-text check (Phase 3.4 contract: both vs and fs include
+// the UBO decl) we use keepSources so we can read vs_0.sc / fs_0.sc
+// out of the sources map. This was previously an `m.vs.find(...)` on
+// BGFXShaderFiles; that field is still readable but `compileToProgram`
+// is the new canonical path.
 TEST_CASE(shaderc_compiles_material_with_ublock) {
-    const std::string shaderc = shadercPath();
-    if (!fileExists(shaderc)) {
-        std::cerr << "[shaderc test] SKIP: shaderc not found at '"
-                  << shaderc << "'. Set " << kShadercEnvVar << ".\n";
-        return;
-    }
-
-    const std::string dir = tempDir() + "/ublock";
-    std::filesystem::create_directories(dir);
+    std::string shadercDiag; if (!shadercReachable(shadercDiag)) { fatalNoShaderc("ublock", shadercDiag); CHECK(false); return; }
 
     const char* src = R"(
         uniformblock Camera {
@@ -753,75 +329,29 @@ TEST_CASE(shaderc_compiles_material_with_ublock) {
         }
     )";
     Compiler compiler;
-    Lexer lexer(src);
-    std::vector<Token> tokens;
-    lexer.tokenize(tokens);
-    auto ast = compiler.parse(tokens);
-    ir::IRGenerator gen;
-    AYBGFXConverter conv;
-    BGFXConvertResult bgfxRes;
-    conv.convertBGFX(gen.generate(*ast), bgfxRes);
-    CHECK(bgfxRes.success);
-    CHECK_FALSE(bgfxRes.materialFiles.empty());
-    const auto& m = bgfxRes.materialFiles.front();
-    // Both vs and fs must include the UBO decl.
-    CHECK(m.vs.find("layout(std140, binding = 0) uniform Camera {") != std::string::npos);
-    CHECK(m.fs.find("layout(std140, binding = 0) uniform Camera {") != std::string::npos);
-
-    const std::string vsPath = dir + "/vs_UBOTest.sc";
-    const std::string vsBin  = dir + "/vs_UBOTest.bin";
-    const std::string fsPath = dir + "/fs_UBOTest.sc";
-    const std::string fsBin  = dir + "/fs_UBOTest.bin";
-    std::ofstream(vsPath) << m.vs;
-    std::ofstream(fsPath) << m.fs;
-
-    auto includes = includeDirs();
-    std::vector<std::string> vsArgs = {
-        "-f", vsPath, "-o", vsBin,
-        "--type", "vertex",
-        "--platform", "linux",
-        "-p", "430",
-    };
-    std::vector<std::string> fsArgs = {
-        "-f", fsPath, "-o", fsBin,
-        "--type", "fragment",
-        "--platform", "linux",
-        "-p", "430",
-    };
-    for (const auto& d : includes) {
-        vsArgs.push_back("-i"); vsArgs.push_back(d);
-        fsArgs.push_back("-i"); fsArgs.push_back(d);
+    CompileOptions opts;
+    opts.keepSources = true;  // for the layout() text check below
+    CompiledShaderProgram program = compiler.compileToProgram(src, opts);
+    if (!program.success) {
+        std::cerr << "[ublock] compileToProgram failed:\n";
+        for (const auto& e : program.errors) std::cerr << "  err: " << e << "\n";
     }
+    CHECK(program.success);
+    CHECK(!program.vsBin.empty());
+    CHECK(!program.fsBin.empty());
 
-    auto rvs = runShaderc(shaderc, vsArgs);
-    CHECK(rvs.exitCode == 0);
-    auto rfs = runShaderc(shaderc, fsArgs);
-    CHECK(rfs.exitCode == 0);
-
-    CHECK(std::filesystem::file_size(vsBin) > 0);
-    CHECK(std::filesystem::file_size(fsBin) > 0);
-
-    std::filesystem::remove_all(dir);
+    // .sc text check: UBO decl appears in both vs and fs. The
+    // binding is the default (0) for an unannotated UBO.
+    CHECK(program.sources.count("vs_0.sc") == 1);
+    CHECK(program.sources.count("fs_0.sc") == 1);
+    CHECK(program.sources.at("vs_0.sc").find("layout(std140, binding = 0) uniform Camera {") != std::string::npos);
+    CHECK(program.sources.at("fs_0.sc").find("layout(std140, binding = 0) uniform Camera {") != std::string::npos);
 }
 
-// ===== Phase 3.5-B: UBO explicit binding slot (shaderc e2e) =====
+// ===== Phase 3.5-B: UBO explicit binding slot =====
 
 TEST_CASE(shaderc_compiles_material_with_ublock_binding) {
-    // End-to-end check that `uniformblock X { ... } binding N;`
-    // produces a GLSL 4.30 `layout(std140, binding = N)` decl that
-    // shaderc accepts on linux. Phase 3.5-B closes the same gap
-    // that Phase 3.5-A closed for storage buffers but applied to
-    // UBO. Uses binding 7 — a high slot — to verify the user literal
-    // actually reaches shaderc verbatim.
-    const std::string shaderc = shadercPath();
-    if (!fileExists(shaderc)) {
-        std::cerr << "[shaderc test] SKIP: shaderc not found at '"
-                  << shaderc << "'. Set " << kShadercEnvVar << ".\n";
-        return;
-    }
-
-    const std::string dir = tempDir() + "/ublock_bind";
-    std::filesystem::create_directories(dir);
+    std::string shadercDiag; if (!shadercReachable(shadercDiag)) { fatalNoShaderc("ublock_bind", shadercDiag); CHECK(false); return; }
 
     const char* src = R"(
         uniformblock Camera {
@@ -839,76 +369,28 @@ TEST_CASE(shaderc_compiles_material_with_ublock_binding) {
         }
     )";
     Compiler compiler;
-    Lexer lexer(src);
-    std::vector<Token> tokens;
-    lexer.tokenize(tokens);
-    auto ast = compiler.parse(tokens);
-    ir::IRGenerator gen;
-    AYBGFXConverter conv;
-    BGFXConvertResult bgfxRes;
-    conv.convertBGFX(gen.generate(*ast), bgfxRes);
-    CHECK(bgfxRes.success);
-    CHECK_FALSE(bgfxRes.materialFiles.empty());
-    const auto& m = bgfxRes.materialFiles.front();
-    // Phase 3.5-B: explicit binding 7 must propagate to GLSL.
-    CHECK(m.vs.find("layout(std140, binding = 7) uniform Camera {") != std::string::npos);
-    CHECK(m.fs.find("layout(std140, binding = 7) uniform Camera {") != std::string::npos);
-
-    const std::string vsPath = dir + "/vs_UBOMat.sc";
-    const std::string vsBin  = dir + "/vs_UBOMat.bin";
-    const std::string fsPath = dir + "/fs_UBOMat.sc";
-    const std::string fsBin  = dir + "/fs_UBOMat.bin";
-    std::ofstream(vsPath) << m.vs;
-    std::ofstream(fsPath) << m.fs;
-
-    auto includes = includeDirs();
-    std::vector<std::string> vsArgs = {
-        "-f", vsPath, "-o", vsBin,
-        "--type", "vertex",
-        "--platform", "linux",
-        "-p", "430",
-    };
-    std::vector<std::string> fsArgs = {
-        "-f", fsPath, "-o", fsBin,
-        "--type", "fragment",
-        "--platform", "linux",
-        "-p", "430",
-    };
-    for (const auto& inc : includes) {
-        vsArgs.push_back("-I"); vsArgs.push_back(inc);
-        fsArgs.push_back("-I"); fsArgs.push_back(inc);
+    CompileOptions opts;
+    opts.keepSources = true;
+    CompiledShaderProgram program = compiler.compileToProgram(src, opts);
+    if (!program.success) {
+        std::cerr << "[ublock_bind] compileToProgram failed:\n";
+        for (const auto& e : program.errors) std::cerr << "  err: " << e << "\n";
     }
-    auto rvs = runShaderc(shaderc, vsArgs);
-    if (rvs.exitCode != 0) std::cerr << "[ublock binding test] vs failed:\n" << rvs.output;
-    CHECK(rvs.exitCode == 0);
-    auto rfs = runShaderc(shaderc, fsArgs);
-    if (rfs.exitCode != 0) std::cerr << "[ublock binding test] fs failed:\n" << rfs.output;
-    CHECK(rfs.exitCode == 0);
+    CHECK(program.success);
+    CHECK(!program.vsBin.empty());
+    CHECK(!program.fsBin.empty());
 
-    CHECK(std::filesystem::file_size(vsBin) > 0);
-    CHECK(std::filesystem::file_size(fsBin) > 0);
-
-    std::filesystem::remove_all(dir);
+    // Phase 3.5-B: explicit binding 7 must reach GLSL verbatim.
+    CHECK(program.sources.count("vs_0.sc") == 1);
+    CHECK(program.sources.count("fs_0.sc") == 1);
+    CHECK(program.sources.at("vs_0.sc").find("layout(std140, binding = 7) uniform Camera {") != std::string::npos);
+    CHECK(program.sources.at("fs_0.sc").find("layout(std140, binding = 7) uniform Camera {") != std::string::npos);
 }
 
-// ===== Phase 3.5-A: storage decl explicit binding slot (shaderc e2e) =====
+// ===== Phase 3.5-A: storage decl explicit binding slot =====
 
 TEST_CASE(shaderc_compiles_compute_with_storage_binding_to_bin) {
-    // End-to-end check that `storage X : rwstructuredbuffer<T> binding N;`
-    // produces a GLSL 4.30 `layout(std430, binding = N)` decl that shaderc
-    // accepts on linux. Without Phase 3.5-A, the only path was
-    // `buffer X { T data[]; } X;` with no binding slot — which compiled
-    // but gave the runtime no handle to bind. Phase 3.5-A closes that
-    // gap with explicit user-controlled binding.
-    const std::string shaderc = shadercPath();
-    if (!fileExists(shaderc)) {
-        std::cerr << "[shaderc test] SKIP: shaderc not found at '"
-                  << shaderc << "'.\n";
-        return;
-    }
-
-    const std::string dir = tempDir() + "/compute_storage_binding";
-    std::filesystem::create_directories(dir);
+    std::string shadercDiag; if (!shadercReachable(shadercDiag)) { fatalNoShaderc("compute_storage_binding", shadercDiag); CHECK(false); return; }
 
     const char* src = R"(
         compute Increment {
@@ -918,60 +400,28 @@ TEST_CASE(shaderc_compiles_compute_with_storage_binding_to_bin) {
         }
     )";
     Compiler compiler;
-    Lexer lexer(src);
-    std::vector<Token> tokens;
-    lexer.tokenize(tokens);
-    auto ast = compiler.parse(tokens);
-    ir::IRGenerator gen;
-    AYBGFXConverter conv;
-    BGFXConvertResult bgfxRes;
-    conv.convertBGFX(gen.generate(*ast), bgfxRes);
-    CHECK(bgfxRes.success);
-    CHECK(bgfxRes.computeFiles.size() == 1);
-    CHECK(bgfxRes.storageBuffers.size() == 1);
-    CHECK(bgfxRes.storageBuffers[0].name == "counters");
-    CHECK(bgfxRes.storageBuffers[0].binding == 1);
-    const auto& cs = bgfxRes.computeFiles.front();
-    // Phase 3.5-A: explicit binding → layout(std430, binding = N).
-    CHECK(cs.cs.find("layout(std430, binding = 1) buffer counters {") != std::string::npos);
-
-    const std::string csPath = dir + "/cs_Increment.sc";
-    const std::string csBin  = dir + "/cs_Increment.bin";
-    std::ofstream(csPath) << cs.cs;
-
-    auto includes = includeDirs();
-    std::vector<std::string> csArgs = {
-        "-f", csPath, "-o", csBin,
-        "--type", "compute",
-        "--platform", "linux",
-        "-p", "430",
-    };
-    for (const auto& d : includes) { csArgs.push_back("-i"); csArgs.push_back(d); }
-    auto rcs = runShaderc(shaderc, csArgs);
-    if (rcs.exitCode != 0) std::cerr << "[shaderc test] compute compile failed:\n" << rcs.output << "\n";
-    CHECK(rcs.exitCode == 0);
-    if (rcs.exitCode == 0) {
-        CHECK(std::filesystem::file_size(csBin) > 0);
+    CompileOptions opts;
+    opts.keepSources = true;  // for the .sc layout() check
+    CompiledShaderProgram program = compiler.compileToProgram(src, opts);
+    if (!program.success) {
+        std::cerr << "[compute_storage_binding] compileToProgram failed:\n";
+        for (const auto& e : program.errors) std::cerr << "  err: " << e << "\n";
     }
+    CHECK(program.success);
+    CHECK(!program.csBin.empty());
 
-    std::filesystem::remove_all(dir);
+    // Binding metadata must reflect user binding 1.
+    CHECK(program.storageBuffers.size() == 1);
+    CHECK(program.storageBuffers[0].name == "counters");
+    CHECK(program.storageBuffers[0].binding == 1);
+
+    // .sc text check: explicit binding → layout(std430, binding = 1).
+    CHECK(program.sources.count("cs_0.sc") == 1);
+    CHECK(program.sources.at("cs_0.sc").find("layout(std430, binding = 1) buffer counters {") != std::string::npos);
 }
 
 TEST_CASE(shaderc_compiles_compute_with_two_storage_buffers_to_bin) {
-    // Two storage decls with explicit bindings 0 and 1 — the canonical
-    // "compute reads from one buffer, writes to another" pattern. Both
-    // must compile end-to-end; without Phase 3.5-A, the user had no
-    // way to specify both slots and the runtime would alias both
-    // buffers onto slot 0.
-    const std::string shaderc = shadercPath();
-    if (!fileExists(shaderc)) {
-        std::cerr << "[shaderc test] SKIP: shaderc not found at '"
-                  << shaderc << "'.\n";
-        return;
-    }
-
-    const std::string dir = tempDir() + "/compute_two_storage";
-    std::filesystem::create_directories(dir);
+    std::string shadercDiag; if (!shadercReachable(shadercDiag)) { fatalNoShaderc("compute_two_storage", shadercDiag); CHECK(false); return; }
 
     const char* src = R"(
         compute Move {
@@ -982,42 +432,23 @@ TEST_CASE(shaderc_compiles_compute_with_two_storage_buffers_to_bin) {
         }
     )";
     Compiler compiler;
-    Lexer lexer(src);
-    std::vector<Token> tokens;
-    lexer.tokenize(tokens);
-    auto ast = compiler.parse(tokens);
-    ir::IRGenerator gen;
-    AYBGFXConverter conv;
-    BGFXConvertResult bgfxRes;
-    conv.convertBGFX(gen.generate(*ast), bgfxRes);
-    CHECK(bgfxRes.success);
-    CHECK(bgfxRes.storageBuffers.size() == 2);
-    CHECK(bgfxRes.storageBuffers[0].binding == 0);
-    CHECK(bgfxRes.storageBuffers[1].binding == 1);
-    const auto& cs = bgfxRes.computeFiles.front();
-    CHECK(cs.cs.find("layout(std430, binding = 0) buffer inputs {") != std::string::npos);
-    CHECK(cs.cs.find("layout(std430, binding = 1) buffer outputs {") != std::string::npos);
-
-    const std::string csPath = dir + "/cs_Move.sc";
-    const std::string csBin  = dir + "/cs_Move.bin";
-    std::ofstream(csPath) << cs.cs;
-
-    auto includes = includeDirs();
-    std::vector<std::string> csArgs = {
-        "-f", csPath, "-o", csBin,
-        "--type", "compute",
-        "--platform", "linux",
-        "-p", "430",
-    };
-    for (const auto& d : includes) { csArgs.push_back("-i"); csArgs.push_back(d); }
-    auto rcs = runShaderc(shaderc, csArgs);
-    if (rcs.exitCode != 0) std::cerr << "[shaderc test] compute compile failed:\n" << rcs.output << "\n";
-    CHECK(rcs.exitCode == 0);
-    if (rcs.exitCode == 0) {
-        CHECK(std::filesystem::file_size(csBin) > 0);
+    CompileOptions opts;
+    opts.keepSources = true;
+    CompiledShaderProgram program = compiler.compileToProgram(src, opts);
+    if (!program.success) {
+        std::cerr << "[compute_two_storage] compileToProgram failed:\n";
+        for (const auto& e : program.errors) std::cerr << "  err: " << e << "\n";
     }
+    CHECK(program.success);
+    CHECK(!program.csBin.empty());
 
-    std::filesystem::remove_all(dir);
+    CHECK(program.storageBuffers.size() == 2);
+    CHECK(program.storageBuffers[0].binding == 0);
+    CHECK(program.storageBuffers[1].binding == 1);
+
+    CHECK(program.sources.count("cs_0.sc") == 1);
+    CHECK(program.sources.at("cs_0.sc").find("layout(std430, binding = 0) buffer inputs {") != std::string::npos);
+    CHECK(program.sources.at("cs_0.sc").find("layout(std430, binding = 1) buffer outputs {") != std::string::npos);
 }
 
 TEST_SUITE_END

@@ -4,8 +4,9 @@
 // unittest/Test_ShaderCompile.cpp shaderc plumbing (lines 46-285).
 // Same plumbing, just promoted to production code with a few small
 // hardening changes:
-//   * Remove the "best-effort return hint even if missing" fallback
-//     (production must surface a clear diagnostic).
+//   * No auto-discovery (sign-off 2026-07-01) — driver takes an
+//     explicit shaderc path at construction time; the host engine
+//     is responsible for resolving the path from its own config.
 //   * Wrap CreateProcessW shaderc invocation in a try/finally so the
 //     temp .sc file is deleted on every code path.
 //   * Use atomic pid+counter naming for the temp file so concurrent
@@ -18,6 +19,7 @@
 #include <cstdlib>
 #include <cstdio>          // ::remove
 #include <fstream>
+#include <memory>          // std::shared_ptr (for the global default)
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -33,17 +35,6 @@
 namespace ayt::shader
 {
 
-// CMake-injected absolute path. Default fallback is the project-local
-// vendored bgfx-install path; same convention as the pre-Phase-3.6
-// test code.
-#ifndef AY_SHADER_SHADERC_HINT
-#  ifdef _WIN32
-#    define AY_SHADER_SHADERC_HINT "thirdParty/bgfx-install/debug/bin/shaderc.exe"
-#  else
-#    define AY_SHADER_SHADERC_HINT "thirdParty/bgfx-install/debug/bin/shaderc"
-#  endif
-#endif
-
 namespace {
 
 // stat()-based file existence check. Same reason as in
@@ -54,42 +45,6 @@ bool fileExists(const std::string& p) {
     struct stat st;
     return ::stat(p.c_str(), &st) == 0;
 }
-
-#if defined(_WIN32)
-bool lookupOnPath(std::string& outFound) {
-    FILE* pipe = _popen("where shaderc.exe 2>NUL", "r");
-    if (!pipe) return false;
-    char buf[1024] = {0};
-    bool found = false;
-    if (fgets(buf, sizeof(buf), pipe)) {
-        std::string s(buf);
-        while (!s.empty() && (s.back() == '\n' || s.back() == '\r' ||
-                               s.back() == ' '  || s.back() == '\0')) {
-            s.pop_back();
-        }
-        if (fileExists(s)) { outFound = s; found = true; }
-    }
-    _pclose(pipe);
-    return found;
-}
-#else
-bool lookupOnPath(std::string& outFound) {
-    FILE* pipe = popen("command -v shaderc 2>/dev/null", "r");
-    if (!pipe) return false;
-    char buf[1024] = {0};
-    bool found = false;
-    if (fgets(buf, sizeof(buf), pipe)) {
-        std::string s(buf);
-        while (!s.empty() && (s.back() == '\n' || s.back() == '\r' ||
-                               s.back() == ' '  || s.back() == '\0')) {
-            s.pop_back();
-        }
-        if (fileExists(s)) { outFound = s; found = true; }
-    }
-    pclose(pipe);
-    return found;
-}
-#endif
 
 // Spawn a child process with an arbitrary command line, capture
 // combined stdout/stderr. Returns exit code (-1 if spawn failed).
@@ -225,26 +180,88 @@ std::string siblingBinPath(const std::string& scPath) {
 
 } // namespace
 
+// Explicit-path constructor. The host engine resolves the shaderc
+// binary path from its own config (env var, settings file, startup
+// flag) and passes the absolute path here. The driver does not
+// search PATH, env, or any hint file — this is intentional (sign-off
+// 2026-07-01: "the user must configure the shaderc path"). Missing
+// or empty path → std::invalid_argument so the caller can fail fast
+// at startup rather than at first-shader-compile time.
+AYShadercDriver::AYShadercDriver(const std::string& shadercExecutable) {
+    if (shadercExecutable.empty()) {
+        throw std::invalid_argument(
+            "AYShadercDriver: shadercExecutable path is empty. The host engine "
+            "must resolve the shaderc binary path (via env var, settings file, "
+            "or startup flag) and pass it to AYShadercDriver explicitly.");
+    }
+    if (!fileExists(shadercExecutable)) {
+        throw std::invalid_argument(
+            "AYShadercDriver: shaderc executable not found at '"
+            + shadercExecutable + "'. The host engine must resolve the shaderc "
+            "binary path from its own configuration before constructing the driver.");
+    }
+    _shadercPath = shadercExecutable;
+}
+
+// ---------------------------------------------------------------------------
+// Process-wide default shaderc path (sign-off 2026-07-01)
+//
+// One engine = one setDefaultExecutable() call at startup. After that,
+// every default-constructed AYShadercDriver in the process picks up the
+// same path. Storage is a single static std::string guarded by a
+// function-local initializer (Meyers singleton) — no mutex needed
+// because (a) the string is read-only after the first set, (b) tests
+// are single-threaded at startup, and (c) the assignment is sequenced
+// before any subsequent reads thanks to the static-local
+// initialization. If concurrent writes become a concern, wrap the
+// static in a std::shared_ptr<const std::string> and bump a generation
+// counter; we don't need that yet.
+// ---------------------------------------------------------------------------
+namespace {
+
+// Lazy-initialized pointer to the process-wide default. nullptr means
+// "not configured yet". We use shared_ptr<const string> so reads
+// from compile threads always see a fully-constructed value (no
+// torn read on the underlying std::string storage during reassign).
+std::shared_ptr<const std::string>& defaultExecutable() {
+    static std::shared_ptr<const std::string> ptr;
+    return ptr;
+}
+
+} // namespace
+
+void AYShadercDriver::setDefaultExecutable(const std::string& path) {
+    defaultExecutable() = std::make_shared<const std::string>(path);
+}
+
+void AYShadercDriver::clearDefaultExecutable() {
+    defaultExecutable().reset();
+}
+
+// Default constructor: looks up the process-wide default. Throws
+// std::runtime_error if no default has been set (the user forgot
+// the startup call) or std::invalid_argument if the configured
+// path doesn't point to an existing file.
 AYShadercDriver::AYShadercDriver() {
-    // 1. env override
-    if (const char* p = std::getenv(kShadercEnvVar)) {
-        if (fileExists(p)) { _shadercPath = p; return; }
+    auto p = defaultExecutable();
+    if (!p) {
+        throw std::runtime_error(
+            "AYShadercDriver: no default executable configured. Call "
+            "AYShadercDriver::setDefaultExecutable(<path>) at engine "
+            "startup before constructing the driver.");
     }
-    // 2. CMake-injected hint
-    if (fileExists(AY_SHADER_SHADERC_HINT)) {
-        _shadercPath = AY_SHADER_SHADERC_HINT;
-        return;
+    if (p->empty()) {
+        throw std::runtime_error(
+            "AYShadercDriver: default executable is an empty string. "
+            "Re-call setDefaultExecutable with a valid path.");
     }
-    // 3. PATH lookup
-    std::string found;
-    if (lookupOnPath(found)) { _shadercPath = found; return; }
-    // 4. Hard fail — production must surface a clear diagnostic.
-    throw std::runtime_error(
-        "AYShadercDriver: shaderc not found. Set AY_SHADER_SHADERC env var "
-        "or re-run CMake with -DAY_SHADER_SHADERC_PATH=<full path to shaderc>. "
-        "Searched: env var, CMake hint '" +
-        std::string(AY_SHADER_SHADERC_HINT) +
-        "', and PATH.");
+    if (!fileExists(*p)) {
+        throw std::invalid_argument(
+            "AYShadercDriver: configured default shaderc executable not "
+            "found at '" + *p + "'. Verify the path and call "
+            "setDefaultExecutable again.");
+    }
+    _shadercPath = *p;
 }
 
 ShaderCompileResult AYShadercDriver::compile(const ShaderCompileRequest& req) {

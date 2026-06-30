@@ -731,11 +731,21 @@ void AYBGFXConverter::compileToBinary(const phoskia::ir::IRProgram& program,
         return;
     }
 
-    // 2) Lazy-init the shaderc driver. If shaderc isn't on disk the
-    //    ctor throws std::runtime_error — catch and surface.
+    // 2) Lazy-init the shaderc driver. Per-call
+    //    `opts.shadercPath` (if non-empty) wins over the
+    //    process-wide default configured via
+    //    `AYShadercDriver::setDefaultExecutable()`. Empty
+    //    `opts.shadercPath` → default ctor (uses the global).
+    //    Either path can throw on missing / unconfigured
+    //    executable — catch and surface so the frontend never
+    //    sees an exception.
     if (!_driver) {
         try {
-            _driver = std::make_unique<AYShadercDriver>();
+            if (!opts.shadercPath.empty()) {
+                _driver = std::make_unique<AYShadercDriver>(opts.shadercPath);
+            } else {
+                _driver = std::make_unique<AYShadercDriver>();  // uses global default
+            }
         } catch (const std::exception& e) {
             out.errors.push_back(std::string("AYShadercDriver: ") + e.what());
             out.success = false;

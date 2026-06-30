@@ -39,6 +39,13 @@ enum class BGFXShaderType {
 // `phoskia::CompileOptions` to this struct when building a
 // `CompiledShaderProgram` from the frontend entry point.
 struct BGFXCompileOptions {
+    // Per-call shaderc executable path override. Empty by default —
+    // when empty, `compileToBinary` falls back to the process-wide
+    // default configured via `AYShadercDriver::setDefaultExecutable`.
+    // Non-empty here means "use THIS shaderc for this compile, not
+    // the global default" (useful for tests; rare in production).
+    std::string              shadercPath;
+
     // shaderc invocation parameters.
     std::string              platform = "linux";   // bgfx shaderc --platform value
     std::string              profile  = "430";     // GLSL profile (-p value)

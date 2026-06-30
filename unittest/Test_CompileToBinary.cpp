@@ -46,6 +46,13 @@ namespace {
 // not injected (i.e. AY_SHADER_BGFX_COMMON_HINT is ""), the shaderc
 // invocation is missing the -i flag for bgfx's `common.sh` and any
 // test that needs an actual compile will SKIP rather than fail.
+#ifndef AY_SHADER_SHADERC_HINT
+#  ifdef _WIN32
+#    define AY_SHADER_SHADERC_HINT "thirdParty/bgfx-install/debug/bin/shaderc.exe"
+#  else
+#    define AY_SHADER_SHADERC_HINT "thirdParty/bgfx-install/debug/bin/shaderc"
+#  endif
+#endif
 #ifndef AY_SHADER_BGFX_COMMON_HINT
 #  define AY_SHADER_BGFX_COMMON_HINT ""
 #endif
@@ -59,15 +66,22 @@ inline bool fileExists(const std::string& p) {
     return ::stat(p.c_str(), &st) == 0;
 }
 
-// Probe whether shaderc is actually invocable. Uses the same probe
-// pattern as Test_ShadercDriver.cpp — try/catch on the driver ctor
-// because the production ctor throws std::runtime_error on missing
-// shaderc (no "best-effort return hint" anymore).
+// Probe whether shaderc is actually invocable. We use the
+// explicit-path ctor with the CMake-injected vendored path so this
+// probe is independent of process-wide `setDefaultExecutable` state
+// (which other test files set/clear and we don't want to depend on
+// the call order). On success the probe also sets the global default
+// so subsequent `compileToBinary` calls (which use the default ctor
+// when BGFXCompileOptions::shadercPath is empty) can find the driver.
 bool shadercAvailable() {
+    const std::string path = AY_SHADER_SHADERC_HINT;
+    if (!fileExists(path)) return false;
     try {
-        ayt::shader::AYShadercDriver probe;
-        return !probe.shadercPath().empty();
-    } catch (const std::runtime_error&) {
+        ayt::shader::AYShadercDriver probe(path);
+        if (probe.shadercPath().empty()) return false;
+        ayt::shader::AYShadercDriver::setDefaultExecutable(path);
+        return true;
+    } catch (const std::exception&) {
         return false;
     }
 }
@@ -132,12 +146,39 @@ TEST_SUITE(CompileToBinaryTests)
 // host (CI / fresh checkout). When both are present, verifies the
 // happy path: success=true, vsBin/fsBin non-empty, no compute bytes,
 // sources map empty under default keepSources=false.
+//
+// shadercAvailable() is called BEFORE compileToBinary so the global
+// default is set in time for the converter's lazy-init to find it.
+// (Without this, the first test in the suite sees an unconfigured
+// global default and fails, even though shaderc IS installed.)
 TEST_CASE(compileToBinary_minimal_unlit_returns_shape) {
     PUTENV_S("AY_PHOSKIA_KEEP_SOURCES", "");
     PUTENV_S("AY_PHOSKIA_DUMP_SC", "");
 
-    ir::IRProgram ir = buildIr(kMinimalUnlit);
+    if (!shadercAvailable() || !bgfxCommonAvailable()) {
+        // Failure-shape contract: errors vector has at least one entry
+        // mentioning the missing-shaderc diagnostic. We still need to
+        // run compileToBinary once to populate `program.errors` — but
+        // only when shaderc IS missing (the SKIP path is exactly the
+        // error path).
+        ir::IRProgram ir = buildIr(kMinimalUnlit);
+        AYBGFXConverter conv;
+        BGFXCompileOptions opts;
+        opts.platform = "linux";
+        opts.profile  = "430";
+        opts.includeDirs = shadercIncludeDirs();
+        CompiledShaderProgram program;
+        conv.compileToBinary(ir, opts, program);
 
+        std::cerr << "[compileToBinary test] SKIP detail assertions: "
+                     "shaderc or bgfx common.sh not available.\n";
+        CHECK(!program.success);
+        CHECK(!program.errors.empty());
+        CHECK(program.errors.front().find("AYShadercDriver") != std::string::npos);
+        return;
+    }
+
+    ir::IRProgram ir = buildIr(kMinimalUnlit);
     AYBGFXConverter conv;
     BGFXCompileOptions opts;
     opts.platform = "linux";
@@ -146,17 +187,6 @@ TEST_CASE(compileToBinary_minimal_unlit_returns_shape) {
 
     CompiledShaderProgram program;
     conv.compileToBinary(ir, opts, program);
-
-    if (!shadercAvailable() || !bgfxCommonAvailable()) {
-        std::cerr << "[compileToBinary test] SKIP detail assertions: "
-                     "shaderc or bgfx common.sh not available.\n";
-        // Failure-shape contract: errors vector has at least one entry
-        // mentioning the missing-shaderc diagnostic.
-        CHECK(!program.success);
-        CHECK(!program.errors.empty());
-        CHECK(program.errors.front().find("AYShadercDriver") != std::string::npos);
-        return;
-    }
 
     // Happy path.
     CHECK(program.success);
