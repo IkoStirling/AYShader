@@ -2,21 +2,19 @@
 
 set(TEST_NAME AYShader_Test)
 
-set(TEST_FILES
-    main.cpp
-    Test_Lexer.cpp
-    Test_Parser.cpp
-    Test_Phoskia.cpp
-    Test_BGFXConverter.cpp
-    Test_ShaderCompile.cpp
-    Test_TypeInference.cpp
-    Test_SemanticAnalyzer.cpp
-    Test_PBRFunctions.cpp
-    Test_ParserRecovery.cpp
-    Test_BuiltinTypes.cpp
-    Test_GoldenFiles.cpp
-    Test_IrGenerator.cpp
-)
+# Auto-discover test source files. AYTest registers every TEST_CASE
+# via a global static initialiser (_reg_##name = registerTest(...)),
+# so each new TEST_CASE added to an existing .cpp is a brand-new
+# global symbol that the linker must pull in. With a hand-maintained
+# list, CMake doesn't re-link AYShader_Test.exe when an existing .cpp
+# grows new TEST_CASE blocks (the .cpp mtime updates, but the
+# incremental linker heuristic can decide the .exe is "fresh enough"
+# and skip — a common Ninja / VS generator quirk).
+#
+# CONFIGURE_DEPENDS asks CMake to re-glob on every build: a new
+# .cpp here triggers a full reconfigure (cheap on a project this
+# size) and guarantees the next link picks up the new symbols.
+file(GLOB TEST_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
 
 add_executable(${TEST_NAME} ${TEST_FILES})
 
