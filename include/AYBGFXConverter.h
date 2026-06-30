@@ -74,6 +74,21 @@ struct BGFXUniformBlock {
     std::vector<std::string> fieldNames;
 };
 
+// Phase 3.5-A: storage buffer (GLSL `buffer Name { T data[]; } Name;`).
+// Distinct from BGFXUniformBlock because storage and uniform buffers
+// live in different descriptor sets in the underlying graphics API
+// (DX11: t# vs b# registers; Vulkan: STORAGE vs UNORM descriptor
+// types). The host code that uploads them and binds them at draw
+// time is different too, so we keep a separate parallel struct.
+// `binding` is the final GLSL `binding = N` slot — either the
+// user-written literal or the auto-assigned slot (the BGFX backend
+// resolves -1 → auto at emit time).
+struct BGFXStorageBuffer {
+    std::string name;
+    int binding = -1;
+    std::string elementType;
+};
+
 struct BGFXConvertResult {
     bool success = false;
     // Per-material three-piece sets, in declaration order. Empty when
@@ -91,6 +106,12 @@ struct BGFXConvertResult {
     // sizes via shaderc and to wire up `bgfx::setUniform(handle, ptr,
     // sizeof(block))` calls at draw time.
     std::vector<BGFXUniformBlock> uniformBlocks;
+    // Phase 3.5-A: storage buffer decls (one per compute storage
+    // decl). The frontend wires these up via the bgfx compute
+    // path (`bgfx::setUniform(handle, ptr, sizeof(buffer))` at
+    // dispatch time). The host reads `binding` to know which
+    // GLSL binding slot to target.
+    std::vector<BGFXStorageBuffer> storageBuffers;
     std::vector<std::string> errors;
 };
 
@@ -156,6 +177,11 @@ private:
     // `_uboDecls`; carried across convertMaterial / convertComputeDecl
     // to flush into the final BGFXConvertResult.
     std::vector<BGFXUniformBlock> _uniformBlocks;
+    // Phase 3.5-A: storage buffer binding info collected during
+    // convertComputeDecl. Cleared at the top of convertBGFX (one
+    // entry per compute storage decl, with binding resolved
+    // including any auto-assigned slots).
+    std::vector<BGFXStorageBuffer> _storageBuffers;
 };
 
 } // namespace ayt::shader

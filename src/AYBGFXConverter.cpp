@@ -557,6 +557,11 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
     // shader stages; the GLSL compiler dedupes when needed.
     _uboDecls.clear();
     _uniformBlocks.clear();
+    // Phase 3.5-A: storage buffer binding info is collected per-compute
+    // (each compute may have its own set of storage decls with their
+    // own binding slots). We clear at convertBGFX entry so a fresh
+    // top-level invocation doesn't see leftovers from a previous call.
+    _storageBuffers.clear();
     for (const auto& ub : program.uniformBlocks) {
         if (!ub) continue;
         std::ostringstream blockSrc;
@@ -604,6 +609,10 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
     out.uniforms = _uniforms;
     out.textures = _textures;
     out.uniformBlocks = _uniformBlocks;
+    // Phase 3.5-A: flush storage buffer binding info collected during
+    // convertComputeDecl (one BGFXStorageBuffer per storage decl,
+    // with binding resolved including auto-assigned slots).
+    out.storageBuffers = _storageBuffers;
 }
 
 ConvertResult AYBGFXConverter::convert(const phoskia::ir::IRProgram& program) {
@@ -1053,39 +1062,89 @@ BGFXComputeFile AYBGFXConverter::convertComputeDecl(const phoskia::ir::IRCompute
     // thread become visible to peers after a barrier (barrier syntax
     // is a separate extension; the memory itself is just declared
     // here).
-    for (const auto& decl : compute.declarations) {
-        if (!decl) continue;
-        if (decl->kind == phoskia::ir::IRDeclaration::Kind::Storage) {
-            std::string elementLex = "vec4";
-            if (decl->storageElementType) {
-                elementLex = decl->storageElementType->toString();
+    //
+    // Phase 3.5-A: explicit binding slot (`layout(std430, binding = N)`).
+    // Three sub-rules:
+    //   1. If two storage decls share the same explicit binding slot,
+    //      the conversion throws (caught by convertBGFX → reported in
+    //      out.errors). This is a hard user error — same binding for
+    //      two buffers means the runtime can't tell them apart.
+    //   2. Decl without explicit binding (-1) gets auto-assigned the
+    //      next free slot, starting from max(explicit bindings) + 1.
+    //      This way an auto slot never collides with an explicit one.
+    //   3. The resolved binding (explicit or auto) is recorded in
+    //      `_storageBuffers` for the frontend to wire up at dispatch.
+    if (!compute.declarations.empty()) {
+        // (1) Duplicate-binding detection.
+        std::unordered_map<int, std::string> usedBindings;
+        for (const auto& decl : compute.declarations) {
+            if (!decl || decl->kind != phoskia::ir::IRDeclaration::Kind::Storage) continue;
+            if (decl->storageBinding < 0) continue;
+            auto it = usedBindings.find(decl->storageBinding);
+            if (it != usedBindings.end()) {
+                throw std::runtime_error("Storage buffer '" + decl->name +
+                    "' has duplicate binding " + std::to_string(decl->storageBinding) +
+                    " (also used by '" + it->second + "')");
             }
-            // GLSL storage buffer syntax:
-            //   buffer Name { Type data[]; } Name;
-            // Note: the trailing `Name;` (instance name) is required by
-            // GLSL — the block's declared name and the instance name can
-            // differ in principle but conventionally match.
-            cs << "buffer " << decl->name << " { "
-               << elementLex << " data[]; } "
-               << decl->name << ";\n";
-        } else if (decl->kind == phoskia::ir::IRDeclaration::Kind::Shared) {
-            std::string elementLex = "vec4";
-            if (decl->sharedElementType) {
-                elementLex = decl->sharedElementType->toString();
-            }
-            // GLSL workgroup-shared array:
-            //   shared T name[N];
-            // The size is a compile-time constant int (the parser
-            // already enforced that). bgfx's GLSL profile accepts the
-            // standard GLSL form; HLSL would need `groupshared` (a
-            // Phase 5+ HLSL emitter concern).
-            cs << "shared " << elementLex << " " << decl->name
-               << "[" << decl->sharedSize << "];\n";
+            usedBindings[decl->storageBinding] = decl->name;
         }
-        // Other decl kinds are silently skipped here — compute
-        // uniforms / properties land in a future block.
+        // (2) Compute the next free auto-binding slot.
+        int nextAutoBinding = 0;
+        for (const auto& decl : compute.declarations) {
+            if (!decl || decl->kind != phoskia::ir::IRDeclaration::Kind::Storage) continue;
+            if (decl->storageBinding >= 0 && decl->storageBinding >= nextAutoBinding) {
+                nextAutoBinding = decl->storageBinding + 1;
+            }
+        }
+        // (3) Emit each decl with its resolved binding.
+        for (const auto& decl : compute.declarations) {
+            if (!decl) continue;
+            if (decl->kind == phoskia::ir::IRDeclaration::Kind::Storage) {
+                std::string elementLex = "vec4";
+                if (decl->storageElementType) {
+                    elementLex = decl->storageElementType->toString();
+                }
+                int binding = decl->storageBinding;
+                if (binding < 0) binding = nextAutoBinding++;
+                // Phase 3.5-A: explicit binding → std430 layout
+                // qualifier. std430 (not std140) matches GLSL's
+                // storage-buffer layout rules — looser packing,
+                // friendly to runtime-sized arrays.
+                cs << "layout(std430, binding = " << binding << ") ";
+                // GLSL storage buffer syntax:
+                //   layout(std430, binding = N) buffer Name { Type data[]; } Name;
+                // The trailing `Name;` (instance name) is required by
+                // GLSL — the block's declared name and the instance
+                // name can differ in principle but conventionally
+                // match.
+                cs << "buffer " << decl->name << " { "
+                   << elementLex << " data[]; } "
+                   << decl->name << ";\n";
+
+                BGFXStorageBuffer bsb;
+                bsb.name = decl->name;
+                bsb.binding = binding;
+                bsb.elementType = elementLex;
+                _storageBuffers.push_back(std::move(bsb));
+            } else if (decl->kind == phoskia::ir::IRDeclaration::Kind::Shared) {
+                std::string elementLex = "vec4";
+                if (decl->sharedElementType) {
+                    elementLex = decl->sharedElementType->toString();
+                }
+                // GLSL workgroup-shared array:
+                //   shared T name[N];
+                // The size is a compile-time constant int (the parser
+                // already enforced that). bgfx's GLSL profile accepts the
+                // standard GLSL form; HLSL would need `groupshared` (a
+                // Phase 5+ HLSL emitter concern).
+                cs << "shared " << elementLex << " " << decl->name
+                   << "[" << decl->sharedSize << "];\n";
+            }
+            // Other decl kinds are silently skipped here — compute
+            // uniforms / properties land in a future block.
+        }
+        cs << "\n";
     }
-    if (!compute.declarations.empty()) cs << "\n";
 
     // Body — same emitStmt machinery as material bodies, but with
     // outputVar=nullptr (no implicit output slot binding; return is

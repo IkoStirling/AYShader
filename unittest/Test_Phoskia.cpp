@@ -784,4 +784,119 @@ TEST_CASE(compile_uniformblock_in_compute_body) {
     CHECK(result.output.find("uint iterations;") != std::string::npos);
 }
 
+// ===== Phase 3.5-A: storage decl explicit binding slot =====
+TEST_CASE(compile_storage_with_binding_emits_layout_std430) {
+    // `storage X : rwstructuredbuffer<T> binding 1;` emits a
+    // `layout(std430, binding = 1) buffer X { T data[]; } X;` line.
+    // std430 (not std140) because storage buffers are runtime-sized
+    // and benefit from looser packing rules.
+    Compiler compiler;
+    const char* src = R"(
+        compute Foo {
+            storage counters : rwstructuredbuffer<int> binding 1
+            let idx = thread_id.x
+            counters[idx] = counters[idx] + 1
+        }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    CHECK(result.output.find("layout(std430, binding = 1) buffer counters {") != std::string::npos);
+    CHECK(result.output.find("int data[]") != std::string::npos);
+    CHECK(result.output.find("} counters;") != std::string::npos);
+}
+
+TEST_CASE(compile_storage_without_binding_uses_auto_slot) {
+    // A storage decl without the `binding` suffix still compiles.
+    // Phase 3.5-A assigns it an automatic binding slot (starting at
+    // 0 in absence of any explicit binding) and emits the same
+    // `layout(std430, binding = N)` prefix as the explicit path —
+    // this is a strict superset of the historical Phase 3.2-3.4
+    // emit (which left the layout empty and silently bound to slot
+    // 0). The auto-assigned form is unambiguous at runtime and
+    // matches what explicit `binding 0` would produce.
+    Compiler compiler;
+    const char* src = R"(
+        compute Foo {
+            storage counters : rwstructuredbuffer<int>
+            let idx = thread_id.x
+            counters[idx] = counters[idx] + 1
+        }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    CHECK(result.output.find("layout(std430, binding = 0) buffer counters {") != std::string::npos);
+}
+
+TEST_CASE(compile_two_storages_auto_assign_distinct_slots) {
+    // Two storage decls without explicit binding → auto-assigned
+    // slots 0 and 1 in declaration order. The BGFX backend records
+    // each binding in BGFXStorageBuffer and emits
+    // `layout(std430, binding = N)` for each.
+    Compiler compiler;
+    const char* src = R"(
+        compute Foo {
+            storage counters : rwstructuredbuffer<int>
+            storage outputs  : rwstructuredbuffer<float>
+            let idx = thread_id.x
+            counters[idx] = counters[idx] + 1
+            outputs[idx] = float(idx)
+        }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    CHECK(result.output.find("layout(std430, binding = 0) buffer counters") != std::string::npos);
+    CHECK(result.output.find("layout(std430, binding = 1) buffer outputs") != std::string::npos);
+}
+
+TEST_CASE(compile_storage_mixed_explicit_and_auto) {
+    // One storage with explicit binding 1, another without → the
+    // auto-assigned one starts at 2 (max(explicit) + 1), not 0.
+    // This avoids collisions when the user explicitly reserves
+    // slot 0 for some other purpose (cross-shader binding plans).
+    Compiler compiler;
+    const char* src = R"(
+        compute Foo {
+            storage explicit : rwstructuredbuffer<int> binding 1
+            storage auto    : rwstructuredbuffer<float>
+            let idx = thread_id.x
+            explicit[idx] = explicit[idx] + 1
+            auto[idx] = float(idx)
+        }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    CHECK(result.output.find("layout(std430, binding = 1) buffer explicit") != std::string::npos);
+    CHECK(result.output.find("layout(std430, binding = 2) buffer auto") != std::string::npos);
+}
+
+TEST_CASE(compile_storage_with_duplicate_binding_errors) {
+    // Two storage decls both writing `binding 0` is a hard user
+    // error: the runtime can't tell which buffer to bind to slot 0.
+    // The BGFX backend detects this at emit time and surfaces a
+    // CompileResult error.
+    Compiler compiler;
+    const char* src = R"(
+        compute Foo {
+            storage a : rwstructuredbuffer<int> binding 0
+            storage b : rwstructuredbuffer<float> binding 0
+            return 0
+        }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK_FALSE(result.success);
+    bool foundDuplicateError = false;
+    for (const auto& err : result.errors) {
+        if (err.message.find("duplicate binding") != std::string::npos) {
+            foundDuplicateError = true;
+            break;
+        }
+    }
+    CHECK(foundDuplicateError);
+}
+
 TEST_SUITE_END

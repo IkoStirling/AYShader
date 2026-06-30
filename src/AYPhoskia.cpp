@@ -11,14 +11,19 @@ Compiler::Compiler() {
     _typeEnv = std::make_shared<TypeEnvironment>();
     // Register the only backend that ships with Phase 1.
     registerBackend("bgfx", []() -> std::unique_ptr<shader::IAYBackendConverter> {
-        return std::make_unique<shader::AYBGFXConverter>();
+        // std::unique_ptr<AYBGFXConverter> doesn't implicitly convert
+        // to std::unique_ptr<IAYBackendConverter> (different
+        // deleters), so wrap explicitly.
+        return std::unique_ptr<shader::IAYBackendConverter>(
+            new shader::AYBGFXConverter());
     });
 }
 
 Compiler::Compiler(const CompileOptions& options) : _options(options) {
     _typeEnv = std::make_shared<TypeEnvironment>();
     registerBackend("bgfx", []() -> std::unique_ptr<shader::IAYBackendConverter> {
-        return std::make_unique<shader::AYBGFXConverter>();
+        return std::unique_ptr<shader::IAYBackendConverter>(
+            new shader::AYBGFXConverter());
     });
 }
 

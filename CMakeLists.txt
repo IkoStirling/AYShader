@@ -6,23 +6,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # AYShader library (no ALIAS — sources and includes attach directly)
-add_library(AYShader STATIC
-    # Phoskia compiler core (ayt::shader::phoskia)
-    src/AYLexer.cpp
-    src/AYParser.cpp
-    src/AYCompilerError.cpp
-    src/AYType.cpp
-    src/AYTypeInference.cpp
-    src/AYSemanticAnalyzer.cpp
-    src/AYBuiltinFunctions.cpp
-    src/AYBuiltinTypes.cpp
-    src/AYIr.cpp
-    src/AYPhoskia.cpp
-    # Engine integration (ayt::shader)
-    src/AYBGFXConverter.cpp
-    src/AYShaderProgram.cpp
-    src/AYShaderCache.cpp
+#
+# Auto-discover sources via GLOB CONFIGURE_DEPENDS. Same rationale as
+# unittest/CMakeLists.txt: a hand-maintained list works but lets CMake
+# decide not to rebuild when only a header changes (or when a source
+# file is renamed). For a small library like this (a dozen files)
+# CONFIGURE_DEPENDS is essentially free; the re-glob cost is in the
+# millisecond range on Windows.
+file(GLOB AYSHADER_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
 )
+add_library(AYShader STATIC ${AYSHADER_SOURCES})
 
 target_include_directories(AYShader PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

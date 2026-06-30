@@ -109,4 +109,11 @@ private:
 // instruction stream + cross-backend optimization passes are Phase 3.x
 // additions on top of this IR substrate.
 
+namespace ir {
+    struct IRProgram;     // forward decl so AYPhoskia.cpp can use the
+    class  IRGenerator;   // type without dragging in AYIr.h transitively
+                          // (some toolchains complain about incomplete
+                          // types when only forward decls are visible).
+}
+
 } // namespace ayt::shader::phoskia

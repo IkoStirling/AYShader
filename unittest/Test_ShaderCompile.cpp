@@ -804,4 +804,133 @@ TEST_CASE(shaderc_compiles_material_with_ublock) {
     std::filesystem::remove_all(dir);
 }
 
+// ===== Phase 3.5-A: storage decl explicit binding slot (shaderc e2e) =====
+
+TEST_CASE(shaderc_compiles_compute_with_storage_binding_to_bin) {
+    // End-to-end check that `storage X : rwstructuredbuffer<T> binding N;`
+    // produces a GLSL 4.30 `layout(std430, binding = N)` decl that shaderc
+    // accepts on linux. Without Phase 3.5-A, the only path was
+    // `buffer X { T data[]; } X;` with no binding slot — which compiled
+    // but gave the runtime no handle to bind. Phase 3.5-A closes that
+    // gap with explicit user-controlled binding.
+    const std::string shaderc = shadercPath();
+    if (!fileExists(shaderc)) {
+        std::cerr << "[shaderc test] SKIP: shaderc not found at '"
+                  << shaderc << "'.\n";
+        return;
+    }
+
+    const std::string dir = tempDir() + "/compute_storage_binding";
+    std::filesystem::create_directories(dir);
+
+    const char* src = R"(
+        compute Increment {
+            storage counters : rwstructuredbuffer<int> binding 1
+            let idx = thread_id.x
+            counters[idx] = counters[idx] + 1
+        }
+    )";
+    Compiler compiler;
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    auto ast = compiler.parse(tokens);
+    ir::IRGenerator gen;
+    AYBGFXConverter conv;
+    BGFXConvertResult bgfxRes;
+    conv.convertBGFX(gen.generate(*ast), bgfxRes);
+    CHECK(bgfxRes.success);
+    CHECK(bgfxRes.computeFiles.size() == 1);
+    CHECK(bgfxRes.storageBuffers.size() == 1);
+    CHECK(bgfxRes.storageBuffers[0].name == "counters");
+    CHECK(bgfxRes.storageBuffers[0].binding == 1);
+    const auto& cs = bgfxRes.computeFiles.front();
+    // Phase 3.5-A: explicit binding → layout(std430, binding = N).
+    CHECK(cs.cs.find("layout(std430, binding = 1) buffer counters {") != std::string::npos);
+
+    const std::string csPath = dir + "/cs_Increment.sc";
+    const std::string csBin  = dir + "/cs_Increment.bin";
+    std::ofstream(csPath) << cs.cs;
+
+    auto includes = includeDirs();
+    std::vector<std::string> csArgs = {
+        "-f", csPath, "-o", csBin,
+        "--type", "compute",
+        "--platform", "linux",
+        "-p", "430",
+    };
+    for (const auto& d : includes) { csArgs.push_back("-i"); csArgs.push_back(d); }
+    auto rcs = runShaderc(shaderc, csArgs);
+    if (rcs.exitCode != 0) std::cerr << "[shaderc test] compute compile failed:\n" << rcs.output << "\n";
+    CHECK(rcs.exitCode == 0);
+    if (rcs.exitCode == 0) {
+        CHECK(std::filesystem::file_size(csBin) > 0);
+    }
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE(shaderc_compiles_compute_with_two_storage_buffers_to_bin) {
+    // Two storage decls with explicit bindings 0 and 1 — the canonical
+    // "compute reads from one buffer, writes to another" pattern. Both
+    // must compile end-to-end; without Phase 3.5-A, the user had no
+    // way to specify both slots and the runtime would alias both
+    // buffers onto slot 0.
+    const std::string shaderc = shadercPath();
+    if (!fileExists(shaderc)) {
+        std::cerr << "[shaderc test] SKIP: shaderc not found at '"
+                  << shaderc << "'.\n";
+        return;
+    }
+
+    const std::string dir = tempDir() + "/compute_two_storage";
+    std::filesystem::create_directories(dir);
+
+    const char* src = R"(
+        compute Move {
+            storage inputs  : structuredbuffer<float> binding 0
+            storage outputs : rwstructuredbuffer<float> binding 1
+            let idx = thread_id.x
+            outputs[idx] = inputs[idx] + 1.0
+        }
+    )";
+    Compiler compiler;
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    auto ast = compiler.parse(tokens);
+    ir::IRGenerator gen;
+    AYBGFXConverter conv;
+    BGFXConvertResult bgfxRes;
+    conv.convertBGFX(gen.generate(*ast), bgfxRes);
+    CHECK(bgfxRes.success);
+    CHECK(bgfxRes.storageBuffers.size() == 2);
+    CHECK(bgfxRes.storageBuffers[0].binding == 0);
+    CHECK(bgfxRes.storageBuffers[1].binding == 1);
+    const auto& cs = bgfxRes.computeFiles.front();
+    CHECK(cs.cs.find("layout(std430, binding = 0) buffer inputs {") != std::string::npos);
+    CHECK(cs.cs.find("layout(std430, binding = 1) buffer outputs {") != std::string::npos);
+
+    const std::string csPath = dir + "/cs_Move.sc";
+    const std::string csBin  = dir + "/cs_Move.bin";
+    std::ofstream(csPath) << cs.cs;
+
+    auto includes = includeDirs();
+    std::vector<std::string> csArgs = {
+        "-f", csPath, "-o", csBin,
+        "--type", "compute",
+        "--platform", "linux",
+        "-p", "430",
+    };
+    for (const auto& d : includes) { csArgs.push_back("-i"); csArgs.push_back(d); }
+    auto rcs = runShaderc(shaderc, csArgs);
+    if (rcs.exitCode != 0) std::cerr << "[shaderc test] compute compile failed:\n" << rcs.output << "\n";
+    CHECK(rcs.exitCode == 0);
+    if (rcs.exitCode == 0) {
+        CHECK(std::filesystem::file_size(csBin) > 0);
+    }
+
+    std::filesystem::remove_all(dir);
+}
+
 TEST_SUITE_END
