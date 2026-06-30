@@ -1027,6 +1027,222 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 - [ ] 节点序列化
 - [ ] 资源打包与缓存
 
+---
+
+## 14. 当前状态速查（移交用）
+
+### 14.1 已完成能力一览
+
+**编译器核心**（Phoskia → IR）：
+- Lexer / Parser / AST 完整（30+ 节点类型）
+- TypeInference + SemanticAnalyzer 完整（含 uint / uvec3 strict / builtin 标量向量）
+- BuiltinFunctions（PBR + math + texture + compute thread-id 系列）
+- IRGenerator（AST → IR 1:1 降级，每表达式预解析 `resolvedType`）
+- Compiler 完整 out-param 流水线（根除 MSVC SSO/NRVO bug）
+
+**Shader stage 支持**：
+- ✅ Vertex / Fragment / Compute
+- ❌ Geometry / Tessellation / Mesh / Task / Ray tracing（bgfx 也没设计）
+
+**资源类型（11 种全支持）**：
+| 类型 | Phoskia 语法 | emit 形式 | binding 语法 |
+|---|---|---|---|
+| Uniform | `uniform vec3 x;` | `uniform vec3 x;` | 自动 |
+| Property | `property albedo = vec4(...)` | `uniform vec4 albedo = ...;` | 自动 |
+| Texture (2D) | `texture2d albedoMap` | `SAMPLER2D(albedoMap, slot);` | 自动 |
+| Storage buffer | `storage X : rwstructuredbuffer<int> binding N;` | `layout(std430, binding = N) buffer X { ... } X;` | ✅ Phase 3.5-A |
+| Shared (workgroup) | `shared float tile[64];` | `shared float tile[64];` | N/A |
+| UBO | `uniformblock Camera { vec3 pos; float fov; }` | `layout(std140, binding = N) uniform Camera { ... } Camera;` | 自动（Phase 3.5-A 仅 storage） |
+
+**Compute 特性**：
+- ✅ `[numthreads(X, Y, Z)]` attribute
+- ✅ `thread_id / group_id / dispatch_id` 0-arg 内置（uvec3 strict）
+- ✅ `storage` buffer（with explicit binding）
+- ✅ `shared` workgroup local memory
+- ❌ `barrier / memoryBarrier* / groupMemoryBarrier`（**待做**）
+- ❌ `atomicAdd / atomicMin / atomicMax / atomicCompSwap` 等（**待做**）
+- ❌ `dispatchIndirect / drawIndirect / drawIndexedIndirect`（**待做**）
+
+**Surface syntax 关键能力**：
+- ✅ 类型推导 + let-stmt + binary/unary/call/member/index expr
+- ✅ Variant attribute `[variant useEmission]` → shaderc `--define`
+- ✅ in/out 语义化参数：`in pos : position;` 替代 bgfx POSITION/NORMAL/COLOR0/TEXCOORD0
+- ✅ UBO 块名访问：`Camera.position`
+- ✅ PBR 函数库（fresnelSchlick / GGX / Smith / Schlick）
+
+**Backend**：
+- ✅ BGFX `.sc`（唯一 backend，走 shaderc 跨 8 平台）
+- ❌ HLSL backend（Phase 5+ 按需）
+- ❌ WGSL backend（Phase 5+ 按需）
+
+**测试**：
+- 897 / 897 PASS
+- ~12 测试套件覆盖 lexer / parser / IR / type inference / semantic / BGFX converter / shaderc e2e / golden file / PBR math
+- 8 个 golden fixture（6 material + 2 compute）
+
+---
+
+### 14.2 已完成 Phase 索引
+
+| Phase | 范围 | 关键 commit | 测试增量 |
+|---|---|---|---|
+| 1 | Lexer/Parser/AST/BGFX backend/shaderc e2e | Phase 1 多 commit | 0 → 278 |
+| 2.1 | Variant attribute | — | +5 |
+| 2.2 | TypeInference + SemanticAnalyzer + 内置函数库 | — | +30 |
+| 2.3 | PBR 函数库 | — | +10 |
+| 2.4 | Parser panic-mode 错误恢复 | — | +5 |
+| 2.5 | Token 降级重构 | — | +5 |
+| 2 收尾 | Golden + PBR e2e | — | +5 |
+| 2.6 | Compute declaration AST + Parser + BGFX stub | — | +5 |
+| 3.1 | Phoskia IR (AYIr) + AST→IR + BGFX retarget | — | +30 |
+| 3.2-pre | Compiler out-param 重构（SSO NRVO 根因修复） | — | 0 |
+| 3.2 | Compute 端到端 + storage buffer + thread-id | — | +66 |
+| 3.3 | `[numthreads]` + uint + uvec3 strict + groupshared | aa14410 / edd37af / f3c7e47 / c265ea5 | +147 |
+| 3.4 | UBO 表面语法 + std140 binding | 5a49e8c | +50 |
+| 3.5-A | Storage binding 语法 + std430 binding | 57e9c63 / 31e2f6c / 7d93814 / 4058f03 | +60 |
+| 总计 | — | — | **278 → 897** |
+
+---
+
+### 14.3 待办清单（按优先级排序）
+
+#### 🟢 Phase 3.6 — Compute + Texture 补完（**第一优先**，覆盖 90% 真实项目需求）
+
+| # | 能力 | 表面语法 | emit | 估算 | 依赖 |
+|---|---|---|---|---|---|
+| 1 | **Storage image** | `storageimage X : rwimage2d<float> binding N;` | `layout(r32f, binding = N) uniform image2D X;` + `imageLoad / imageStore` 内置 | 1.5 天 | — |
+| 2 | **多 texture kind** | `texturecube envMap;` / `texture3d noise;` / `texture2darray lookup;` | `SAMPLERCUBE / SAMPLER3D / SAMPLER2DARRAY` 宏 | 2 天 | — |
+| 3 | **Compute barrier** | `barrier();` `memoryBarrierShared();` 内置 | `barrier();` `memoryBarrierShared();` | 0.5 天 | — |
+| 4 | **原子操作** | `atomicAdd(ptr, val);` `atomicMin(...);` 等内置 | `atomicAdd(ptr.data[idx], val);` 等 | 1 天 | — |
+| 5 | **Fragment 导数** | `dFdx(v) / dFdy(v) / fwidth(v)` 内置 | `dFdx / dFdy / fwidth` | 0.25 天 | — |
+
+合计：~5 天。**打开 PBR 后处理 / 流体模拟 / GPGPU 通用计算 / 法线贴图等关键场景**。
+
+#### 🟡 Phase 3.7 — 高级渲染特性（第二优先，覆盖剩余 10%）
+
+| # | 能力 | 表面语法 | emit | 估算 | 依赖 |
+|---|---|---|---|---|---|
+| 6 | **MRT（多 render target）** | `out color1 : color = vec4(0.0);` 加序号 / 命名 | `gl_FragData[0..7] = ...;` | 1.5 天 | — |
+| 7 | **Vertex 多 attribute** | `in tan : tangent;` / `in uv2 : texcoord1;` | 扩 `semanticTable()` | 1 天 | — |
+| 8 | **Indirect dispatch/draw** | `dispatchIndirect(buf, off, x, y, z);` builtin | bgfx `dispatchIndirect` 宏 | 1 天 | 候选 1 |
+| 9 | **Integer sampler** | `texture2di lookup;` / `texture2du lookup;` | `ISAMPLER2D / USAMPLER2D` | 0.5 天 | 候选 2 |
+| 10 | **Shadow sampler** | `texture2dshadow shadowMap;` | `SAMPLER2DSHADOW` + PCF 内置 | 0.5 天 | 候选 2 |
+
+合计：~4.5 天。**打开 deferred shading / G-buffer / 高级 PBR / GPU-driven culling 等场景**。
+
+#### 🟠 Phase 3.8 — 工程质量（第三优先，跨阶段）
+
+| # | 能力 | 估算 | 依赖 |
+|---|---|---|---|
+| 11 | **UBO 用户显式 binding**（`uniformblock Camera { ... } binding 0;`） | 0.5 天 | — |
+| 12 | **UBO field strict type-check**（注册 block 为 StructType，inferMemberExpr 支持 struct） | 1.5 天 | 候选 14 |
+| 13 | **SSA IR + 跨后端优化**（constant folding / DCE） | 7-10 天 | — |
+| 14 | **struct 类型系统**（`struct Light { vec3 dir; vec3 color; }`） | 3-4 天 | 候选 12 |
+
+合计：~12-15 天。**让 Phoskia 达到生产级 shader DSL 水平**。
+
+#### 🔵 Phase 5+ — 跨后端（按需启动，仅在项目要求时）
+
+| # | 能力 | 触发条件 | 估算 |
+|---|---|---|---|
+| 15 | HLSL backend（`AYHLSLConverter`，emit HLSL 6.x） | 项目要求 DXC 一手质量 / 摆脱 shaderc | 5-7 天 |
+| 16 | WGSL backend（`AYWGLSConverter`，emit WGSL） | WebGPU 目标 + 切 runtime 到 wgpu-native / Dawn | 7-10 天 |
+| 17 | Ray tracing shader | DXR / Vulkan RT 需求（需新 backend） | TBD |
+
+#### ⚫ 永不做（明确不做）
+
+- ❌ Geometry / Tessellation / Mesh / Task shader（bgfx 不支持）
+- ❌ Bindless texture（Vulkan 风格，bgfx 不支持）
+- ❌ Subpass input（Vulkan tile-based 优化，bgfx 不支持）
+
+---
+
+### 14.4 接手人速查表
+
+**首次接手必读**：
+1. `README.md` — 用户视角概览 + 当前 status 表
+2. `design.md` §1-§5 — 架构总览 + 编译流程 + 核心架构
+3. `design.md` §6 — 各模块详细设计（**§6.7 是 IR + 后端核心**，必读）
+4. `design.md` §14 — 本节
+
+**改语法的标准流程**（设计在 `design.md` §7）：
+1. 改 `design.md` §10 BNF
+2. 改 `AYToken.h` enum（加关键字）
+3. 改 `AYLexer.cpp` 关键字表
+4. 改 `AYAst.h`（加节点 + AstVisitor::visit 重载）
+5. 改 `AYParser.cpp`（parseXxx + dispatcher）
+6. 改 `AYIr.h` / `AYIr.cpp`（IR 镜像 + lowerDecl）
+7. 改 `AYBGFXConverter.cpp`（emit）
+8. 加测试：parser / IR / e2e Phoskia / golden fixture
+9. 跑 `cmake --build` + `AYShader_Test.exe` 验证
+10. 4 块 commit
+
+**关键工程经验**（详见 §6.8 + §15）：
+- **MSVC SSO/NRVO bug**：所有返回大 struct 的函数必须 out-param 形式
+- **AYTest 全局静态注册**：每个 TEST_CASE 是新 global symbol；CMakeLists 用 `file(GLOB ... CONFIGURE_DEPENDS)`（**两条都改了**：主 lib `CMakeLists.txt` + unittest）
+- **黄金 baseline 重生成**：`AY_SHADER_REGEN_GOLDEN=1 ./AYShader_Test.exe`（写到 build-dir，**记得拷回源 dir**）
+
+---
+
+## 15. 工程经验教训（移交用）
+
+### 15.1 MSVC SSO/NRVO 根因（必读）
+
+**症状**：返回 `std::vector<Token>` / `CompileResult` / `BGFXConvertResult` 这类含 SSO std::string 的 struct by value，调用方拿到的字段是 garbage。
+
+**根因**：MSVC 优化器在某些决策下把返回值的 SSO buffer 写到 caller stack 的临时位置，然后该位置被覆盖。
+
+**对策**：
+- 所有"返回大 struct"的 API 改 out-param：`void foo(..., Result& out);`
+- 已修：`Compiler::compile / compileToBackend`（§6.8）、`AYBGFXConverter::convertBGFX`（§3.2-pre）
+- 新 API 永远用 out-param 形式
+
+### 15.2 AYTest 全局静态注册 + CMake 增量 linker bug
+
+**症状**：在已有 .cpp 加新 `TEST_CASE`，跑测试时新测试不出现，必须清理构建目录。
+
+**根因**：
+- AYTest 每个 TEST_CASE 是全局静态 `_reg_##name = (registerTest(...), 0);`
+- 增量 linker heuristic 可能认为 .exe 已经"fresh enough"不重 link（即使 .cpp mtime 变了）
+- 手维护 TEST_FILES list 时 CMake 不知道目录里有变化
+
+**对策**：
+- 主 lib `CMakeLists.txt` + unittest `CMakeLists.txt` 都用 `file(GLOB ... CONFIGURE_DEPENDS)`
+- `CONFIGURE_DEPENDS` 强制每次构建时 re-glob 目录
+- 已修（commits beb2805 + Phase 3.5-A Block 3）
+
+### 15.3 Golden baseline 维护流程
+
+**新增 fixture**：
+1. 写 `<name>.phoskia` 到 `unittest/golden/`
+2. 在 `Test_GoldenFiles.cpp` 加 `TEST_CASE(golden_<name>) { runOneFixture("<name>"); }`
+3. 跑测试（首次会 auto-generate `<name>.sc` 到 build-dir）
+4. **手动把 build-dir 的 `<name>.sc` 拷回源 dir**（auto-gen 只写到 build-dir）
+5. 跑测试确认 byte-equal
+
+**重生成 baseline**（converter 改了之后）：
+1. `AY_SHADER_REGEN_GOLDEN=1 ./AYShader_Test.exe`
+2. diff 源 dir 的 .sc 看变化合理
+3. build-dir 的 .sc 已经写好（auto-gen 模式会覆盖）
+4. 拷回源 dir
+5. 跑测试确认 byte-equal
+6. 提交新 .sc
+
+### 15.4 shaderc e2e 测试
+
+**前置条件**：
+- bgfx vendored under `thirdParty/bgfx-install/{debug,release}/bin/shaderc.exe`
+- bgfx source tree at `<sibling>/thirdparty/bgfx/` (for `common.sh` / `bgfx_shader.sh` / `bgfx_compute.sh` includes)
+
+**CMake 变量**：
+- `AY_SHADER_SHADERC_PATH` — shaderc 绝对路径（默认 `thirdParty/bgfx-install/debug/bin/shaderc.exe`）
+- `AY_SHADER_BGFX_COMMON_DIR` — bgfx `examples/common` 路径（自动搜索）
+- `AY_SHADER_BGFX_SRC_DIR` — bgfx `src` 路径（默认从 common 推）
+
+**profile**：当前全部 `-p 430`（UBO `binding = N` 要求 GLSL 4.30+）
+
+---
+
 ### Phase 2 重构项：类型名降级为 Identifier（与 type checker 共同推进）
 
 **触发**：Phase 1 调试 `material_declaration_with_property` 时空转，根因是 Lexer 把 `vec3 / float / mat4` 等类型名切成 `TokenType::Vec3 / Float / Mat4` 关键字，而 `parsePrimary()` 没匹配这些关键字，导致 `vec3(1.0, 0.0, 0.0)` 这种类型构造函数返回 nullptr、上层包成 `ExprStmt(nullptr)`、Parser 死循环。
