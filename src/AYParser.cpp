@@ -656,7 +656,35 @@ std::unique_ptr<Stmt> Parser::parseUniformBlockDecl() {
         match(TokenType::Semicolon);  // ';' is optional (Python-like)
     }
     consume(TokenType::RightBrace, "Expected '}' after uniform block body");
-    return std::make_unique<UniformBlockDecl>(name.lexeme, std::move(fields));
+    match(TokenType::Semicolon);  // Phase 3.5-B: optional trailing ';' after '}'
+
+    // Phase 3.5-B: optional `binding <int>;` suffix.
+    //
+    //   uniformblock Camera { vec3 pos; float fov; } binding 5;
+    //
+    // Mirrors parseStorageDecl's binding block (lines 567-585): the
+    // literal integer is propagated verbatim into the AST, and the
+    // BGFX backend either uses it directly or auto-assigns a slot
+    // starting from max(explicit) + 1.
+    int binding = -1;
+    if (match(TokenType::Binding)) {
+        Token bTok = consume(TokenType::IntLiteral,
+                             "Expected integer literal after 'binding'");
+        try {
+            binding = static_cast<int>(std::stol(bTok.lexeme));
+        } catch (const std::exception&) {
+            error("uniformblock binding must be a non-negative integer");
+            return nullptr;
+        }
+        if (binding < 0) {
+            error("uniformblock binding must be non-negative (got "
+                  + std::to_string(binding) + ")");
+            return nullptr;
+        }
+        match(TokenType::Semicolon);  // optional trailing ';'
+    }
+    return std::make_unique<UniformBlockDecl>(name.lexeme,
+                                              std::move(fields), binding);
 }
 
 std::unique_ptr<Stmt> Parser::parseShaderParam(ShaderParam::Direction dir) {

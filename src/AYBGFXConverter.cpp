@@ -551,8 +551,8 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
     out = BGFXConvertResult{};
     out.success = true;
 
-    // Phase 3.4: pre-emit UBO decls once. The same string is spliced
-    // into every material's vs/fs and every compute's cs. GLSL
+    // Phase 3.4 + 3.5-B: pre-emit UBO decls once. The same string is
+    // spliced into every material's vs/fs and every compute's cs. GLSL
     // allows the same `uniform Name { ... } Name;` block in multiple
     // shader stages; the GLSL compiler dedupes when needed.
     _uboDecls.clear();
@@ -562,10 +562,52 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
     // own binding slots). We clear at convertBGFX entry so a fresh
     // top-level invocation doesn't see leftovers from a previous call.
     _storageBuffers.clear();
+
+    // Phase 3.5-B: detect duplicate UBO bindings BEFORE emit. UBO
+    // bindings are global per-program (UBOs are shared across
+    // vs/fs/cs and live in IRProgram::uniformBlocks flat vector).
+    // Mirrors the storage duplicate-detection pattern in
+    // convertComputeDecl (lines 1077-1090) but the scope here is the
+    // whole program, not a single compute.
+    {
+        std::unordered_map<int, std::string> usedBindings;
+        bool dup = false;
+        for (const auto& ub : program.uniformBlocks) {
+            if (!ub || ub->uboBinding < 0) continue;  // -1 = auto, skip
+            auto it = usedBindings.find(ub->uboBinding);
+            if (it != usedBindings.end()) {
+                out.errors.push_back("UniformBlock '" + ub->name +
+                    "' has duplicate binding " +
+                    std::to_string(ub->uboBinding) +
+                    " (also used by '" + it->second + "')");
+                dup = true;
+            } else {
+                usedBindings[ub->uboBinding] = ub->name;
+            }
+        }
+        if (dup) {
+            out.success = false;
+            return;  // bail early — don't emit partial layout lines
+        }
+    }
+
+    // Phase 3.5-B: auto-assign binding slots to UBOs without explicit
+    // binding. Start from max(explicit) + 1 (or 0 if none explicit).
+    // Mirrors the storage auto-slot heuristic in convertComputeDecl.
+    int nextAutoBinding = 0;
+    for (const auto& ub : program.uniformBlocks) {
+        if (!ub) continue;
+        if (ub->uboBinding >= 0 && ub->uboBinding >= nextAutoBinding) {
+            nextAutoBinding = ub->uboBinding + 1;
+        }
+    }
+
     for (const auto& ub : program.uniformBlocks) {
         if (!ub) continue;
         std::ostringstream blockSrc;
-        blockSrc << "layout(std140, binding = " << ub->uboBinding
+        int binding = ub->uboBinding;            // -1 = auto
+        if (binding < 0) binding = nextAutoBinding++;
+        blockSrc << "layout(std140, binding = " << binding
                  << ") uniform " << ub->name << " {\n";
         for (size_t i = 0; i < ub->uboFields.size(); ++i) {
             std::string fieldTypeLex = "vec4";  // fallback (matches IR warning policy)
@@ -577,8 +619,8 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
 
         BGFXUniformBlock bub;
         bub.name = ub->name;
-        bub.binding = ub->uboBinding;
-        bub.fieldNames = ub->uboFieldNames;  // copy
+        bub.binding = binding;                    // resolved (was ub->uboBinding)
+        bub.fieldNames = ub->uboFieldNames;       // copy
         _uniformBlocks.push_back(std::move(bub));
     }
 

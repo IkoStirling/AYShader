@@ -147,11 +147,11 @@ IRProgram IRGenerator::generate(const phoskia::Program& ast,
     IRProgram out;
     _warnings.clear();
     _env = typeEnv;
-    // Phase 3.4: UBO binding slots start at 0 for every program. The
-    // counter advances once per UniformBlockDecl at program-root
-    // scope; the result is what the BGFX backend emits as
-    // `layout(std140, binding = N)`.
-    nextBinding_ = 0;
+    // (Phase 3.4 had a `nextBinding_ = 0;` reset here for the
+    // per-program UBO slot counter. Phase 3.5-B removed the counter;
+    // binding slots are now resolved at BGFX emit time. The IR
+    // carries the user's `binding` literal (or -1 for "auto") in
+    // each IRDeclaration's uboBinding field.)
 
     for (const auto& decl : ast.declarations) {
         if (auto mat = dynamic_cast<const phoskia::MaterialDecl*>(decl.get())) {
@@ -251,11 +251,10 @@ std::unique_ptr<IRDeclaration> IRGenerator::lowerDecl(const phoskia::Stmt& s) {
         // and fall back to vec4 — same fallback policy as the other
         // "emits a GLSL type lexeme" decls.
         //
-        // Binding slot: assigned by the auto-incrementing
-        // `nextBinding_` counter. The counter resets to 0 at the
-        // start of every generate() call (see the top of that
-        // function), so UBO slot numbers are stable across
-        // re-generation of the same source.
+        // Binding slot (Phase 3.5-B): propagated verbatim from the
+        // AST's `ub->binding` field. -1 = "no explicit binding;
+        // backend auto-assigns at emit time" (Phase 3.4 historical
+        // behavior). >= 0 = literal user-written binding.
         //
         // Note: known limitation — we don't register the UBO block
         // name (e.g. `Camera`) or its field types in the body's
@@ -280,7 +279,8 @@ std::unique_ptr<IRDeclaration> IRGenerator::lowerDecl(const phoskia::Stmt& s) {
             }
             out->uboFields.push_back(t);
         }
-        out->uboBinding = nextBinding_++;
+        // Phase 3.5-B: pass through AST binding (no IR-side counter).
+        out->uboBinding = ub->binding;
     } else {
         return nullptr;
     }

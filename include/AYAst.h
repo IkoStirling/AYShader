@@ -303,11 +303,20 @@ struct UniformBlockField {
 };
 class UniformBlockDecl : public Stmt {
 public:
-    UniformBlockDecl(const std::string& name, std::vector<UniformBlockField> fields)
-        : name(name), fields(std::move(fields)) {}
+    // Phase 3.5-B: optional `binding` arg (default -1 = backend
+    // auto-assigns). Mirrors StorageDecl's three-arg ctor shape.
+    UniformBlockDecl(const std::string& name, std::vector<UniformBlockField> fields,
+                     int binding = -1)
+        : name(name), fields(std::move(fields)), binding(binding) {}
     void accept(AstVisitor& visitor) override;
     std::string name;
     std::vector<UniformBlockField> fields;
+    // Phase 3.5-B: optional explicit GLSL `binding = N` slot.
+    // -1 means "no explicit binding — backend auto-assigns"; >= 0
+    // means the user wrote `uniformblock X { ... } binding N;` and
+    // this is the literal slot. The BGFX emit always emits
+    // `layout(std140, binding = N)` for either path.
+    int binding = -1;
 };
 
 // Parameter declaration inside vertex { } or fragment { }.

@@ -804,6 +804,93 @@ TEST_CASE(shaderc_compiles_material_with_ublock) {
     std::filesystem::remove_all(dir);
 }
 
+// ===== Phase 3.5-B: UBO explicit binding slot (shaderc e2e) =====
+
+TEST_CASE(shaderc_compiles_material_with_ublock_binding) {
+    // End-to-end check that `uniformblock X { ... } binding N;`
+    // produces a GLSL 4.30 `layout(std140, binding = N)` decl that
+    // shaderc accepts on linux. Phase 3.5-B closes the same gap
+    // that Phase 3.5-A closed for storage buffers but applied to
+    // UBO. Uses binding 7 — a high slot — to verify the user literal
+    // actually reaches shaderc verbatim.
+    const std::string shaderc = shadercPath();
+    if (!fileExists(shaderc)) {
+        std::cerr << "[shaderc test] SKIP: shaderc not found at '"
+                  << shaderc << "'. Set " << kShadercEnvVar << ".\n";
+        return;
+    }
+
+    const std::string dir = tempDir() + "/ublock_bind";
+    std::filesystem::create_directories(dir);
+
+    const char* src = R"(
+        uniformblock Camera {
+            vec3 position
+            float fov
+        } binding 7
+        material UBOMat {
+            vertex {
+                let p = Camera.position
+                return vec4(p, 1.0)
+            }
+            fragment {
+                return vec4(Camera.fov, 0.0, 0.0, 1.0)
+            }
+        }
+    )";
+    Compiler compiler;
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    auto ast = compiler.parse(tokens);
+    ir::IRGenerator gen;
+    AYBGFXConverter conv;
+    BGFXConvertResult bgfxRes;
+    conv.convertBGFX(gen.generate(*ast), bgfxRes);
+    CHECK(bgfxRes.success);
+    CHECK_FALSE(bgfxRes.materialFiles.empty());
+    const auto& m = bgfxRes.materialFiles.front();
+    // Phase 3.5-B: explicit binding 7 must propagate to GLSL.
+    CHECK(m.vs.find("layout(std140, binding = 7) uniform Camera {") != std::string::npos);
+    CHECK(m.fs.find("layout(std140, binding = 7) uniform Camera {") != std::string::npos);
+
+    const std::string vsPath = dir + "/vs_UBOMat.sc";
+    const std::string vsBin  = dir + "/vs_UBOMat.bin";
+    const std::string fsPath = dir + "/fs_UBOMat.sc";
+    const std::string fsBin  = dir + "/fs_UBOMat.bin";
+    std::ofstream(vsPath) << m.vs;
+    std::ofstream(fsPath) << m.fs;
+
+    auto includes = includeDirs();
+    std::vector<std::string> vsArgs = {
+        "-f", vsPath, "-o", vsBin,
+        "--type", "vertex",
+        "--platform", "linux",
+        "-p", "430",
+    };
+    std::vector<std::string> fsArgs = {
+        "-f", fsPath, "-o", fsBin,
+        "--type", "fragment",
+        "--platform", "linux",
+        "-p", "430",
+    };
+    for (const auto& inc : includes) {
+        vsArgs.push_back("-I"); vsArgs.push_back(inc);
+        fsArgs.push_back("-I"); fsArgs.push_back(inc);
+    }
+    auto rvs = runShaderc(shaderc, vsArgs);
+    if (rvs.exitCode != 0) std::cerr << "[ublock binding test] vs failed:\n" << rvs.output;
+    CHECK(rvs.exitCode == 0);
+    auto rfs = runShaderc(shaderc, fsArgs);
+    if (rfs.exitCode != 0) std::cerr << "[ublock binding test] fs failed:\n" << rfs.output;
+    CHECK(rfs.exitCode == 0);
+
+    CHECK(std::filesystem::file_size(vsBin) > 0);
+    CHECK(std::filesystem::file_size(fsBin) > 0);
+
+    std::filesystem::remove_all(dir);
+}
+
 // ===== Phase 3.5-A: storage decl explicit binding slot (shaderc e2e) =====
 
 TEST_CASE(shaderc_compiles_compute_with_storage_binding_to_bin) {

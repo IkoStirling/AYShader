@@ -294,11 +294,36 @@ TEST_CASE(ir_uniformblock_lowers_with_field_types) {
     CHECK(u->primitive() == PrimitiveType::Uint);
 }
 
-TEST_CASE(ir_uniformblock_binding_auto_increments) {
-    // Two UBOs in declaration order: Camera gets binding 0, Lighting
-    // gets binding 1. The IRGenerator's nextBinding_ counter advances
-    // once per UBO at program-root scope; reset to 0 per generate()
-    // call so the numbers are stable across re-runs.
+// Phase 3.5-B: `ir_uniformblock_binding_auto_increments` was retired
+// because binding slot resolution moved from IRGenerator (Phase 3.4
+// `nextBinding_` counter) to BGFX emit time. The IRGenerator is now
+// purely declarative — it propagates the AST's `binding` field (-1
+// or literal) into `IRDeclaration::uboBinding` verbatim. Auto-slot
+// assignment at emit time is covered by the Phoskia e2e tests
+// (`compile_uniformblock_without_binding_uses_auto_slot` and
+// `compile_uniformblock_mixed_explicit_and_auto` in Test_Phoskia.cpp).
+
+TEST_CASE(ir_uniformblock_lowers_with_explicit_binding) {
+    // Phase 3.5-B: explicit `binding N;` suffix on `uniformblock`
+    // propagates to IRDeclaration::uboBinding verbatim. Mirrors the
+    // SSBO test `ir_storage_lowers_with_explicit_binding`.
+    auto ir = generateIR(R"(
+        uniformblock Camera {
+            vec3 position
+            float fov
+        } binding 7
+        material P { vertex { } fragment { } }
+    )");
+    CHECK(ir.uniformBlocks.size() == 1);
+    CHECK(ir.uniformBlocks[0]->name == "Camera");
+    CHECK(ir.uniformBlocks[0]->uboBinding == 7);
+}
+
+TEST_CASE(ir_uniformblock_lowers_without_binding_keeps_default) {
+    // Phase 3.5-B: no `binding` suffix → uboBinding stays at its
+    // sentinel default (-1), telling the BGFX emit to auto-assign a
+    // slot. Mirrors the SSBO test
+    // `ir_storage_lowers_without_binding_keeps_default`.
     auto ir = generateIR(R"(
         uniformblock Camera {
             vec3 position
@@ -309,10 +334,8 @@ TEST_CASE(ir_uniformblock_binding_auto_increments) {
         material P { vertex { } fragment { } }
     )");
     CHECK(ir.uniformBlocks.size() == 2);
-    CHECK(ir.uniformBlocks[0]->name == "Camera");
-    CHECK(ir.uniformBlocks[0]->uboBinding == 0);
-    CHECK(ir.uniformBlocks[1]->name == "Lighting");
-    CHECK(ir.uniformBlocks[1]->uboBinding == 1);
+    CHECK(ir.uniformBlocks[0]->uboBinding == -1);
+    CHECK(ir.uniformBlocks[1]->uboBinding == -1);
 }
 
 TEST_CASE(ir_uniformblock_unknown_field_type_warns) {

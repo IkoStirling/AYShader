@@ -255,17 +255,23 @@ public:
     std::shared_ptr<Type> sharedElementType;      // non-null only when kind == Shared
     int sharedSize = 0;                          // only when kind == Shared
 
-    // === UniformBlock (Phase 3.4) ===
+    // === UniformBlock (Phase 3.4 + 3.5-B) ===
     // Top-level UBO. Field vectors mirror the AST field order (so
-    // backends can emit `T0 f0; T1 f1;` byte-equal). `uboBinding` is
-    // assigned by the IRGenerator via an auto-incrementing slot
-    // counter; binding numbers are stable across the same source
-    // (declaration order determines slot 0, 1, 2, ...). Server-side
-    // std140 sizeof/alignment is deferred to Phase 5+ — Phase 3.4
-    // trusts the GLSL compiler to compute the layout.
+    // backends can emit `T0 f0; T1 f1;` byte-equal).
+    //
+    // `uboBinding` (Phase 3.5-B): optional explicit GLSL `binding = N`
+    // slot. -1 means "no explicit binding — backend auto-assigns at
+    // emit time" (Phase 3.4 historical behavior); >= 0 means the user
+    // wrote `uniformblock X { ... } binding N;` and the IRGenerator
+    // propagated the literal here. The BGFX backend always emits
+    // `layout(std140, binding = N)` — the auto-assignment at emit
+    // time allocates slots starting from max(explicit) + 1.
+    //
+    // Server-side std140 sizeof/alignment is deferred to Phase 5+ —
+    // Phase 3.4 trusts the GLSL compiler to compute the layout.
     std::vector<std::shared_ptr<Type>> uboFields;     // only when kind == UniformBlock
     std::vector<std::string>          uboFieldNames;  // parallel to uboFields
-    int uboBinding = -1;                              // only when kind == UniformBlock
+    int uboBinding = -1;                              // only when kind == UniformBlock; Phase 3.5-B semantics
 
     IRDeclaration() : kind(Kind::Uniform) {}
 };
@@ -402,13 +408,12 @@ private:
     // Warnings accumulated during generation.
     std::vector<std::string> _warnings;
 
-    // Phase 3.4: UBO binding slot counter. Reset to 0 at the start of
-    // every generate() call. Bumped once per UniformBlockDecl seen
-    // at program-root scope; the resulting slot number becomes the
-    // IRDeclaration's uboBinding. The counter is a per-program
-    // monotonically increasing integer (no reuse of released slots —
-    // GLSL doesn't need that today).
-    int nextBinding_ = 0;
+    // (Phase 3.4 had a `nextBinding_` UBO binding slot counter here.
+    // Phase 3.5-B removed it: binding slot resolution is now the
+    // backend's responsibility (mirroring how SSBO storageBinding
+    // resolves at BGFX emit time, not IRGen time). The IRGenerator
+    // is purely declarative — it propagates the AST's `binding`
+    // field (-1 or literal) verbatim into `IRDeclaration::uboBinding`.)
 
     // Caller-supplied TypeEnvironment (from SemanticAnalyzer); nullptr
     // means "no env — fall back to running TypeInference per expression".

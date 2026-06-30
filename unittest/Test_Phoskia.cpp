@@ -899,4 +899,97 @@ TEST_CASE(compile_storage_with_duplicate_binding_errors) {
     CHECK(foundDuplicateError);
 }
 
+// ===== Phase 3.5-B: uniformblock decl explicit binding slot =====
+// Mirrors the storage-binding tests above (Phase 3.5-A). The UBO
+// path differs in that (a) the duplicate-check scope is per-program
+// (UBOs are global across vs/fs/cs), and (b) the `bind 0` baseline
+// was the same as the explicit `binding 0` form (Phase 3.4 emitted
+// `layout(std140, binding = 0)` for the first UBO since it was
+// assigned by the IRGenerator counter).
+TEST_CASE(compile_uniformblock_with_binding_emits_layout_std140) {
+    // `uniformblock X { ... } binding 1;` emits a
+    // `layout(std140, binding = 1) uniform X { ... } X;` line. std140
+    // (not std430) because UBO blocks are fixed-size.
+    Compiler compiler;
+    const char* src = R"(
+        uniformblock Camera {
+            vec3 position
+            float fov
+        } binding 1
+        material P { vertex { return vec4(Camera.position, 1.0) } fragment { return vec4(0,0,0,1) } }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    CHECK(result.output.find("layout(std140, binding = 1) uniform Camera {") != std::string::npos);
+}
+
+TEST_CASE(compile_uniformblock_without_binding_uses_auto_slot) {
+    // A uniformblock without the `binding` suffix still compiles.
+    // Phase 3.5-B assigns it an automatic binding slot (starting at
+    // 0 in absence of any explicit binding) and emits the same
+    // `layout(std140, binding = N)` prefix as the explicit path.
+    // This is byte-identical to the Phase 3.4 emit (the IRGenerator
+    // counter produced 0 as the first UBO slot, so auto is a strict
+    // superset of historical behavior).
+    Compiler compiler;
+    const char* src = R"(
+        uniformblock Camera {
+            vec3 position
+        }
+        material P { vertex { return vec4(Camera.position, 1.0) } fragment { return vec4(0,0,0,1) } }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    CHECK(result.output.find("layout(std140, binding = 0) uniform Camera {") != std::string::npos);
+}
+
+TEST_CASE(compile_uniformblock_mixed_explicit_and_auto) {
+    // One UBO with explicit binding 1, another without → the
+    // auto-assigned one starts at 2 (max(explicit) + 1), not 0.
+    // This avoids collisions when the user explicitly reserves
+    // slot 0 for some other purpose (cross-shader binding plans).
+    Compiler compiler;
+    const char* src = R"(
+        uniformblock Explicit {
+            vec3 a
+        } binding 1
+        uniformblock Auto {
+            vec3 b
+        }
+        material P { vertex { return vec4(Explicit.a + Auto.b, 1.0) } fragment { return vec4(0,0,0,1) } }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    CHECK(result.output.find("layout(std140, binding = 1) uniform Explicit {") != std::string::npos);
+    CHECK(result.output.find("layout(std140, binding = 2) uniform Auto {") != std::string::npos);
+}
+
+TEST_CASE(compile_uniformblock_with_duplicate_binding_errors) {
+    // Two top-level UBOs both writing `binding 0` is a hard user
+    // error: the runtime can't tell which buffer to bind to slot 0.
+    // The BGFX backend detects this at emit time and surfaces a
+    // CompileResult error. Scope is per-program (not per-compute),
+    // matching the scope of UBO declarations.
+    Compiler compiler;
+    const char* src = R"(
+        uniformblock A { vec3 a; } binding 0
+        uniformblock B { vec3 b; } binding 0
+        material P { vertex { return vec4(A.a + B.b, 1.0) } fragment { return vec4(0,0,0,1) } }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK_FALSE(result.success);
+    bool foundDuplicateError = false;
+    for (const auto& err : result.errors) {
+        if (err.message.find("duplicate binding") != std::string::npos) {
+            foundDuplicateError = true;
+            break;
+        }
+    }
+    CHECK(foundDuplicateError);
+}
+
 TEST_SUITE_END
