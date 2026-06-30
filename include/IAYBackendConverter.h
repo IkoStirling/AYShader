@@ -49,6 +49,14 @@ struct BackendTextureInfo {
 
 struct ConvertResult {
     bool success = false;
+    /// @deprecated (Phase 3.6) Backend converters no longer surface
+    ///             .sc text through this field. The frontend reads
+    ///             `CompiledShaderProgram::sources` (when opted in)
+    ///             instead. `convert()` still constructs the legacy
+    ///             joiner shape here for tests that compare against
+    ///             golden `.sc` baselines — the field is still
+    ///             populated when the caller invokes `convert()`
+    ///             directly. Removal target: Phase 3.7.
     std::string output;
     std::vector<std::string> errors;
     std::vector<std::string> warnings;

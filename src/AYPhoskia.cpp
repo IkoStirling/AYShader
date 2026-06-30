@@ -2,10 +2,43 @@
 
 #include "AYPhoskia.h"
 #include "AYBGFXConverter.h"
+#include <cctype>
+#include <cstdlib>
 #include <iostream>
 
 namespace ayt::shader::phoskia
 {
+
+namespace {
+
+// Parse "1" / "true" / "yes" / "on" (case-insensitive) as true; anything
+// else as false. Empty string is false. The env-var precedence tests
+// in Test_ShadercDriver.cpp / Test_CompileOptions.cpp lock this contract.
+bool parseEnvBool(const char* v) {
+    if (!v || !*v) return false;
+    // Case-insensitive compare against the truthy tokens.
+    std::string s(v);
+    for (auto& c : s) c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
+    return s == "1" || s == "true" || s == "yes" || s == "on";
+}
+
+// Apply env-var overrides to a CompileOptions copy. true-wins OR:
+// any source wanting a toggle ON flips it ON. Used by compileToProgram
+// to fold AY_PHOSKIA_KEEP_SOURCES / AY_PHOSKIA_DUMP_SC into the
+// caller's opts. Returns a new CompileOptions — opts is not mutated
+// because callers may want to keep their original value (e.g. for
+// logging).
+CompileOptions applyEnvOverrides(CompileOptions opts) {
+    if (parseEnvBool(std::getenv("AY_PHOSKIA_KEEP_SOURCES"))) {
+        opts.keepSources = true;
+    }
+    if (parseEnvBool(std::getenv("AY_PHOSKIA_DUMP_SC"))) {
+        opts.dumpIntermediate = true;
+    }
+    return opts;
+}
+
+} // namespace
 
 Compiler::Compiler() {
     _typeEnv = std::make_shared<TypeEnvironment>();
@@ -39,6 +72,29 @@ void Compiler::compileToBackend(const std::string& source,
                                  const std::string& backendName,
                                  CompileResult& out) {
     runPipeline(source, backendName, out);
+}
+
+CompiledShaderProgram Compiler::compileToProgram(const std::string& source) {
+    CompiledShaderProgram out;
+    // _options is the default; env-var overrides apply here too.
+    // We call runToProgram directly (not the 3-arg overload) to avoid
+    // applying env overrides twice — the 3-arg version applies them
+    // internally as well.
+    runToProgram(source, applyEnvOverrides(_options), out);
+    return out;
+}
+
+CompiledShaderProgram Compiler::compileToProgram(const std::string& source,
+                                                 const CompileOptions& opts) {
+    CompiledShaderProgram out;
+    compileToProgram(source, opts, out);
+    return out;
+}
+
+void Compiler::compileToProgram(const std::string& source,
+                                const CompileOptions& opts,
+                                CompiledShaderProgram& out) {
+    runToProgram(source, applyEnvOverrides(opts), out);
 }
 
 void Compiler::tokenize(const std::string& source, std::vector<Token>& out) {
@@ -226,6 +282,100 @@ void Compiler::runPipeline(const std::string& source,
                         backendResult.warnings.begin(),
                         backendResult.warnings.end());
     out.success = backendResult.success;
+}
+
+// Phase 3.6: shared implementation for the three `compileToProgram`
+// overloads. The frontend-facing API surface (out-param vs return-value
+// vs default-opts) is kept minimal here — all the actual work lives in
+// this helper.
+//
+// Pipeline:
+//   1. tokenize → parse (mirrors runPipeline's front-end).
+//   2. Optional semantic analysis (CompileOptions::enableSemanticAnalysis).
+//   3. Generate IR via IRGenerator.
+//   4. Construct AYBGFXConverter directly and call compileToBinary.
+//      (compileToProgram is BGFX-only for now; other backends are
+//      Phase 5+. When a non-BGFX backend registers a compileToBinary-
+//      equivalent we'll add an IAYBackendConverter::compileToBinary
+//      virtual and dispatch here.)
+//   5. Surface any front-end errors as CompilerError-like strings in
+//      out.errors and set success=false.
+//
+// The `opts` parameter has already had env-var overrides applied by
+// the public overloads (applyEnvOverrides) — we don't re-read env here.
+void Compiler::runToProgram(const std::string& source,
+                            const CompileOptions& opts,
+                            CompiledShaderProgram& out) {
+    out = CompiledShaderProgram{};
+    _errorReporter.clear();
+
+    // 1) Tokenize
+    std::vector<Token> tokens;
+    try {
+        tokenize(source, tokens);
+    } catch (const std::exception& e) {
+        out.errors.push_back(e.what());
+        out.success = false;
+        return;
+    }
+
+    // 2) Parse
+    Parser parser(tokens);
+    std::unique_ptr<Program> ast;
+    try {
+        ast = parser.parse();
+    } catch (const std::exception& e) {
+        out.errors.push_back(e.what());
+        out.success = false;
+        return;
+    }
+    // Forward parser diagnostics ONLY when the parse didn't produce an
+    // AST — when `ast` is non-null the parser succeeded (its
+    // try-everything mode logs recovery noise to stderr even on a
+    // successful parse, and we don't want that to look like an error
+    // to compileToProgram callers).
+    if (!ast) {
+        for (const auto& e : parser.errors()) {
+            out.errors.push_back(e.message);
+        }
+        out.success = false;
+        return;
+    }
+
+    // 3) Optional semantic analysis (same gates as runPipeline).
+    if (opts.enableSemanticAnalysis && ast) {
+        analyzeSemantics(*ast);
+        for (const auto& e : _errorReporter.errors()) {
+            out.errors.push_back(e.message);
+        }
+        if (!out.errors.empty()) {
+            out.success = false;
+            return;
+        }
+    }
+
+    // 4) Generate IR.
+    ir::IRProgram irProgram = [&] {
+        ir::IRGenerator gen;
+        return gen.generate(*ast, _typeEnv);
+    }();
+
+    // 5) Drive the BGFX backend.
+    //
+    // Map phoskia::CompileOptions → BGFXCompileOptions. We pass
+    // through keepSources / dumpIntermediate / dumpDir / includeDirs.
+    // (Backend-specific fields like platform / profile default to
+    // BGFXCompileOptions' own defaults — frontend doesn't need to
+    // know about them. Phase 4 may add `CompileOptions::bgfxPlatform`
+    // if frontend needs to override.)
+    shader::AYBGFXConverter converter;
+    shader::BGFXCompileOptions bgfxOpts;
+    bgfxOpts.keepSources      = opts.keepSources;
+    bgfxOpts.dumpIntermediate = opts.dumpIntermediate;
+    bgfxOpts.dumpDir          = opts.dumpDir;
+    bgfxOpts.includeDirs      = opts.includeDirs;
+
+    converter.compileToBinary(irProgram, bgfxOpts, out);
 }
 
 } // namespace ayt::shader::phoskia

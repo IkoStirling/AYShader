@@ -8,6 +8,14 @@
 // Backend converters are NOT owned by this class; they are registered
 // via Compiler::registerBackend() so the core stays decoupled from any
 // specific target platform.
+//
+// Phase 3.6 productization: the primary frontend entry is now
+// `Compiler::compileToProgram(src)` which returns a
+// `CompiledShaderProgram` (raw .bin bytes per stage + binding
+// metadata). The legacy `Compiler::compile(src, CompileResult&)`
+// still exists for callers that want the .sc text form, but its
+// `output` field is empty under the default options and is marked
+// `/// @deprecated`. Removal target: Phase 3.7.
 
 #include "AYLexer.h"
 #include "AYParser.h"
@@ -19,6 +27,7 @@
 #include "IAYBackendConverter.h"
 #include "AYBuiltinFunctions.h"
 #include "AYIr.h"
+#include "AYShaderProgram.h"  // Phase 3.6: CompiledShaderProgram lives here.
 
 #include <memory>
 #include <string>
@@ -31,13 +40,19 @@ namespace ayt::shader::phoskia
 
 // Compilation result.
 //
-// Populated by `Compiler::compile` / `Compiler::compileToBackend` via
-// an out-parameter; see design.md §6.8 for the rationale (out-param
-// form roots out an MSVC SSO / NRVO interaction when this struct
-// grew past a size threshold in Phase 3.1).
+// DEPRECATED (Phase 3.6): the `output` field is the legacy .sc-text
+// joiner shape. `Compiler::compile()` still populates it (for source
+// compatibility — Commit 5 will rewrite the test assertions and stop
+// relying on it). New code should call `Compiler::compileToProgram(src)`
+// and read `CompiledShaderProgram::{vsBin,fsBin,csBin,sources}` instead.
+// Removal target: Phase 3.7.
 struct CompileResult {
     bool success = false;
-    std::string output;                  // Backend output (e.g. .sc text)
+    /// @deprecated Read `CompiledShaderProgram::sources["vs_0.sc"]`
+    ///             (etc.) from `Compiler::compileToProgram` instead.
+    ///             `Compiler::compile()` still populates this for
+    ///             legacy callers; Commit 5 stops relying on it.
+    std::string output;
     std::vector<CompilerError> errors;
     std::vector<std::string> warnings;
     std::shared_ptr<Program> ast;       // Pipeline keeps; future backends may want
@@ -58,6 +73,30 @@ struct CompileOptions {
                                          // existing Phase 1 snippets bypass.
     bool strictMode = false;
     std::string targetBackend = "bgfx";
+
+    // ------------------------------------------------------------------
+    // Phase 3.6 productization toggles (frontend-facing). These control
+    // what `Compiler::compileToProgram(src, opts)` does with the .sc
+    // intermediates that the backend converter produces.
+    //
+    // Env-var precedence: each of `keepSources` / `dumpIntermediate`
+    // is OR'd with the corresponding env var (true-wins):
+    //   * AY_PHOSKIA_KEEP_SOURCES=1   forces keepSources=true
+    //   * AY_PHOSKIA_DUMP_SC=1        forces dumpIntermediate=true
+    // Rationale: env is a "global debug switch" (debugger wants every
+    // shader's .sc), opts is per-call. Per-call can't downgrade a
+    // global. This matches the precedence rule locked in design.md
+    // §8.4.
+    // ------------------------------------------------------------------
+    bool         keepSources      = false;
+    bool         dumpIntermediate = false;
+    std::string  dumpDir;                 // empty = no dump (or use opts override)
+
+    // Optional include-dir override for shaderc. When empty,
+    // compileToProgram relies on the backend converter's own
+    // discovery (env vars AY_SHADER_BGFX_COMMON_DIR /
+    // AY_SHADER_BGFX_SRC_DIR + CMake-injected hint).
+    std::vector<std::string> includeDirs;
 };
 
 // Factory function type for backend converters
@@ -72,12 +111,44 @@ public:
     // Compile Phoskia source to the default backend's output.
     // Out-parameter form to avoid the MSVC SSO / NRVO corruption bug
     // documented at design.md §6.8. Mirrors Compiler::tokenize().
+    //
+    // Phase 3.6: still populates `out.output` (legacy .sc-text
+    // joiner) for source compatibility — Commit 5 rewrites the
+    // legacy test assertions that read it. New code should call
+    // `compileToProgram(src)` for raw .bin bytes + binding metadata.
     void compile(const std::string& source, CompileResult& out);
 
     // Compile to a specific registered backend.
     void compileToBackend(const std::string& source,
                           const std::string& backendName,
                           CompileResult& out);
+
+    // ------------------------------------------------------------------
+    // Phase 3.6: productization entry point. Drives the full pipeline
+    // (tokenize → parse → IR → backend emit → shaderc) and returns
+    // a CompiledShaderProgram with per-stage .bin bytes + binding
+    // metadata.
+    //
+    // Two return-by-value overloads (default opts / explicit opts)
+    // and one out-param overload. The out-param form is the safest
+    // path on MSVC — the return-by-value forms rely on NRVO and may
+    // corrupt caller-stack memory under some optimizer choices (the
+    // Phase 3.2-pre SSO bug). For new code prefer the out-param form.
+    // ------------------------------------------------------------------
+
+    // Default options.
+    CompiledShaderProgram compileToProgram(const std::string& source);
+
+    // Explicit options. `opts` is taken by value because we apply
+    // env-var overrides before dispatching (true-wins OR) — easier
+    // to reason about on a local copy.
+    CompiledShaderProgram compileToProgram(const std::string& source,
+                                           const CompileOptions& opts);
+
+    // SSO-safe out-param overload.
+    void compileToProgram(const std::string& source,
+                          const CompileOptions& opts,
+                          CompiledShaderProgram& out);
 
     // Register a backend converter factory (e.g. "bgfx" -> AYBGFXConverter).
     void registerBackend(const std::string& name, BackendFactory factory);
@@ -93,6 +164,14 @@ private:
     void runPipeline(const std::string& source,
                      const std::string& backendName,
                      CompileResult& out);
+
+    // Phase 3.6: shared helper that runs the tokenize → parse → IR
+    // front-end and (on success) drives the registered backend's
+    // `compileToBinary` to populate `out`. Called by all three
+    // `compileToProgram` overloads.
+    void runToProgram(const std::string& source,
+                      const CompileOptions& opts,
+                      CompiledShaderProgram& out);
 
     CompileOptions _options;
     CompilerErrorReporter _errorReporter;
