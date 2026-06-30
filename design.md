@@ -503,6 +503,61 @@ out 参数形式完全消除了"按值返回"路径：struct 构造在调用方�
 - `Compiler::errors()` / `Compiler::hasErrors()`（零调用方，与 `out.errors` 重复）
 - 便捷自由函数 `inline compile(src)`（零调用方）
 
+### 6.7 Phase 3.4 — UBO（Uniform Buffer Object）
+
+#### 6.7.1 表面语法
+
+```phoskia
+// 顶层（与 material / compute 同级）
+uniformblock Camera {
+    vec3 position
+    vec3 direction
+    float fov
+}
+```
+
+GLSL emit：
+```glsl
+layout(std140, binding = 0) uniform Camera {
+    vec3 position;
+    vec3 direction;
+    float fov;
+} Camera;
+```
+
+字段访问走 `MemberExpr` 路径（`Camera.position` 跟 `texture2D.field` 同形），emit 路径透明 —— 不需要特殊化。
+
+#### 6.7.2 IR 形状
+
+`IRProgram` 加 `std::vector<std::unique_ptr<IRDeclaration>> uniformBlocks;`。每个 entry 是 `IRDeclaration { kind=UniformBlock, name, uboFields: vector<shared_ptr<Type>>, uboFieldNames: vector<string>, uboBinding: int }`。
+
+`IRGenerator` 内 `nextBinding_` 计数器：`generate()` 入口 reset 0，每次见到 `UniformBlockDecl` 自增。Binding slot 0..N 按声明顺序稳定分配。
+
+`lowerDecl` 处理 `UniformBlockDecl` —— 复用 `lexemeToType` 解析字段 type（与 StorageDecl / SharedDecl 同一张表），未识别的 lexeme warn + fallback vec4。
+
+#### 6.7.3 emit 形状
+
+`convertBGFX` 顶层一次性 emit 全部 UBO decls 到 `_uboDecls` 字符串。`convertMaterial` 把 `_uboDecls` 拼到 vs/fs 头（`#include "common.sh"` 之后）。`convertComputeDecl` 把同一字符串拼到 cs 头。
+
+GLSL 允许同一个 `uniform Name { ... } Name;` 在多个 stage 出现，compiler 自动 dedupe。`std140` layout 由 GLSL compiler 计算（Phoskia 端不做 sizeof/alignment —— HLSL cbuffer packoffset 才有需要，Phase 5+）。
+
+#### 6.7.4 已知 limitation
+
+UBO 块名（`Camera`）和字段（`Camera.position`）**不注册**到 body 的 `TypeEnvironment`。所以 `let p = Camera.position` 在 IR 层推断为 fresh TypeVar（emit 不带 GLSL 类型前缀），shaderc 端做类型检查。完整 struct 推断留 Phase 4+。
+
+#### 6.7.5 shaderc profile 升级
+
+`binding = N` 语法要求 GLSL 4.30+。Phase 3.4 把 material / compute 整个 e2e 套件从 `-p 120` 升到 `-p 430`（6 个 `Test_ShaderCompile.cpp` 站点）。`-p 430` 的 `layout(std140)` block 语法 + `gl_GlobalInvocationID` 全部向后兼容 Phase 3.2 黄金输出；`unittest/golden/*.sc` 字节级不变。
+
+#### 6.7.6 Out of scope
+
+- struct 字段（依赖 struct 类型系统，Phase 3.3 跳过）
+- 嵌套 UBO（一个 UBO 字段是另一个 UBO）
+- 用户显式 `binding = N`（编译器自动分配；用户覆盖留 Phase 4+）
+- storage decl 的 `binding = N` 语法（UBO-first；storage 留后续 phase）
+- HLSL `cbuffer` emit + packoffset layout（Phase 5+）
+- WGSL `@group(0) @binding(0) var<uniform>` 概念映射（Phase 5+ WGSL emitter）
+
 ## 7. 改语法的"链路"
 
 Phoskia 的语法控制在以下 5 个文件里。**改一个语法特性需要同步修改这一组文件**：
@@ -882,13 +937,19 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 
   附带的根因修复：`AYBGFXConverter::convertBGFX` 的 return-by-value 触发 MSVC SSO/NRVO 损坏（同一类 bug，详见 §6.8），新增 out-param 重载 + 全测试切换。
 
+- [x] **Phase 3.3 surface-syntax 补完**（2026-06-30 完成）：
+  - [x] `[numthreads(X, Y, Z)] compute Foo { ... }` attribute — commit aa14410
+  - [x] `uint` builtin 类型 — commit edd37af
+  - [x] 严格 `uvec3` 类型 — `thread_id` / `group_id` / `dispatch_id` 全部返回 `uvec3`（不再是 `vec3`）— commit f3c7e47
+  - [ ] 自定义 `struct` 类型（`struct Particle { vec3 pos; vec3 vel; }`）— 推迟到 Phase 4+，需要先做 struct 类型系统
+  - [x] `groupshared` 共享存储 — `shared <T> <name>[<size>];` 走 GLSL `shared` 路径 — commit c265ea5
+
+- [x] **Phase 3.4 UBO 落地**（2026-06-30 完成）：`uniformblock` 表面语法 + `layout(std140, binding = N) uniform Name { ... } Name;` emit + 全平台 `-p 430` profile bump + `BGFXUniformBlock` binding info 结构。详见 §6.7。总测试 771 → 786+。
+
+  - 已知 limitation：UBO 字段 strict type-check 暂不在 Phoskia 端做（`let p = Camera.position` 推断为 TypeVar，emit 透明，shaderc 端做类型检查）。完整 struct 推断留 Phase 4+ 跟 struct 类型系统一起做。
+  - 推迟：嵌套 UBO / 用户显式 `binding = N` / `storage` decl 的 binding 语法 / HLSL cbuffer packoffset / WGSL `@group @binding var<uniform>`。
+
 - [ ] IR 设计实现（SSA 形式）
-- [ ] **Phase 3.3 surface-syntax 补完**（compute 深化 + 自定义类型）：
-  - [ ] `[numthreads(X, Y, Z)] compute Foo { ... }` attribute — 当前 `numthreads` 硬编 64
-  - [ ] `uint` builtin 类型 — 补 `PrimitiveType::Uint` + `BuiltinTypes::UInt` + `lexemeToType`
-  - [ ] 严格 `uvec3` 类型 — 当前 thread_id 系列都是 vec3，`.x` 解析为 float；严格起来 `gl_GlobalInvocationID` 实际是 uvec3
-  - [ ] 自定义 `struct` 类型（`struct Particle { vec3 pos; vec3 vel; }`）— 让 storage buffer 元素类型支持 struct
-  - [ ] `groupshared` 共享存储（workgroup 内线程共享 local 内存）— 走 `bgfx_compute.sh` 的 `SHARED` / `groupshared` 路径
 - [ ] HLSL 后端 (`AYHLSLConverter`) — **Phase 5+ 按需**，当前不计划。仅在项目要求 DXC 一手质量或要摆脱 shaderc 时再做。
 - [ ] WGSL 后端 (`AYWGLSConverter`) — **Phase 5+ 按需**，当前不计划。仅在项目目标 WebGPU 且要原生 WGSL 时再做（bgfx 当前没有 WebGPU 后端，需要换 runtime 到 wgpu-native / Dawn）。
 - [ ] 跨后端优化（dead code、constant folding）— 在 SSA IR 上做

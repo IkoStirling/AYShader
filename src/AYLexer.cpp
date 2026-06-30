@@ -119,6 +119,13 @@ TokenType Lexer::identifierType(const std::string& lexeme) {
         // compute body. The keyword name matches GLSL exactly (HLSL
         // uses `groupshared`; the bgfx GLSL profile accepts `shared`).
         {"shared", TokenType::Shared},
+        // Phase 3.4: top-level uniform buffer object.
+        //   uniformblock <Name> { <type> <field>; ... }
+        // Lowers to GLSL `layout(std140, binding = N) uniform <Name>
+        // { <type> <field>; ... } <Name>;`. The block name doubles as
+        // the instance name (GLSL convention) — users access fields
+        // as `<Name>.<field>` from shader bodies.
+        {"uniformblock", TokenType::UniformBlock},
         {"texture2d", TokenType::Texture2D},
         {"sampler", TokenType::Sampler},
         {"vertex", TokenType::Vertex},

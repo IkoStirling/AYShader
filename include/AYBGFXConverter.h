@@ -48,12 +48,30 @@ struct BGFXUniform {
     std::string name;
     std::string type;
     uint8_t count = 1;
+    // Phase 3.4: see BackendUniformInfo::blockName / blockBinding
+    // for the field-vs-block distinction. `blockName == ""` is a
+    // legacy `uniform T x;` decl; otherwise it's a UBO field.
+    std::string blockName;
+    int blockBinding = -1;
 };
 
 struct BGFXTexture {
     std::string name;
     uint8_t binding = 0;
     std::string textureType = "sampler2D";
+};
+
+// Phase 3.4: uniform buffer object (GLSL `uniform Name { ... } name;`).
+// `sizeBytes` is the std140 block size, computed by the GLSL
+// compiler (captured at runtime via `bgfx::getUniformBlockSize` or
+// similar — Phase 3.4 leaves it 0; host populates after the shader
+// is compiled). `fieldNames` mirrors the AST field order so the
+// host can compute per-field std140 offsets if it needs them.
+struct BGFXUniformBlock {
+    std::string name;
+    int binding = -1;
+    size_t sizeBytes = 0;
+    std::vector<std::string> fieldNames;
 };
 
 struct BGFXConvertResult {
@@ -68,6 +86,11 @@ struct BGFXConvertResult {
     std::vector<BGFXComputeFile> computeFiles;
     std::vector<BGFXUniform> uniforms;
     std::vector<BGFXTexture> textures;
+    // Phase 3.4: top-level UBO decls (one per UniformBlockDecl).
+    // The frontend can iterate these to compute per-block std140
+    // sizes via shaderc and to wire up `bgfx::setUniform(handle, ptr,
+    // sizeof(block))` calls at draw time.
+    std::vector<BGFXUniformBlock> uniformBlocks;
     std::vector<std::string> errors;
 };
 
@@ -120,6 +143,19 @@ private:
     std::string _propertyUniforms;
     std::vector<BGFXUniform> _uniforms;
     std::vector<BGFXTexture> _textures;
+    // Phase 3.4: pre-emitted UBO decls (one `layout(std140, binding = N)
+    // uniform Name { ... } Name;` per UniformBlockDecl). The
+    // convertBGFX top-level loop fills this once, then convertMaterial
+    // / convertComputeDecl splice the same string into every shader
+    // stage's output (vs + fs for materials; cs for compute). UBO
+    // decls are global — every stage that uses a block needs the
+    // decl visible, and GLSL allows the same block in multiple
+    // stages (the GLSL compiler dedupes per compilation unit).
+    std::string _uboDecls;
+    // Same data, structured for the frontend. Populated alongside
+    // `_uboDecls`; carried across convertMaterial / convertComputeDecl
+    // to flush into the final BGFXConvertResult.
+    std::vector<BGFXUniformBlock> _uniformBlocks;
 };
 
 } // namespace ayt::shader

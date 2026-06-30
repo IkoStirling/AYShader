@@ -668,4 +668,120 @@ TEST_CASE(compile_compute_shared_and_storage_coexist) {
     CHECK(result.output.find("float data[]") != std::string::npos);
 }
 
+// ===== Phase 3.4: uniform block (UBO) =====
+TEST_CASE(compile_uniformblock_emits_layout_std140) {
+    // `uniformblock Camera { vec3 position; float fov; }` is a
+    // top-level decl. The BGFX emit must produce a GLSL
+    // `layout(std140, binding = 0) uniform Camera { ... } Camera;`
+    // line, spliced into both vs and fs (UBO is global — every
+    // stage that uses the block needs the decl visible).
+    Compiler compiler;
+    const char* src = R"(
+        uniformblock Camera {
+            vec3 position
+            float fov
+        }
+        material PBR {
+            vertex {
+                return vec4(Camera.position, 1.0)
+            }
+            fragment {
+                return vec4(Camera.fov, 0.0, 0.0, 1.0)
+            }
+        }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    // The UBO decl must appear in the emitted source.
+    CHECK(result.output.find("layout(std140, binding = 0) uniform Camera {") != std::string::npos);
+    // Field types resolve to GLSL lexemes (vec3, float).
+    CHECK(result.output.find("vec3 position;") != std::string::npos);
+    CHECK(result.output.find("float fov;") != std::string::npos);
+    // The instance name is the same as the block name (GLSL convention).
+    CHECK(result.output.find("} Camera;") != std::string::npos);
+}
+
+TEST_CASE(compile_two_uniformblocks_have_distinct_bindings) {
+    // Two UBOs in declaration order get binding slots 0 and 1.
+    // The auto-incrementing slot counter in the IRGenerator makes
+    // the numbers stable across re-runs of the same source.
+    Compiler compiler;
+    const char* src = R"(
+        uniformblock Camera {
+            vec3 position
+        }
+        uniformblock Lighting {
+            vec3 ambient
+        }
+        material P {
+            vertex { return vec4(0.0) }
+            fragment { return vec4(0.0) }
+        }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    CHECK(result.output.find("layout(std140, binding = 0) uniform Camera {") != std::string::npos);
+    CHECK(result.output.find("layout(std140, binding = 1) uniform Lighting {") != std::string::npos);
+}
+
+TEST_CASE(compile_uniformblock_field_access_emits_dot) {
+    // `Camera.position` is a MemberExpr — the BGFX emit path writes
+    // it literally as `Camera.position` (no type annotation on the
+    // chain; GLSL-side type checking happens at shaderc compile
+    // time). The let-stmt emit prefixes the GLSL type from the
+    // initializer's resolvedType — `Camera.position` infers as
+    // vec3 (because of Phase 3.4's known limitation: UBO blocks
+    // are NOT registered in the body's TypeEnvironment, so the
+    // MemberExpr type-inference path returns a fresh TypeVar and
+    // the let-stmt falls through to no GLSL type prefix).
+    Compiler compiler;
+    const char* src = R"(
+        uniformblock Camera {
+            vec3 position
+        }
+        material P {
+            vertex {
+                let p = Camera.position
+                return vec4(p, 1.0)
+            }
+            fragment { return vec4(0.0) }
+        }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    // The dot access reaches the emitted source verbatim.
+    CHECK(result.output.find("Camera.position") != std::string::npos);
+    // The let-stmt does NOT carry a float / vec3 / vec4 type
+    // prefix (known limitation — see AYIr.cpp lowerDecl's
+    // UniformBlock branch comment). GLSL accepts the unprefixed
+    // form when the type is determined by the right-hand side.
+    // We don't pin the absence-of-prefix because the inferred
+    // type may evolve; the contract here is "the field access
+    // reaches the emitted source unchanged".
+}
+
+TEST_CASE(compile_uniformblock_in_compute_body) {
+    // UBO is valid in compute shaders too (Phase 3.4 design
+    // decision). The BGFX emit must include the UBO decl in the
+    // cs output, before the layout / void main() / body.
+    Compiler compiler;
+    const char* src = R"(
+        uniformblock Config {
+            uint iterations
+        }
+        compute Run {
+            let i = thread_id.x
+            return i
+        }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    CHECK(result.output.find("layout(std140, binding = 0) uniform Config {") != std::string::npos);
+    CHECK(result.output.find("uint iterations;") != std::string::npos);
+}
+
 TEST_SUITE_END

@@ -147,6 +147,11 @@ IRProgram IRGenerator::generate(const phoskia::Program& ast,
     IRProgram out;
     _warnings.clear();
     _env = typeEnv;
+    // Phase 3.4: UBO binding slots start at 0 for every program. The
+    // counter advances once per UniformBlockDecl at program-root
+    // scope; the result is what the BGFX backend emits as
+    // `layout(std140, binding = N)`.
+    nextBinding_ = 0;
 
     for (const auto& decl : ast.declarations) {
         if (auto mat = dynamic_cast<const phoskia::MaterialDecl*>(decl.get())) {
@@ -155,9 +160,16 @@ IRProgram IRGenerator::generate(const phoskia::Program& ast,
         } else if (auto cmp = dynamic_cast<const phoskia::ComputeDecl*>(decl.get())) {
             auto ir = lowerComputeDecl(*cmp);
             if (ir) out.computes.push_back(std::move(ir));
+        } else if (auto ub = dynamic_cast<const phoskia::UniformBlockDecl*>(decl.get())) {
+            // Phase 3.4: top-level uniform buffer object. The block
+            // lives in IRProgram::uniformBlocks (shared across
+            // materials / computes in the same source file) rather
+            // than in any one material's declarations vector.
+            auto ir = lowerDecl(*ub);
+            if (ir) out.uniformBlocks.push_back(std::move(ir));
         }
-        // Program-level declarations other than Material/Compute are
-        // unknown in Phase 3.1 — log a warning and skip.
+        // Program-level declarations other than Material/Compute/UniformBlock
+        // are unknown — log a warning and skip.
     }
 
     out.warnings = std::move(_warnings);
@@ -224,6 +236,44 @@ std::unique_ptr<IRDeclaration> IRGenerator::lowerDecl(const phoskia::Stmt& s) {
                 "' has unrecognized element type lexeme '" + sh->elementType +
                 "'; BGFX emission will fall back to vec4");
         }
+    } else if (auto ub = dynamic_cast<const phoskia::UniformBlockDecl*>(&s)) {
+        // Phase 3.4: top-level uniform buffer object.
+        // Each field's type lexeme resolves through the same
+        // lexemeToType table as StorageDecl / SharedDecl (builtin
+        // scalar / vector / matrix forms). Unknown lexemes warn
+        // and fall back to vec4 — same fallback policy as the other
+        // "emits a GLSL type lexeme" decls.
+        //
+        // Binding slot: assigned by the auto-incrementing
+        // `nextBinding_` counter. The counter resets to 0 at the
+        // start of every generate() call (see the top of that
+        // function), so UBO slot numbers are stable across
+        // re-generation of the same source.
+        //
+        // Note: known limitation — we don't register the UBO block
+        // name (e.g. `Camera`) or its field types in the body's
+        // TypeEnvironment, so `let p = Camera.position` infers `p`
+        // as a fresh TypeVar rather than vec3. The emit path is
+        // unaffected (emitExpr(MemberExpr, ...) writes
+        // `Camera.position` literally); GLSL-side type errors are
+        // reported by shaderc. Type-checking the body against UBO
+        // fields is a Phase 4+ task tied to struct type inference.
+        out->kind = IRDeclaration::Kind::UniformBlock;
+        out->name = ub->name;
+        out->uboFieldNames.reserve(ub->fields.size());
+        out->uboFields.reserve(ub->fields.size());
+        for (const auto& f : ub->fields) {
+            out->uboFieldNames.push_back(f.name);
+            auto t = lexemeToType(f.type);
+            if (!t) {
+                _warnings.push_back("UniformBlock '" + ub->name + "' field '" + f.name +
+                    "' has unrecognized type lexeme '" + f.type +
+                    "'; BGFX emission will fall back to vec4");
+                t = phoskia::BuiltinTypes::Vec4();
+            }
+            out->uboFields.push_back(t);
+        }
+        out->uboBinding = nextBinding_++;
     } else {
         return nullptr;
     }

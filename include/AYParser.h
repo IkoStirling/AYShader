@@ -53,6 +53,9 @@ private:
     // Phase 3.3 Block 4: `shared <type> <name>[<size>];` workgroup
     // local memory (compute body only; ignored outside compute).
     std::unique_ptr<Stmt> parseSharedDecl();
+    // Phase 3.4: `uniformblock <Name> { <type> <field>; ... }` top-level
+    // uniform buffer object (GLSL UBO with std140 layout + binding slot).
+    std::unique_ptr<Stmt> parseUniformBlockDecl();
     std::unique_ptr<Stmt> parseVertexFunc();
     std::unique_ptr<Stmt> parseFragmentFunc();
     std::unique_ptr<Stmt> parseShaderParam(ShaderParam::Direction dir);

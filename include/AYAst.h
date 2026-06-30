@@ -45,6 +45,7 @@ class UniformDecl;
 class TextureDecl;
 class StorageDecl;
 class SharedDecl;
+class UniformBlockDecl;
 class VertexFunc;
 class FragmentFunc;
 class ComputeDecl;
@@ -267,6 +268,36 @@ public:
     int size;
 };
 
+// Phase 3.4: top-level uniform buffer object (GLSL UBO).
+//
+//   uniformblock Camera {
+//       vec3 position
+//       float fov
+//   }
+//
+// Lives at the top level (next to material / compute), not inside a
+// material body — UBO is shared across all shaders in the source
+// file. Fields are bare `type name;` lines inside the block body
+// (the `uniform` keyword prefix is not repeated — it's implicit
+// because we're inside a uniform block). Trailing `;` on each field
+// is optional (Phoskia Python-like convention).
+//
+// The block name doubles as the instance name (GLSL convention);
+// users access fields as `Camera.position` (a MemberExpr) from any
+// shader body in the source file.
+struct UniformBlockField {
+    std::string type;   // GLSL lexeme: "float" / "vec3" / "uint" / ...
+    std::string name;
+};
+class UniformBlockDecl : public Stmt {
+public:
+    UniformBlockDecl(const std::string& name, std::vector<UniformBlockField> fields)
+        : name(name), fields(std::move(fields)) {}
+    void accept(AstVisitor& visitor) override;
+    std::string name;
+    std::vector<UniformBlockField> fields;
+};
+
 // Parameter declaration inside vertex { } or fragment { }.
 // `in`  → input attribute (vertex) or input varying (fragment)
 // `out` → output varying (vertex only; fragment has no out)
@@ -361,6 +392,7 @@ public:
     virtual void visit(TextureDecl& node) = 0;
     virtual void visit(StorageDecl& node) = 0;
     virtual void visit(SharedDecl& node) = 0;
+    virtual void visit(UniformBlockDecl& node) = 0;
     virtual void visit(ShaderParam& node) = 0;
     virtual void visit(VertexFunc& node) = 0;
     virtual void visit(FragmentFunc& node) = 0;
@@ -402,6 +434,7 @@ inline void UniformDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void TextureDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void StorageDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void SharedDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
+inline void UniformBlockDecl::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void ShaderParam::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void VertexFunc::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void FragmentFunc::accept(AstVisitor& visitor) { visitor.visit(*this); }

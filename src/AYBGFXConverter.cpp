@@ -551,6 +551,32 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
     out = BGFXConvertResult{};
     out.success = true;
 
+    // Phase 3.4: pre-emit UBO decls once. The same string is spliced
+    // into every material's vs/fs and every compute's cs. GLSL
+    // allows the same `uniform Name { ... } Name;` block in multiple
+    // shader stages; the GLSL compiler dedupes when needed.
+    _uboDecls.clear();
+    _uniformBlocks.clear();
+    for (const auto& ub : program.uniformBlocks) {
+        if (!ub) continue;
+        std::ostringstream blockSrc;
+        blockSrc << "layout(std140, binding = " << ub->uboBinding
+                 << ") uniform " << ub->name << " {\n";
+        for (size_t i = 0; i < ub->uboFields.size(); ++i) {
+            std::string fieldTypeLex = "vec4";  // fallback (matches IR warning policy)
+            if (ub->uboFields[i]) fieldTypeLex = ub->uboFields[i]->toString();
+            blockSrc << "    " << fieldTypeLex << " " << ub->uboFieldNames[i] << ";\n";
+        }
+        blockSrc << "} " << ub->name << ";\n\n";
+        _uboDecls += blockSrc.str();
+
+        BGFXUniformBlock bub;
+        bub.name = ub->name;
+        bub.binding = ub->uboBinding;
+        bub.fieldNames = ub->uboFieldNames;  // copy
+        _uniformBlocks.push_back(std::move(bub));
+    }
+
     try {
         for (const auto& mat : program.materials) {
             if (mat) out.materialFiles.push_back(convertMaterial(*mat));
@@ -577,6 +603,7 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
 
     out.uniforms = _uniforms;
     out.textures = _textures;
+    out.uniformBlocks = _uniformBlocks;
 }
 
 ConvertResult AYBGFXConverter::convert(const phoskia::ir::IRProgram& program) {
@@ -846,6 +873,7 @@ BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::ir::IRMaterialDe
         vs << "\n";
     }
     vs << "\n#include \"common.sh\"\n\n"
+       << _uboDecls
        << _uniformDecls
        << _propertyUniforms
        << "\nvoid main()\n{\n";
@@ -894,6 +922,7 @@ BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::ir::IRMaterialDe
         fs << "\n";
     }
     fs << "\n#include \"common.sh\"\n\n"
+       << _uboDecls
        << _uniformDecls
        << _propertyUniforms
        << _textureDecls
@@ -975,7 +1004,10 @@ BGFXComputeFile AYBGFXConverter::convertComputeDecl(const phoskia::ir::IRCompute
     std::ostringstream cs;
     cs << "$input\n"           // empty input list (compute has no attributes)
        << "$output\n"          // empty output list (compute has no varyings)
-       << "\n#include \"common.sh\"\n\n";
+       << "\n#include \"common.sh\"\n\n"
+       << _uboDecls;            // Phase 3.4: top-level UBOs (GLSL allows the
+                                // same block in multiple stages; pre-emitted
+                                // by convertBGFX() before convertComputeDecl).
 
     // GLSL 4.30 / OpenGL ES 3.1 workgroup layout. bgfx's GLSL profile
     // accepts the `layout(local_size_x = N) in;` form (Y and Z default

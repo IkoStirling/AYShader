@@ -25,7 +25,8 @@ AYShader 是 AY Engine 的着色器子系统：接受 **Phoskia** DSL 源码，�
 | Phase 3.1 | Phoskia IR (`AYIr`) + AST→IR 降级 + BGFX retarget | ✅ |
 | Phase 3.2-pre | Compiler out-param 重构（SSO NRVO 根因修复） | ✅ |
 | Phase 3.2 | Compute 端到端落地（BGFX `.sc` compute emit + storage buffer + thread-id） | ✅ |
-| Phase 3.3 | `[numthreads]` attribute + `uint` builtin + 自定义 `struct` + `uvec3` strict + `groupshared` | 🔜 按需 |
+| Phase 3.3 | `[numthreads]` attribute + `uint` builtin + `uvec3` strict + `groupshared` | ✅ |
+| Phase 3.4 | UBO 表面语法（`uniformblock` + `layout(std140, binding = N)` + 全平台 `-p 430`） | ✅ |
 | Phase 5+ | HLSL 后端（按需 — DXC 一手质量 / 减体积） | 🅿 暂缓 |
 | Phase 5+ | WGSL 后端（按需 — WebGPU 目标） | 🅿 暂缓 |
 
@@ -44,7 +45,7 @@ cmake --build <build-dir>
 AY_SHADER_REGEN_GOLDEN=1 <build-dir>/AYShader_Test.exe
 ```
 
-最后一次完整跑：**690 / 690 PASS**（截至 Phase 3.2 commit）。
+最后一次完整跑：**771 / 771 PASS**（截至 Phase 3.4 commit）。
 
 ### 测试套件
 
@@ -135,7 +136,46 @@ compute Increment {                        // 顶层 compute，GPGPU kernel
 
 Phase 3.2 限制：`numthreads` 硬编 64（待 Phase 3.3 加 `[numthreads(X, Y, Z)]` attribute）、元素类型仅限 builtin scalar/vector（`uint` / 自定义 `struct` 待 Phase 3.3）、`thread_id` 系列以 `vec3` 表示（strict `uvec3` 待 Phase 3.3）。
 
-完整设计见 [`design.md`](design.md) §6.6 + §6.6.1 (emit shape) + §6.6.2 (storage) + §6.6.3 (thread-id)。
+**Uniform block object (UBO, Phase 3.4 ✅):**
+
+```phoskia
+// 顶层（与 material / compute 同级）
+uniformblock Camera {
+    vec3 position
+    vec3 direction
+    float fov
+}
+uniformblock Lighting {
+    vec3 ambient
+    float sunIntensity
+}
+
+material PBR {
+    vertex {
+        return vec4(Camera.position, 1.0)
+    }
+    fragment {
+        return vec4(Lighting.ambient * Lighting.sunIntensity, 1.0)
+    }
+}
+```
+
+→ GLSL emit：
+```glsl
+layout(std140, binding = 0) uniform Camera { vec3 position; vec3 direction; float fov; } Camera;
+layout(std140, binding = 1) uniform Lighting { vec3 ambient; float sunIntensity; } Lighting;
+```
+
+**为什么**：N 个分散 `uniform float x;` = N 次 `bgfx::setUniform()` API call。UBO 把所有字段打包成一个 buffer，引擎一次 `bgfx::setUniform(handle, ptr, sizeof(block))` 上传。生产 PBR 一般 30-50 个 uniform，UBO 后变成 1-3 次 driver call / draw。
+
+**约束**：
+- 字段限于 builtin 标量/向量（`float` / `int` / `uint` / `vec2-4` / `ivec2-4` / `uvec2-4` / `mat3-4`）
+- 块名 = instance 名（`Camera.position` 是 `MemberExpr` 访问）
+- binding slot 编译器自动分配（按声明顺序 0, 1, 2, ...）
+- shaderc profile bump 到 `-p 430`（`binding = N` 语法要求 GLSL 4.30+）—— 同时也把 material / compute 整个 e2e 套件统一到 4.30
+- 已知 limitation：UBO 字段的 strict type-check 暂不在 Phoskia 端做（`let p = Camera.position` 推断为 TypeVar 而非 `vec3`）；emit 路径透明，GLSL 编译器负责类型检查。完整 struct 推断留 Phase 4+ 跟 struct 类型系统一起做
+
+完整设计见 [`design.md`](design.md) §6.6 + §6.6.1 (emit shape) + §6.6.2 (storage) + §6.6.3 (thread-id) + §6.7 (UBO, 计划 §11.4 收录)。
 
 ---
 

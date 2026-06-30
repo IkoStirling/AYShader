@@ -352,7 +352,7 @@ TEST_CASE(shaderc_compiles_minimal_unlit) {
         "-f", vsPath, "-o", vsBin,
         "--type", "vertex",
         "--platform", "linux",
-        "-p", "120",
+        "-p", "430",
     };
     for (const auto& d : includes) {
         vsArgs.push_back("-i");
@@ -368,7 +368,7 @@ TEST_CASE(shaderc_compiles_minimal_unlit) {
         "-f", fsPath, "-o", fsBin,
         "--type", "fragment",
         "--platform", "linux",
-        "-p", "120",
+        "-p", "430",
         "--varyingdef", defPath,
     };
     for (const auto& d : includes) {
@@ -525,7 +525,7 @@ TEST_CASE(shaderc_compiles_material_with_texture) {
     auto includes = includeDirs();
     std::vector<std::string> vsArgs = {
         "-f", vsPath, "-o", vsBin,
-        "--type", "vertex", "--platform", "linux", "-p", "120",
+        "--type", "vertex", "--platform", "linux", "-p", "430",
     };
     for (const auto& d : includes) { vsArgs.push_back("-i"); vsArgs.push_back(d); }
     auto rvs = runShaderc(shaderc, vsArgs);
@@ -534,7 +534,7 @@ TEST_CASE(shaderc_compiles_material_with_texture) {
 
     std::vector<std::string> fsArgs = {
         "-f", fsPath, "-o", fsBin,
-        "--type", "fragment", "--platform", "linux", "-p", "120",
+        "--type", "fragment", "--platform", "linux", "-p", "430",
         "--varyingdef", defPath,
     };
     for (const auto& d : includes) { fsArgs.push_back("-i"); fsArgs.push_back(d); }
@@ -684,7 +684,7 @@ TEST_CASE(shaderc_compiles_pbr_with_ggx_and_fresnel) {
     auto includes = includeDirs();
     std::vector<std::string> vsArgs = {
         "-f", vsPath, "-o", vsBin,
-        "--type", "vertex", "--platform", "linux", "-p", "120",
+        "--type", "vertex", "--platform", "linux", "-p", "430",
     };
     for (const auto& d : includes) { vsArgs.push_back("-i"); vsArgs.push_back(d); }
     auto rvs = runShaderc(shaderc, vsArgs);
@@ -697,7 +697,7 @@ TEST_CASE(shaderc_compiles_pbr_with_ggx_and_fresnel) {
 
     std::vector<std::string> fsArgs = {
         "-f", fsPath, "-o", fsBin,
-        "--type", "fragment", "--platform", "linux", "-p", "120",
+        "--type", "fragment", "--platform", "linux", "-p", "430",
         "--varyingdef", defPath,
     };
     for (const auto& d : includes) { fsArgs.push_back("-i"); fsArgs.push_back(d); }
@@ -712,6 +712,92 @@ TEST_CASE(shaderc_compiles_pbr_with_ggx_and_fresnel) {
     // The .bin artifacts must be non-empty. Skipped if shaderc failed
     // (fsBin won't exist) — that's already reported via the exitCode
     // CHECK above.
+    CHECK(std::filesystem::file_size(vsBin) > 0);
+    CHECK(std::filesystem::file_size(fsBin) > 0);
+
+    std::filesystem::remove_all(dir);
+}
+
+// Phase 3.4: UBO material end-to-end via shaderc.
+//
+// Validates that a material with a top-level uniformblock compiles
+// to a working GLSL 4.30 vertex + fragment pair (bgfx::createProgram
+// accepts both .bin files). The UBO decl carries std140 layout + a
+// binding slot; both must reach shaderc. We use -p 430 — the
+// `binding = N` qualifier requires GLSL 4.30+, and the material
+// profile bump in Phase 3.4 brought the whole e2e suite to 4.30.
+TEST_CASE(shaderc_compiles_material_with_ublock) {
+    const std::string shaderc = shadercPath();
+    if (!fileExists(shaderc)) {
+        std::cerr << "[shaderc test] SKIP: shaderc not found at '"
+                  << shaderc << "'. Set " << kShadercEnvVar << ".\n";
+        return;
+    }
+
+    const std::string dir = tempDir() + "/ublock";
+    std::filesystem::create_directories(dir);
+
+    const char* src = R"(
+        uniformblock Camera {
+            vec3 position
+            float fov
+        }
+        material UBOTest {
+            vertex {
+                let p = Camera.position
+                return vec4(p, 1.0)
+            }
+            fragment {
+                return vec4(Camera.fov, 0.0, 0.0, 1.0)
+            }
+        }
+    )";
+    Compiler compiler;
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    auto ast = compiler.parse(tokens);
+    ir::IRGenerator gen;
+    AYBGFXConverter conv;
+    BGFXConvertResult bgfxRes;
+    conv.convertBGFX(gen.generate(*ast), bgfxRes);
+    CHECK(bgfxRes.success);
+    CHECK_FALSE(bgfxRes.materialFiles.empty());
+    const auto& m = bgfxRes.materialFiles.front();
+    // Both vs and fs must include the UBO decl.
+    CHECK(m.vs.find("layout(std140, binding = 0) uniform Camera {") != std::string::npos);
+    CHECK(m.fs.find("layout(std140, binding = 0) uniform Camera {") != std::string::npos);
+
+    const std::string vsPath = dir + "/vs_UBOTest.sc";
+    const std::string vsBin  = dir + "/vs_UBOTest.bin";
+    const std::string fsPath = dir + "/fs_UBOTest.sc";
+    const std::string fsBin  = dir + "/fs_UBOTest.bin";
+    std::ofstream(vsPath) << m.vs;
+    std::ofstream(fsPath) << m.fs;
+
+    auto includes = includeDirs();
+    std::vector<std::string> vsArgs = {
+        "-f", vsPath, "-o", vsBin,
+        "--type", "vertex",
+        "--platform", "linux",
+        "-p", "430",
+    };
+    std::vector<std::string> fsArgs = {
+        "-f", fsPath, "-o", fsBin,
+        "--type", "fragment",
+        "--platform", "linux",
+        "-p", "430",
+    };
+    for (const auto& d : includes) {
+        vsArgs.push_back("-i"); vsArgs.push_back(d);
+        fsArgs.push_back("-i"); fsArgs.push_back(d);
+    }
+
+    auto rvs = runShaderc(shaderc, vsArgs);
+    CHECK(rvs.exitCode == 0);
+    auto rfs = runShaderc(shaderc, fsArgs);
+    CHECK(rfs.exitCode == 0);
+
     CHECK(std::filesystem::file_size(vsBin) > 0);
     CHECK(std::filesystem::file_size(fsBin) > 0);
 

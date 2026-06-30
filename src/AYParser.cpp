@@ -162,6 +162,17 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
         // node and only convertComputeDecl turns it into GLSL.
         return parseSharedDecl();
     }
+    if (match(TokenType::UniformBlock)) {
+        // Phase 3.4: top-level uniform buffer object. The dispatcher
+        // here catches `uniformblock` anywhere (including inside a
+        // material body by mistake); the parser doesn't enforce
+        // top-level-only placement, but the IRGenerator handles UBO
+        // decls only at the program-root scope — anything inside a
+        // material body silently lowers to nothing (no code path
+        // walks it). Tests that want UBO at the program root simply
+        // place it next to material / compute.
+        return parseUniformBlockDecl();
+    }
     if (match(TokenType::Texture2D)) {
         return parseTextureDecl();
     }
@@ -583,6 +594,42 @@ std::unique_ptr<Stmt> Parser::parseSharedDecl() {
     }
     match(TokenType::Semicolon);  // ';' is optional (Python-like)
     return std::make_unique<SharedDecl>(elementType.lexeme, name.lexeme, size);
+}
+
+// Phase 3.4: parse a top-level uniform buffer object (GLSL UBO).
+//
+//   uniformblock Camera {
+//       vec3 position
+//       float fov
+//   }
+//
+// The block name doubles as the instance name (GLSL convention):
+// inside shader bodies, fields are accessed as `Camera.position` (a
+// regular MemberExpr). Each field is a bare `<type> <name>` line
+// (the `uniform` keyword prefix is not repeated — it's implicit
+// because we're inside a uniform block). Trailing `;` on each field
+// is optional (Phoskia Python-like convention).
+//
+// The parser doesn't enforce top-level-only placement; UBO is
+// semantically a program-scope construct. The IRGenerator handles
+// UBO decls only at the program-root scope — anything inside a
+// material body silently lowers to nothing (no code path walks it).
+std::unique_ptr<Stmt> Parser::parseUniformBlockDecl() {
+    Token name = consumeName("Expected uniform block name");
+    consume(TokenType::LeftBrace, "Expected '{' before uniform block body");
+    std::vector<UniformBlockField> fields;
+    while (!check(TokenType::RightBrace) && !isAtEnd()) {
+        // Each field: <type> <name> ';' (optional)
+        // The `type` token must be an Identifier (covers builtin
+        // scalar / vector names that were demoted from keywords in
+        // Phase 2 Step 5 — see design.md §11.1).
+        Token fieldType = consumeName("Expected uniform block field type");
+        Token fieldName = consumeName("Expected uniform block field name");
+        fields.push_back({fieldType.lexeme, fieldName.lexeme});
+        match(TokenType::Semicolon);  // ';' is optional (Python-like)
+    }
+    consume(TokenType::RightBrace, "Expected '}' after uniform block body");
+    return std::make_unique<UniformBlockDecl>(name.lexeme, std::move(fields));
 }
 
 std::unique_ptr<Stmt> Parser::parseShaderParam(ShaderParam::Direction dir) {

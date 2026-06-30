@@ -217,7 +217,7 @@ public:
     // Read → `StructuredBuffer<T>` and ReadWrite → `RWStructuredBuffer<T>`.
     enum class StorageAccess : uint8_t { Read, ReadWrite };
 
-    enum class Kind : uint8_t { Uniform, Property, Texture, Storage, Shared };
+    enum class Kind : uint8_t { Uniform, Property, Texture, Storage, Shared, UniformBlock };
 
     Kind kind;
     std::string name;
@@ -244,6 +244,18 @@ public:
     // scalar / vector (float / int / uint / vec3 / etc.).
     std::shared_ptr<Type> sharedElementType;      // non-null only when kind == Shared
     int sharedSize = 0;                          // only when kind == Shared
+
+    // === UniformBlock (Phase 3.4) ===
+    // Top-level UBO. Field vectors mirror the AST field order (so
+    // backends can emit `T0 f0; T1 f1;` byte-equal). `uboBinding` is
+    // assigned by the IRGenerator via an auto-incrementing slot
+    // counter; binding numbers are stable across the same source
+    // (declaration order determines slot 0, 1, 2, ...). Server-side
+    // std140 sizeof/alignment is deferred to Phase 5+ — Phase 3.4
+    // trusts the GLSL compiler to compute the layout.
+    std::vector<std::shared_ptr<Type>> uboFields;     // only when kind == UniformBlock
+    std::vector<std::string>          uboFieldNames;  // parallel to uboFields
+    int uboBinding = -1;                              // only when kind == UniformBlock
 
     IRDeclaration() : kind(Kind::Uniform) {}
 };
@@ -319,6 +331,13 @@ public:
 struct IRProgram {
     std::vector<std::unique_ptr<IRMaterialDecl>> materials;
     std::vector<std::unique_ptr<IRComputeDecl>> computes;
+    // Phase 3.4: top-level uniform buffer objects. Each entry is an
+    // IRDeclaration with kind=UniformBlock. The IRGenerator walks
+    // these once at conversion time to emit `layout(std140, binding = N)
+    // uniform Name { ... } Name;` lines into every shader stage that
+    // uses the block (Phase 3.4: emit into every vs/fs/cs — GLSL
+    // allows the same block in multiple stages).
+    std::vector<std::unique_ptr<IRDeclaration>> uniformBlocks;
     // Non-fatal diagnostics from IR generation (e.g. "could not infer
     // type for X; defaulting to vec4"). Backends can ignore these;
     // callers can surface them via CompileResult.
@@ -372,6 +391,14 @@ private:
 
     // Warnings accumulated during generation.
     std::vector<std::string> _warnings;
+
+    // Phase 3.4: UBO binding slot counter. Reset to 0 at the start of
+    // every generate() call. Bumped once per UniformBlockDecl seen
+    // at program-root scope; the resulting slot number becomes the
+    // IRDeclaration's uboBinding. The counter is a per-program
+    // monotonically increasing integer (no reuse of released slots —
+    // GLSL doesn't need that today).
+    int nextBinding_ = 0;
 
     // Caller-supplied TypeEnvironment (from SemanticAnalyzer); nullptr
     // means "no env — fall back to running TypeInference per expression".

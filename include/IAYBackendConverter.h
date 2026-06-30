@@ -31,6 +31,13 @@ struct BackendUniformInfo {
     std::string type;
     BackendUniformInfo() = default;
     BackendUniformInfo(std::string n, std::string t) : name(std::move(n)), type(std::move(t)) {}
+    // Phase 3.4: if this uniform is a field of a UBO, `blockName`
+    // and `blockBinding` identify the parent block. Empty string /
+    // -1 when the uniform is a plain `uniform T x;` (legacy shape).
+    // Server-side std140 offsets are deferred to Phase 5+ — HLSL
+    // cbuffer packoffset is the only place we'd need them.
+    std::string blockName;
+    int blockBinding = -1;
 };
 
 struct BackendTextureInfo {

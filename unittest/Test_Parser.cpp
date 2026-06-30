@@ -273,6 +273,88 @@ TEST_CASE(shared_non_integer_size_is_error) {
     CHECK(parser.hasErrors());
 }
 
+// ===== Phase 3.4: uniform block (UBO) =====
+
+TEST_CASE(uniformblock_keyword_recognized) {
+    // `uniformblock` must be a dedicated TokenType, not Identifier —
+    // the parser dispatch relies on it to route to parseUniformBlockDecl.
+    Lexer lexer("uniformblock Camera { vec3 pos }");
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    CHECK(tokens[0].type == TokenType::UniformBlock);
+    CHECK(tokens[0].lexeme == "uniformblock");
+}
+
+TEST_CASE(parse_uniformblock_minimal) {
+    const char* src = R"(
+        uniformblock Camera {
+            vec3 position
+            float fov
+        }
+        material P {
+            vertex { return vec4(0.0) }
+            fragment { return vec4(1.0) }
+        }
+    )";
+    auto prog = parseSource(src);
+    CHECK(prog != nullptr);
+    // UBO is a top-level decl; it sits before the material.
+    CHECK(prog->declarations.size() == 2);
+    auto* ub = dynamic_cast<UniformBlockDecl*>(prog->declarations[0].get());
+    CHECK(ub != nullptr);
+    CHECK(ub->name == "Camera");
+    CHECK(ub->fields.size() == 2);
+    CHECK(ub->fields[0].type == "vec3");
+    CHECK(ub->fields[0].name == "position");
+    CHECK(ub->fields[1].type == "float");
+    CHECK(ub->fields[1].name == "fov");
+}
+
+TEST_CASE(parse_uniformblock_with_semicolons) {
+    // Variant: each field has a trailing `;`. The parser treats `;`
+    // as optional, so this should parse identically to the
+    // semicolon-less form above.
+    const char* src = R"(
+        uniformblock Camera {
+            vec3 position;
+            float fov;
+        }
+    )";
+    auto prog = parseSource(src);
+    auto* ub = dynamic_cast<UniformBlockDecl*>(prog->declarations[0].get());
+    CHECK(ub != nullptr);
+    CHECK(ub->fields.size() == 2);
+    CHECK(ub->fields[0].name == "position");
+    CHECK(ub->fields[1].name == "fov");
+}
+
+TEST_CASE(parse_uniformblock_with_uint_field) {
+    // uint is a Phase 3.3 Block 1 builtin. UBO accepts it as a
+    // field type just like float / vec3.
+    const char* src = R"(
+        uniformblock Stats {
+            uint count
+            float mean
+        }
+    )";
+    auto prog = parseSource(src);
+    auto* ub = dynamic_cast<UniformBlockDecl*>(prog->declarations[0].get());
+    CHECK(ub != nullptr);
+    CHECK(ub->fields[0].type == "uint");
+    CHECK(ub->fields[0].name == "count");
+}
+
+TEST_CASE(parse_uniformblock_missing_closing_brace) {
+    // No closing `}` — parser must report an error.
+    const char* src = "uniformblock Camera { vec3 pos";
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    parser.parse();
+    CHECK(parser.hasErrors());
+}
+
 TEST_CASE(compute_missing_brace_is_error) {
     // No closing '}' — the parser must report a structural error
     // rather than silently accept the partial program.

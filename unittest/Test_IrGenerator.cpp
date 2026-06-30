@@ -254,4 +254,85 @@ TEST_CASE(ir_compute_shared_decl_lowers_to_shared_kind) {
     CHECK(prim->primitive() == PrimitiveType::Float);
 }
 
+// ===== Phase 3.4: uniform block (UBO) =====
+TEST_CASE(ir_uniformblock_lowers_with_field_types) {
+    // `uniformblock Camera { vec3 position; float fov; uint flags; }`
+    // produces an IRProgram::uniformBlocks entry with one IRDeclaration
+    // whose kind=UniformBlock. Field types resolve through the
+    // lexemeToType table — vec3 → VectorType(Float,3), float →
+    // Float, uint → Uint (Phase 3.3 Block 1).
+    auto ir = generateIR(R"(
+        uniformblock Camera {
+            vec3 position
+            float fov
+            uint flags
+        }
+        material P { vertex { } fragment { } }
+    )");
+    CHECK(ir.uniformBlocks.size() == 1);
+    const auto& decl = ir.uniformBlocks.front();
+    CHECK_NOT_NULL(decl.get());
+    CHECK(decl->kind == IRDeclaration::Kind::UniformBlock);
+    CHECK(decl->name == "Camera");
+    CHECK(decl->uboFields.size() == 3);
+    CHECK(decl->uboFieldNames.size() == 3);
+    CHECK(decl->uboFieldNames[0] == "position");
+    CHECK(decl->uboFieldNames[1] == "fov");
+    CHECK(decl->uboFieldNames[2] == "flags");
+    // vec3 → VectorType(Float, 3)
+    auto vec3 = std::dynamic_pointer_cast<VectorType>(decl->uboFields[0]);
+    CHECK_NOT_NULL(vec3.get());
+    CHECK(vec3->elementType() == PrimitiveType::Float);
+    CHECK(vec3->dimension() == 3);
+    // float → Float
+    auto flt = std::dynamic_pointer_cast<PrimitiveType_>(decl->uboFields[1]);
+    CHECK_NOT_NULL(flt.get());
+    CHECK(flt->primitive() == PrimitiveType::Float);
+    // uint → Uint
+    auto u = std::dynamic_pointer_cast<PrimitiveType_>(decl->uboFields[2]);
+    CHECK_NOT_NULL(u.get());
+    CHECK(u->primitive() == PrimitiveType::Uint);
+}
+
+TEST_CASE(ir_uniformblock_binding_auto_increments) {
+    // Two UBOs in declaration order: Camera gets binding 0, Lighting
+    // gets binding 1. The IRGenerator's nextBinding_ counter advances
+    // once per UBO at program-root scope; reset to 0 per generate()
+    // call so the numbers are stable across re-runs.
+    auto ir = generateIR(R"(
+        uniformblock Camera {
+            vec3 position
+        }
+        uniformblock Lighting {
+            vec3 ambient
+        }
+        material P { vertex { } fragment { } }
+    )");
+    CHECK(ir.uniformBlocks.size() == 2);
+    CHECK(ir.uniformBlocks[0]->name == "Camera");
+    CHECK(ir.uniformBlocks[0]->uboBinding == 0);
+    CHECK(ir.uniformBlocks[1]->name == "Lighting");
+    CHECK(ir.uniformBlocks[1]->uboBinding == 1);
+}
+
+TEST_CASE(ir_uniformblock_unknown_field_type_warns) {
+    // An unrecognised field-type lexeme (e.g. `struct Particle`)
+    // produces a non-fatal warning and falls back to vec4. We
+    // can't check the warning string here (it's only collected on
+    // IRProgram::warnings which the test framework doesn't print
+    // by default), but the field is still lowered — the block
+    // doesn't error out and just emits `vec4 particle;` in GLSL.
+    auto ir = generateIR(R"(
+        uniformblock Foo {
+            Particle particle
+        }
+    )");
+    CHECK(ir.uniformBlocks.size() == 1);
+    auto vec4 = std::dynamic_pointer_cast<VectorType>(ir.uniformBlocks.front()->uboFields[0]);
+    CHECK_NOT_NULL(vec4.get());
+    CHECK(vec4->elementType() == PrimitiveType::Float);
+    CHECK(vec4->dimension() == 4);
+    CHECK_FALSE(ir.warnings.empty());  // at least one warning
+}
+
 }
