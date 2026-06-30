@@ -844,6 +844,99 @@ bgfx::compileGLSLShader(opts, /*version*/0, codeString, &writer, &msgWriter);
 - 路线 B 升级门槛低（仅需把 `thirdParty/bgfx/tools/shaderc/` + `bx/` 纳入 CMake），适合"想脱 spawn 但仍用 bgfx 编译栈"的中间阶段。
 - 路线 C 是 Phase 3 长期目标。
 
+### 8.4 Binary 输出 API — `.sc` 作为内部中间产物（Phase 3.6 提案）
+
+**问题**：现状（Phase 3.5 及之前）用户调用 `Phoskia::compile(src)` 后拿到 `CompileResult { .success, .output: std::string, .errors, .uniforms, .textures }`。其中 `.output` 是个**拼接的 .sc 文本**（`// === material 0 vs === ...` + `// === material 0 fs === ...` 加上 `// === compute 0 cs === ...`）。frontend 必须自己 `string -> filesystem` → 再 spawn `shaderc.exe -f x.sc -o x.bin` → 再 wire binary 到 bgfx。
+
+这意味着 frontend **看得到 `.sc`** —— 一个本来应该藏在 backend 内部的中间产物。用户视角：
+
+```
+Phoskia (源码)  ── compile() ──>  .sc (frontend 必须存盘 + 调 shaderc)
+                                    │
+                                    └─ shaderc.exe ──>  .bin (frontend 拿到)
+```
+
+跟理想模型差距明显：
+
+```
+Phoskia (源码)  ── compile() ──>  .bin (frontend 拿到)
+```
+
+`.sc` 是**必须存在**的中间产物（shaderc 输入要求），但**不应该出现在 frontend 视野里**。
+
+**Phase 3.6 目标**：把 shaderc 调用内化进 AYBGFXConverter，frontend 一次调用直接拿到 `.bin` bytes。`.sc` 在 debug 模式（`AY_PHOSKIA_DUMP_SC=1`）才落盘，平时永远只在内存。
+
+**API 形状**：
+
+```cpp
+// 当前（Phase 3.5）frontend 视角
+Phoskia phoskia;
+auto result = phoskia.compile(src);
+//   result.output 是 .sc 文本，frontend 自己存盘调 shaderc
+//   result.uniforms / textures 是 binding 元数据（保留）
+
+// Phase 3.6 frontend 视角（提议）
+auto program = phoskia.compileToProgram(src);  // 新方法
+//   program.vsBin / fsBin / csBin : std::vector<uint8_t>  (frontend 直接喂 bgfx::createShader)
+//   program.uniformBlocks / storageBuffers / uniforms / textures：binding 元数据（保留）
+//   不再有 .sc 字串出现在 frontend
+```
+
+**Backend 内部细节**（用户看不到）：
+
+```
+AYBGFXConverter::convertBGFX(program)
+    ↓ emit .sc 字符串（内存中）
+    ↓ AYShadercDriver::compileToBytes(scStr, type, platform, profile)
+    ↓ 沙盒 spawn shaderc.exe（路线 A）OR in-process (路线 B; 仍选定路线 A：解耦 + 零额外链接)
+    ↓ 返回 .bin bytes
+```
+
+**Phase 3.6 边界**：
+
+| 在 Phase 3.6 | 不在 Phase 3.6 |
+|---|---|
+| `.sc` 字符串从 `BGFXConvertResult` 公开字段移走 | bgfx::createShader / createProgram 调用 |
+| shaderc 调用内化进 `AYBGFXConverter::compileToBinary()` | bgfx wire-up（frontend 拿 bin 后调 bgfx API） |
+| `AY_PHOSKIA_DUMP_SC=1` 控制 .sc 落盘 | 与具体 frontend (AYRenderer) 集成 |
+| 测试 plumbing 从 "手工写 .sc 盘 → spawn shaderc 读 .sc" 改为 "emit in-memory → driver 调 shaderc" | WGSL / HLSL backend 的 binary 输出 |
+
+**为什么 Phase 3.6 仍走路线 A**（spawn shaderc.exe 而不是 in-process）：
+
+- Phase 1 / Phase 2 已写好 spawn plumbing（Test_ShaderCompile 验过跨平台），内化只是把 plumbing 包进 backend
+- 路线 B（in-process）需要拉 bx + glsl-optimizer + DXC/glslang 动态库，~30+ 头文件污染 — 等真有 hot-path 性能需求再考虑
+- 路线 C（每个 backend 直调原生 API）独立 Phase 5+ 工作
+
+**Frontend 双模接口**：
+
+```cpp
+struct CompileOptions {
+    // ... 已有 fields
+    bool dumpIntermediate = false;     // 显式同意才写 .sc 到 temp dir
+    std::string dumpDir;              // 默认 = tempdir()/phoskia-sc/
+};
+
+Phoskia phoskia;
+auto program = phoskia.compileToProgram(src, opts);
+// program.vsBin / fsBin / csBin 总是 fill（成功时）
+// .sc 默认不落盘；opts.dumpIntermediate == true 时写到 opts.dumpDir/<name>.sc
+```
+
+**测试 hygiene**：当前 `Test_ShaderCompile` 把 .sc 写盘 → spawn shaderc 读盘的模式重构后是"内调 `AYShadercDriver` 直接编 `.sc` → 拿 `.bin`"，少一个 IO 层。
+
+**Phase 3.6 step list**（§14.3 维护）：
+
+| Block | 范围 | 估算 |
+|---|---|---|
+| 3.6-A | **design.md** §8.4（本文档，本节） | 0.25 天 ✅ |
+| 3.6-B | `AYShadercDriver` 抽象 + `AYBGFXConverter::compileToBinary()` 内化 shaderc 调用；frontend `compileToProgram()` 暴露 binary API；`.sc` 字段从 `BGFXConvertResult` 公开移到 private（debug dump 走 `opts.dumpIntermediate`） | 1.5-2 天 |
+| 3.6-C | Test_ShaderCompile 重 plumbing 用 `AYShadercDriver`（少一层 IO） | 1 天 |
+| 3.6-D | `AY_PHOSKIA_DUMP_SC=1` env 解析 + 实现 + unit tests | 0.25 天 |
+| **总计** | **3-3.5 天** | — |
+
+**验收**：frontend 能写 `phoskia.compileToProgram(src).vsBin` 一行拿到 binary，完全不知道 `.sc` 存在过。
+
+
 ### 新增后端步骤
 
 1. 实现 `IAYBackendConverter` 接口
@@ -1190,7 +1283,19 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 
 ### 14.3 待办清单（按优先级排序）
 
-#### 🟢 Phase 3.6 — Compute + Texture 补完（**第一优先**，覆盖 90% 真实项目需求）
+#### 🔴 Phase 3.6 — 产品化收尾：`.sc` 作为 backend 内部细节（**最高优先**，用户已 sign-off 2026-06-30）
+
+把 `.sc` 字符串从 frontend API 移走；shaderc 调用内化进 `AYBGFXConverter`；frontend 一次 `compileToProgram(src)` 拿到 `.bin` bytes。详见 §8.4。
+
+| Block | 范围 | 估算 |
+|---|---|---|
+| 3.6-A | design.md §8.4（本文） | 0.25 天 ✅ |
+| 3.6-B | `AYShadercDriver` 抽象 + `AYBGFXConverter::compileToBinary()` 内化 shaderc 调用 + `.sc` 字段从公开移到 private + frontend `compileToProgram()` 暴露 binary API | 1.5-2 天 |
+| 3.6-C | Test_ShaderCompile plumbing 重设计（in-memory `.sc` → driver → bin，少写盘层） | 1 天 |
+| 3.6-D | `AY_PHOSKIA_DUMP_SC=1` 落盘 .sc 到 temp dir（默认不写盘）| 0.25 天 |
+| **总计** | — | **3-3.5 天** |
+
+#### 🟢 Phase 3.7 — Compute + Texture 补完（**第二优先**，覆盖 90% 真实项目需求）
 
 | # | 能力 | 表面语法 | emit | 估算 | 依赖 |
 |---|---|---|---|---|---|
@@ -1202,7 +1307,7 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 
 合计：~5 天。**打开 PBR 后处理 / 流体模拟 / GPGPU 通用计算 / 法线贴图等关键场景**。
 
-#### 🟡 Phase 3.7 — 高级渲染特性（第二优先，覆盖剩余 10%）
+#### 🟡 Phase 3.8 — 高级渲染特性（第三优先，覆盖剩余 10%）
 
 | # | 能力 | 表面语法 | emit | 估算 | 依赖 |
 |---|---|---|---|---|---|
@@ -1214,11 +1319,11 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 
 合计：~4.5 天。**打开 deferred shading / G-buffer / 高级 PBR / GPU-driven culling 等场景**。
 
-#### 🟠 Phase 3.8 — 工程质量（第三优先，跨阶段）
+#### 🟠 Phase 3.8 — 工程质量（第四优先，跨阶段）
 
 | # | 能力 | 估算 | 依赖 |
 |---|---|---|---|
-| 11 | **UBO 用户显式 binding**（`uniformblock Camera { ... } binding 0;`） | 0.5 天 | — |
+| ~~11~~ | ~~**UBO 用户显式 binding**（`uniformblock Camera { ... } binding 0;`）~~ —— **Phase 3.5-B 已做**（commit 063664f） | — | — |
 | 12 | **UBO field strict type-check**（注册 block 为 StructType，inferMemberExpr 支持 struct） | 1.5 天 | 候选 14 |
 | 13 | **SSA IR + 跨后端优化**（constant folding / DCE） | 7-10 天 | — |
 | 14 | **struct 类型系统**（`struct Light { vec3 dir; vec3 color; }`） | 3-4 天 | 候选 12 |
