@@ -18,14 +18,22 @@
 #include "AYShadercDriver.h"  // for AYShadercDriver::clearDefaultExecutable()
 #include "AYTest.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <sys/stat.h>
 
 #ifdef _WIN32
 #  define PUTENV_S(name, val) _putenv_s(name, val)
+#  include <windows.h>
+#  include <process.h>  // getpid
+#  define GETPID() _getpid()
 #else
 #  define PUTENV_S(name, val) setenv(name, val, 1)
+#  include <sys/types.h>
+#  include <unistd.h>
+#  define GETPID() ::getpid()
 #endif
 
 using namespace ayt::shader;
@@ -63,6 +71,33 @@ void clearPhase36Env() {
 // env-var precedence results.)
 void clearShadercDefault() {
     AYShadercDriver::clearDefaultExecutable();
+}
+
+// stat()-based file existence check. Avoids `<filesystem>` for the
+// same reason Test_CompileToBinary.cpp / Test_ShadercDriver.cpp do.
+inline bool fileExists(const std::string& p) {
+    if (p.empty()) return false;
+    struct stat st;
+    return ::stat(p.c_str(), &st) == 0;
+}
+
+// Pick a unique per-process dump dir under temp; concurrent CI
+// runs don't clash because the dir name is pid-stamped. Caller is
+// responsible for the lifetime (usually a single test case).
+std::string shadercTestDumpDir(const char* tag) {
+    char buf[512];
+#ifdef _WIN32
+    const char* t = std::getenv("TEMP");
+    if (!t) t = "C:\\Temp";
+    std::snprintf(buf, sizeof(buf), "%s\\phoskia_test_%u_%s",
+                  t, static_cast<unsigned>(GETPID()), tag);
+#else
+    const char* t = std::getenv("TMPDIR");
+    if (!t) t = "/tmp";
+    std::snprintf(buf, sizeof(buf), "%s/phoskia_test_%u_%s",
+                  t, static_cast<unsigned>(GETPID()), tag);
+#endif
+    return std::string(buf);
 }
 
 } // namespace
@@ -209,6 +244,91 @@ TEST_CASE(env_AY_PHOSKIA_KEEP_SOURCES_zero_opts_false_is_off) {
     CHECK(program.sources.empty());
 }
 
+// ----- AY_PHOSKIA_DUMP_SC precedence tests (mirror the KEEP_SOURCES
+// ----- ones above; covers the parallel toggle for the dump dir).
+//
+// All four combinations of {opts, env} × {on, off} are tested. The
+// contract is true-wins OR: any source wanting dumpIntermediate ON
+// flips it ON. Same shape as keepSources.
+
+TEST_CASE(env_AY_PHOSKIA_DUMP_SC_overrides_opts_false) {
+    clearPhase36Env();
+    clearShadercDefault();
+    PUTENV_S("AY_PHOSKIA_DUMP_SC", "1");
+
+    Compiler c;
+    CompileOptions opts;
+    opts.dumpIntermediate = false;
+    opts.dumpDir = shadercTestDumpDir("dump_env_off");
+    CompiledShaderProgram program = c.compileToProgram(kMinimalUnlit, opts);
+
+    // Even though opts.dumpIntermediate=false, env=1 forces ON.
+    // The dump must happen on the happy path. On the shaderc-
+    // missing path `program.success` is false and we don't assert
+    // the file exists (the test can't run end-to-end).
+    if (!program.success) {
+        std::cerr << "[dump_sc test] SKIP: shaderc not available.\n";
+        return;
+    }
+    CHECK(fileExists(opts.dumpDir + "/vs_0.sc"));
+    CHECK(fileExists(opts.dumpDir + "/fs_0.sc"));
+}
+
+TEST_CASE(env_AY_PHOSKIA_DUMP_SC_combines_with_opts_true) {
+    clearPhase36Env();
+    clearShadercDefault();
+    PUTENV_S("AY_PHOSKIA_DUMP_SC", "1");
+
+    Compiler c;
+    CompileOptions opts;
+    opts.dumpIntermediate = true;
+    opts.dumpDir = shadercTestDumpDir("dump_both_on");
+    CompiledShaderProgram program = c.compileToProgram(kMinimalUnlit, opts);
+
+    if (!program.success) {
+        std::cerr << "[dump_sc test] SKIP: shaderc not available.\n";
+        return;
+    }
+    CHECK(fileExists(opts.dumpDir + "/vs_0.sc"));
+}
+
+TEST_CASE(env_AY_PHOSKIA_DUMP_SC_zero_opts_true_wins) {
+    clearPhase36Env();
+    clearShadercDefault();
+    PUTENV_S("AY_PHOSKIA_DUMP_SC", "0");
+
+    Compiler c;
+    CompileOptions opts;
+    opts.dumpIntermediate = true;  // explicit ON
+    opts.dumpDir = shadercTestDumpDir("dump_env_zero_opts_on");
+    CompiledShaderProgram program = c.compileToProgram(kMinimalUnlit, opts);
+
+    if (!program.success) {
+        std::cerr << "[dump_sc test] SKIP: shaderc not available.\n";
+        return;
+    }
+    // opts wins because the contract is true-wins OR.
+    CHECK(fileExists(opts.dumpDir + "/vs_0.sc"));
+}
+
+TEST_CASE(env_AY_PHOSKIA_DUMP_SC_zero_opts_false_is_off) {
+    clearPhase36Env();
+    clearShadercDefault();
+    PUTENV_S("AY_PHOSKIA_DUMP_SC", "0");
+
+    Compiler c;
+    CompileOptions opts;
+    opts.dumpIntermediate = false;
+    opts.dumpDir = shadercTestDumpDir("dump_both_off");
+    CompiledShaderProgram program = c.compileToProgram(kMinimalUnlit, opts);
+
+    if (!program.success) {
+        std::cerr << "[dump_sc test] SKIP: shaderc not available.\n";
+        return;
+    }
+    CHECK(!fileExists(opts.dumpDir + "/vs_0.sc"));
+}
+
 // Parse error surfaces in program.errors without throwing.
 TEST_CASE(compileToProgram_parser_error_surfaces) {
     clearPhase36Env();
@@ -245,6 +365,37 @@ TEST_CASE(compileToProgram_return_value_matches_out_param) {
         CHECK(viaReturn.vsBin.size() == viaOutParam.vsBin.size());
         CHECK(viaReturn.fsBin.size() == viaOutParam.fsBin.size());
     }
+}
+
+// Phase 3.6 Commit 6: when opts.dumpIntermediate=true AND a dump
+// dir is supplied, the .sc files land on disk in dumpDir. SKIPs
+// the file-existence check on the shaderc-missing path because
+// the dump branch only fires when shaderc's compileStage succeeded.
+//
+// This is the disk-side counterpart of Test_CompileToBinary.cpp's
+// compileToBinary_dump_intermediate_writes_files but at the
+// Compiler (frontend) level so the env-var chain has a regression
+// guard.
+TEST_CASE(compileToProgram_respects_dump_dir) {
+    clearPhase36Env();
+    clearShadercDefault();
+
+    Compiler c;
+    CompileOptions opts;
+    opts.dumpIntermediate = true;
+    opts.dumpDir = shadercTestDumpDir("respects_dump_dir");
+
+    CompiledShaderProgram program = c.compileToProgram(kMinimalUnlit, opts);
+
+    if (!program.success) {
+        std::cerr << "[dump_dir test] SKIP: shaderc not available, "
+                     "opt-in dump path not exercised.\n";
+        return;
+    }
+    // Happy path: dumpDir is created and the .sc files exist.
+    CHECK(fileExists(opts.dumpDir + "/vs_0.sc"));
+    CHECK(fileExists(opts.dumpDir + "/fs_0.sc"));
+    CHECK(fileExists(opts.dumpDir + "/varying.def.sc"));
 }
 
 TEST_SUITE_END
