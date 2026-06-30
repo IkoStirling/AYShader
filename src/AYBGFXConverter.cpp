@@ -13,8 +13,11 @@
 #include "AYAst.h"
 #include "AYType.h"
 #include "AYTypeInference.h"  // Phase 2: let stmt needs GLSL type prefix.
+#include <cstdio>
+#include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <sys/stat.h>
 #include <unordered_map>
 
 namespace ayt::shader
@@ -655,6 +658,204 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
     // convertComputeDecl (one BGFXStorageBuffer per storage decl,
     // with binding resolved including auto-assigned slots).
     out.storageBuffers = _storageBuffers;
+}
+
+// Phase 3.6 productization entry point. See AYBGFXConverter.h for the
+// full contract. Implementation flow:
+//   1. Run convertBGFX() to populate out.materialFiles / .computeFiles
+//      and the binding metadata. Bail with success=false on any
+//      convertBGFX error (duplicate bindings, unknown exceptions).
+//   2. Lazy-init the cached AYShadercDriver (first call only). If
+//      shaderc is missing, the driver ctor throws std::runtime_error;
+//      we catch and surface it in out.errors so the frontend never
+//      sees an exception.
+//   3. For each material: compile vs (--type vertex) and fs
+//      (--type fragment --varyingdef). Read the resulting .bin bytes
+//      into out.vsBin / out.fsBin.
+//   4. For each compute: compile cs (--type compute). Bytes go into
+//      out.csBin.
+//   5. If opts.keepSources: fill out.sources with the .sc text per
+//      stage (same keying as the plan in design.md §8.4).
+//   6. If opts.dumpIntermediate: write each .sc file to
+//      opts.dumpDir/<key>.sc. Failures here are non-fatal — logged
+//      to out.errors but success stays true if shaderc succeeded.
+//
+// We do NOT re-run emit() to recover the .sc text — out.materialFiles
+// already carries the exact strings convertBGFX emitted (the same
+// strings the legacy BGFXShaderFiles.vs/fs/varyingDef fields used to
+// expose). Reading them is cheaper than a second convertBGFX pass and
+// guarantees bit-identical input to shaderc.
+namespace {
+
+// stat()-based existence check (same rationale as AYShadercDriver.cpp).
+bool dirExists(const std::string& p) {
+    if (p.empty()) return false;
+    struct stat st;
+    return ::stat(p.c_str(), &st) == 0;
+}
+
+// Best-effort write of one .sc debug file. Failures surface in
+// program.warnings (not errors) — the .bin bytes were already produced
+// successfully and dump failures shouldn't poison the success flag.
+void dumpScFile(const std::string& dumpDir,
+                const std::string& key,
+                const std::string& source,
+                std::vector<std::string>& warnings) {
+    const std::string path = dumpDir + "/" + key;
+    std::ofstream f(path, std::ios::binary);
+    if (!f) {
+        warnings.push_back("dumpIntermediate: cannot write " + path +
+                           " (does dumpDir exist?)");
+        return;
+    }
+    f << source;
+}
+
+} // namespace
+
+void AYBGFXConverter::compileToBinary(const phoskia::ir::IRProgram& program,
+                                      const BGFXCompileOptions& opts,
+                                      CompiledShaderProgram& out) {
+    out = CompiledShaderProgram{};
+
+    // 1) Convert .sc sources via the existing path.
+    BGFXConvertResult conv;
+    convertBGFX(program, conv);
+    out.uniformBlocks   = conv.uniformBlocks;
+    out.storageBuffers  = conv.storageBuffers;
+    out.uniforms        = conv.uniforms;
+    out.textures        = conv.textures;
+    if (!conv.success) {
+        out.errors = conv.errors;
+        out.success = false;
+        return;
+    }
+
+    // 2) Lazy-init the shaderc driver. If shaderc isn't on disk the
+    //    ctor throws std::runtime_error — catch and surface.
+    if (!_driver) {
+        try {
+            _driver = std::make_unique<AYShadercDriver>();
+        } catch (const std::exception& e) {
+            out.errors.push_back(std::string("AYShadercDriver: ") + e.what());
+            out.success = false;
+            return;
+        }
+    }
+
+    // 3) Compile per-stage. Failures short-circuit (shaderc errors
+    //    are usually diagnostic enough — partial .bin bytes would
+    //    be misleading to ship to the frontend).
+    auto compileStage = [&](const std::string& stage,
+                            const std::string& source,
+                            const std::string& varyingdefSource,
+                            const std::string& outputName,
+                            std::vector<uint8_t>& dst) {
+        ShaderCompileRequest req;
+        req.scSource        = source;
+        req.stage           = stage;
+        req.varyingdefSource = varyingdefSource;
+        req.platform        = opts.platform;
+        req.profile         = opts.profile;
+        req.includeDirs     = opts.includeDirs;
+        req.defines         = opts.defines;
+        req.outputName      = outputName;
+        ShaderCompileResult r = _driver->compile(req);
+        if (!r.ok) {
+            out.errors.push_back("shaderc (" + outputName + "): " + r.stderrText);
+            return false;
+        }
+        dst = std::move(r.bytes);
+        return true;
+    };
+
+    bool allOk = true;
+
+    // 3a) Materials → vs + fs.
+    //
+    // Note: the current CompiledShaderProgram shape holds one vsBin /
+    // fsBin / csBin per program (not per material). This matches the
+    // locked design in design.md §8.4 and the e2e test cardinality
+    // (one material per test). Multi-material sources compile every
+    // material's vs/fs and only the LAST material's bytes are kept in
+    // the struct — earlier materials' bytes get overwritten. The
+    // debug `sources` map still carries every material's .sc text, so
+    // no information is lost on the debug path. Phase 4 will revisit
+    // when `bgfx::createProgram` wire-up needs to feed multiple
+    // materials' binaries to bgfx; the likely move is a
+    // vector<vector<uint8_t>> shape. For Commit 2 / 3.6 the single
+    // shape is locked.
+    for (size_t i = 0; i < conv.materialFiles.size(); ++i) {
+        const auto& mf = conv.materialFiles[i];
+        const std::string vsKey = "vs_" + std::to_string(i) + ".sc";
+        const std::string fsKey = "fs_" + std::to_string(i) + ".sc";
+        const std::string vdKey = "varying.def.sc";
+
+        // vs (no varyingdef)
+        if (!compileStage("vertex", mf.vs, "",
+                          "material_" + std::to_string(i) + "_vs",
+                          out.vsBin)) {
+            allOk = false;
+            break;
+        }
+
+        // fs (with varyingdef — bgfx shaderc wants it for fragment stage)
+        if (!compileStage("fragment", mf.fs, mf.varyingDef,
+                          "material_" + std::to_string(i) + "_fs",
+                          out.fsBin)) {
+            allOk = false;
+            break;
+        }
+
+        // 5) In-memory debug sources (only after a successful compile
+        //    of that stage — partial strings on failure are noise).
+        if (opts.keepSources) {
+            out.sources[vsKey] = mf.vs;
+            out.sources[fsKey] = mf.fs;
+            // The varying.def is per-material in the legacy BGFXConvertResult
+            // shape, but the program-level key is shared (single entry,
+            // last material wins if differ — the bgfx varyingdef is per
+            // program by design). Phase 4 may want per-material; for
+            // now keep the historical single-key shape to match the
+            // plan in design.md §8.4.
+            out.sources[vdKey] = mf.varyingDef;
+        }
+
+        // 6) Disk dump (best-effort).
+        if (opts.dumpIntermediate && dirExists(opts.dumpDir)) {
+            dumpScFile(opts.dumpDir, vsKey, mf.vs, out.warnings);
+            dumpScFile(opts.dumpDir, fsKey, mf.fs, out.warnings);
+            if (i == 0) {
+                dumpScFile(opts.dumpDir, vdKey, mf.varyingDef, out.warnings);
+            }
+        }
+    }
+
+    // 3b) Compute → cs. Same single-csBin-per-program limitation.
+    if (allOk) {
+        for (size_t i = 0; i < conv.computeFiles.size(); ++i) {
+            const auto& cf = conv.computeFiles[i];
+            const std::string csKey = "cs_" + std::to_string(i) + ".sc";
+            if (!compileStage("compute", cf.cs, "",
+                              "compute_" + std::to_string(i),
+                              out.csBin)) {
+                allOk = false;
+                break;
+            }
+            if (opts.keepSources) {
+                out.sources[csKey] = cf.cs;
+            }
+            if (opts.dumpIntermediate && dirExists(opts.dumpDir)) {
+                dumpScFile(opts.dumpDir, csKey, cf.cs, out.warnings);
+            }
+        }
+    }
+
+    // Success is determined purely by shaderc producing .bin bytes for
+    // every required stage. DumpIntermediate failures live in
+    // `out.warnings` (separate channel — see dumpScFile() above) so
+    // they don't downgrade success.
+    out.success = allOk;
 }
 
 ConvertResult AYBGFXConverter::convert(const phoskia::ir::IRProgram& program) {
