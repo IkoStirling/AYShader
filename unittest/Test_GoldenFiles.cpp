@@ -157,5 +157,16 @@ TEST_CASE(golden_empty)                  { runOneFixture("empty"); }
 // missing; regenerate with AY_SHADER_REGEN_GOLDEN=1 after an
 // intentional converter change.
 TEST_CASE(golden_compute_minimal)        { runOneFixture("compute_minimal"); }
+// Phase 3.5-A: compute fixture exercising storage decl explicit
+// binding slots. Two storage buffers with explicit bindings 0 and 1;
+// the BGFX backend emits
+//   `layout(std430, binding = 0) buffer inputs { float data[]; } inputs;`
+//   `layout(std430, binding = 1) buffer outputs { float data[]; } outputs;`
+// in the cs output. The .sc baseline is auto-generated on first run if
+// missing; regenerate with AY_SHADER_REGEN_GOLDEN=1 after an
+// intentional converter change.
+TEST_CASE(golden_compute_with_storage_binding) {
+    runOneFixture("compute_with_storage_binding");
+}
 
 TEST_SUITE_END

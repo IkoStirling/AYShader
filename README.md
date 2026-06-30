@@ -27,6 +27,7 @@ AYShader 是 AY Engine 的着色器子系统：接受 **Phoskia** DSL 源码，�
 | Phase 3.2 | Compute 端到端落地（BGFX `.sc` compute emit + storage buffer + thread-id） | ✅ |
 | Phase 3.3 | `[numthreads]` attribute + `uint` builtin + `uvec3` strict + `groupshared` | ✅ |
 | Phase 3.4 | UBO 表面语法（`uniformblock` + `layout(std140, binding = N)` + 全平台 `-p 430`） | ✅ |
+| Phase 3.5-A | Storage binding 表面语法（`storage X : rwstructuredbuffer<T> binding N;` → `layout(std430, binding = N)`） | ✅ |
 | Phase 5+ | HLSL 后端（按需 — DXC 一手质量 / 减体积） | 🅿 暂缓 |
 | Phase 5+ | WGSL 后端（按需 — WebGPU 目标） | 🅿 暂缓 |
 
@@ -45,7 +46,7 @@ cmake --build <build-dir>
 AY_SHADER_REGEN_GOLDEN=1 <build-dir>/AYShader_Test.exe
 ```
 
-最后一次完整跑：**771 / 771 PASS**（截至 Phase 3.4 commit）。
+最后一次完整跑：**837 / 837 PASS**（截至 Phase 3.4 commit）。
 
 ### 测试套件
 
@@ -77,6 +78,7 @@ AY_SHADER_REGEN_GOLDEN=1 <build-dir>/AYShader_Test.exe
 | `pbr_full` | 完整 PBR 演示：2 个 texture、2 个 property、5 个 PBR 内置、clearcoat、IBL diffuse、emission variant |
 | `empty` | 空 vertex/fragment body，fence-only 输出 |
 | `compute_minimal` | Phase 3.2 compute：storage buffer + thread_id + `counters[idx] = counters[idx] + 1`（GPGPU kernel smoke test） |
+| `compute_with_storage_binding` | Phase 3.5-A compute：2 个 storage decl 显式 `binding 0` / `binding 1`，emit `layout(std430, binding = N)` |
 
 ---
 
@@ -131,6 +133,7 @@ compute Increment {                        // 顶层 compute，GPGPU kernel
 
 - **`convertComputeDecl`** — Phoskia compute → BGFX `.sc`（`layout(local_size_x = 64) in;` + `void main() { <body> }`）
 - **`storage NAME : structuredbuffer<T>` / `rwstructuredbuffer<T>`** — GPGPU 存储缓冲声明；GLSL 路径 emit 为 `buffer Name { T data[]; } Name;`（read / read-write 在 GLSL 路径下形态相同，access 字段在 IR 保留供未来 HLSL emitter 区分 `StructuredBuffer<T>` vs `RWStructuredBuffer<T>`）
+- **`storage NAME : rwstructuredbuffer<T> binding N;`** (Phase 3.5-A ✅) — 可选显式 binding 后缀；emit `layout(std430, binding = N) buffer ...;`。无 binding 时按声明顺序自动分配（从 0 起，避开已显式占用的 slot）。duplicate binding 编译期报错
 - **`thread_id` / `group_id` / `dispatch_id`** — 0-arg 内置，返回 `vec3`；分别映射为 `gl_GlobalInvocationID` / `gl_WorkGroupID` / `(gl_NumWorkGroups * gl_WorkGroupID)`
 - **`shaderc --type compute` e2e** — `Test_ShaderCompile.cpp::shaderc_compiles_compute_with_storage_buffer` 跑通整条 Phoskia → BGFX `.sc` → shaderc `.bin` 链路，断言 `.bin` 非空（`bgfx::createProgram(_csh)` 拒收 0 字节 program）
 

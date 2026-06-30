@@ -558,6 +558,67 @@ UBO 块名（`Camera`）和字段（`Camera.position`）**不注册**到 body �
 - HLSL `cbuffer` emit + packoffset layout（Phase 5+）
 - WGSL `@group(0) @binding(0) var<uniform>` 概念映射（Phase 5+ WGSL emitter）
 
+### 6.7.7 Phase 3.5-A — Storage binding 表面语法
+
+#### 表面语法
+
+```phoskia
+compute Foo {
+    storage inputs  : structuredbuffer<float>   binding 0
+    storage outputs : rwstructuredbuffer<int>   binding 1
+    storage debug   : rwstructuredbuffer<int>             // 自动 binding = 2
+
+    let idx = thread_id.x
+    let v = inputs[idx]
+    outputs[idx] = int(v) + 1
+    debug[idx] = 0
+}
+```
+
+可选 `binding <non-negative-int>` 后缀（关键字 `Binding` + 字面 int）。无 binding 的 decl 走"自动分配 slot"路径，从 `max(显式 binding)+1` 起始，避免与显式 slot 撞。
+
+#### emit 形状
+
+```glsl
+layout(std430, binding = 0) buffer inputs { float data[]; } inputs;
+layout(std430, binding = 1) buffer outputs { int data[]; } outputs;
+layout(std430, binding = 2) buffer debug { int data[]; } debug;
+```
+
+`std430` 而不是 `std140`——storage buffer 的 std430 layout 规则对 runtime-sized 数组友好（looser packing）。
+
+#### IR 形状
+
+`IRDeclaration::storageBinding`（int）：`-1` = 无显式 binding（BGFX 自动分配）；`>= 0` = 用户写的字面 slot。
+
+#### 重复 binding 检测
+
+emit 时（`AYBGFXConverter::convertComputeDecl` 入口）扫一遍 compute.declarations：
+
+```cpp
+std::unordered_map<int, std::string> usedBindings;
+for (auto& decl : compute.declarations) {
+    if (decl->storageBinding < 0) continue;
+    auto it = usedBindings.find(decl->storageBinding);
+    if (it != usedBindings.end()) {
+        throw runtime_error("Storage buffer '" + decl->name +
+            "' has duplicate binding " + ...);
+    }
+    usedBindings[decl->storageBinding] = decl->name;
+}
+```
+
+错误冒泡到 `BGFXConvertResult::errors`，frontend 通过 `CompileResult::errors` 暴露。
+
+#### shaderc profile
+
+`layout(std430, binding = N)` 需要 GLSL 4.30+——shaderc 调用继续用 `-p 430`（Phase 3.4 已升过）。本块无需再改 shaderc 调用。
+
+#### 已知 limitation
+
+- 多 compute 共享 binding slot 不做跨 compute 校验——`bgfx::setUniform(handle, ptr, sizeof(buffer))` 在每个 compute 的 dispatch 上独立设置，frontend 责任保证不撞。本编译器只在**同一 compute 内**检测重复。
+- shaderc e2e 在 Linux GLSL 430 已验证 UBO + SSBO 都支持（独立 fixture 编译通过）。
+
 ## 7. 改语法的"链路"
 
 Phoskia 的语法控制在以下 5 个文件里。**改一个语法特性需要同步修改这一组文件**：
@@ -948,6 +1009,11 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 
   - 已知 limitation：UBO 字段 strict type-check 暂不在 Phoskia 端做（`let p = Camera.position` 推断为 TypeVar，emit 透明，shaderc 端做类型检查）。完整 struct 推断留 Phase 4+ 跟 struct 类型系统一起做。
   - 推迟：嵌套 UBO / 用户显式 `binding = N` / `storage` decl 的 binding 语法 / HLSL cbuffer packoffset / WGSL `@group @binding var<uniform>`。
+
+- [x] **Phase 3.5-A Storage binding 落地**（2026-07-01 完成）：`storage X : rwstructuredbuffer<T> binding N;` 可选显式 binding 后缀 + `layout(std430, binding = N) buffer X { T data[]; } X;` emit + 编译期 duplicate binding 校验 + auto-binding 起始点 `max(显式)+1` 防撞 + `BGFXStorageBuffer` binding info 结构 + 新关键字 `Binding`。详见 §6.7.7（待添加）。总测试 837 → 852+。
+
+  - 向后兼容：老 storage decl（无 `binding`）继续走"自动分配 slot 0/1/2/..."路径（Phase 3.5-A 之前的行为），emit 不变。`golden/compute_minimal.phoskia` 字节级不变。
+  - 推迟：UBO 用户显式 `binding = N`（候选 B）/ HLSL `register(t[N])` / WGSL `@group(0) @binding(N)`。
 
 - [ ] IR 设计实现（SSA 形式）
 - [ ] HLSL 后端 (`AYHLSLConverter`) — **Phase 5+ 按需**，当前不计划。仅在项目要求 DXC 一手质量或要摆脱 shaderc 时再做。

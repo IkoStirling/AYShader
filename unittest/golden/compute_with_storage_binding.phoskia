@@ -1,0 +1,6 @@
+compute Move {
+    storage inputs  : structuredbuffer<float>   binding 0
+    storage outputs : rwstructuredbuffer<float> binding 1
+    let idx = thread_id.x
+    outputs[idx] = inputs[idx] + 1.0
+}
