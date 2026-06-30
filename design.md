@@ -531,7 +531,7 @@ layout(std140, binding = 0) uniform Camera {
 
 `IRProgram` 加 `std::vector<std::unique_ptr<IRDeclaration>> uniformBlocks;`。每个 entry 是 `IRDeclaration { kind=UniformBlock, name, uboFields: vector<shared_ptr<Type>>, uboFieldNames: vector<string>, uboBinding: int }`。
 
-`IRGenerator` 内 `nextBinding_` 计数器：`generate()` 入口 reset 0，每次见到 `UniformBlockDecl` 自增。Binding slot 0..N 按声明顺序稳定分配。
+`IRGenerator` 内 `nextBinding_` 计数器：~~（**Phase 3.5-B 已删除**）~~ — 改为透传 AST 的 `binding` 字段（-1 或字面量）。Binding slot 决议下放到 `convertBGFX` 顶层（per-program 重复检测 + auto from `max(explicit)+1`）。
 
 `lowerDecl` 处理 `UniformBlockDecl` —— 复用 `lexemeToType` 解析字段 type（与 StorageDecl / SharedDecl 同一张表），未识别的 lexeme warn + fallback vec4。
 
@@ -553,8 +553,8 @@ UBO 块名（`Camera`）和字段（`Camera.position`）**不注册**到 body �
 
 - struct 字段（依赖 struct 类型系统，Phase 3.3 跳过）
 - 嵌套 UBO（一个 UBO 字段是另一个 UBO）
-- 用户显式 `binding = N`（编译器自动分配；用户覆盖留 Phase 4+）
-- storage decl 的 `binding = N` 语法（UBO-first；storage 留后续 phase）
+- ~~用户显式 `binding = N`（编译器自动分配；用户覆盖留 Phase 4+）~~ **Phase 3.5-B 已实现** — 详见 §6.7.8
+- ~~storage decl 的 `binding = N` 语法（UBO-first；storage 留后续 phase）~~ **Phase 3.5-A 已实现** — 详见 §6.7.7
 - HLSL `cbuffer` emit + packoffset layout（Phase 5+）
 - WGSL `@group(0) @binding(0) var<uniform>` 概念映射（Phase 5+ WGSL emitter）
 
@@ -618,6 +618,83 @@ for (auto& decl : compute.declarations) {
 
 - 多 compute 共享 binding slot 不做跨 compute 校验——`bgfx::setUniform(handle, ptr, sizeof(buffer))` 在每个 compute 的 dispatch 上独立设置，frontend 责任保证不撞。本编译器只在**同一 compute 内**检测重复。
 - shaderc e2e 在 Linux GLSL 430 已验证 UBO + SSBO 都支持（独立 fixture 编译通过）。
+
+### 6.7.8 Phase 3.5-B — UBO binding 表面语法
+
+#### 表面语法
+
+```phoskia
+// 顶层（与 material / compute 同级）
+uniformblock Camera {
+    vec3 position
+    float fov
+}
+uniformblock Lighting {
+    vec3 ambient
+    uint flags
+} binding 3
+uniformblock ToneMap {        // 自动 binding = max(3)+1 = 4
+    vec3 gain
+}
+```
+
+可选 `binding <non-negative-int>` 后缀。**完全复用 Phase 3.5-A 关键字 `Binding`**（无新词法工作）。无 binding 的 decl 走"自动分配 slot"路径，从 `max(显式 binding)+1` 起始。`}` 后的尾 `;` **可选**（Python-like 不破坏现有 UBO 源）。
+
+#### emit 形状
+
+```glsl
+layout(std140, binding = 0) uniform Camera { ... } Camera;
+layout(std140, binding = 3) uniform Lighting { ... } Lighting;
+layout(std140, binding = 4) uniform ToneMap { ... } ToneMap;
+```
+
+`std140`（**不是** SSBO 的 std430）——UBO 块是固定大小、需要严格 padding。
+
+#### IR 形状
+
+`IRDeclaration::uboBinding`（int）：`-1` = 无显式 binding（BGFX 自动分配）；`>= 0` = 用户写的字面 slot。
+
+**Phase 3.5-B 相对 Phase 3.4 的 IR 变化**：删除 `IRGenerator::nextBinding_` 计数器（§6.7.2 的旧描述）。IR generator 改为**纯透传** AST 的 `binding` 字段（-1 或字面量）；binding 决议全部下放到 BGFX emit。这跟 §6.7.7 的 SSBO 走完全一样的路径，去掉了特化的 UBO counter。
+
+#### 重复 binding 检测
+
+emit 时（`AYBGFXConverter::convertBGFX` 入口）扫一遍 `program.uniformBlocks`：
+
+```cpp
+std::unordered_map<int, std::string> usedBindings;
+for (auto& ub : program.uniformBlocks) {
+    if (ub->uboBinding < 0) continue;
+    auto it = usedBindings.find(ub->uboBinding);
+    if (it != usedBindings.end()) {
+        errors.push_back("UniformBlock '" + ub->name +
+            "' has duplicate binding " + ...);
+    }
+    usedBindings[ub->uboBinding] = ub->name;
+}
+if (any duplicates) { out.success = false; return; }  // 早返不回 emit
+```
+
+**作用域 per-program**（不是 per-compute）——UBO 在 vs/fs/cs 间共享，全程序单一 namespace。SSBO 的 per-compute 作用域是因为 storage decl 嵌在 `IRComputeDecl::declarations` 里；UBO 在 `IRProgram::uniformBlocks` flat vector，per-program 是天然边界。
+
+#### shaderc profile
+
+无变化——`layout(std140, binding = N)` 是 GLSL 4.30 标准语法，Phase 3.4 已升过 `-p 430`。
+
+#### 与 Phase 3.5-A 对比
+
+| 维度 | Phase 3.5-A (SSBO) | Phase 3.5-B (UBO) |
+|---|---|---|
+| Decl 语法 | `storage X : rwstructuredbuffer<T> binding N;` | `uniformblock X { ... } binding N;` |
+| layout qualifier | `std430` | `std140` |
+| BGFX emit 入口 | `convertComputeDecl`（每 compute） | `convertBGFX`（每 program） |
+| Duplicate 作用域 | per-compute | **per-program**（UBO 全局）|
+| IR 起始状态 | 已经是 -1 透传（无需 counter） | 3.5-B 删除 `nextBinding_` 后变成 -1 透传 |
+| 测试增量 | +12 | +20 |
+
+#### 已知 limitation
+
+- 多 UBO 共享 binding slot 不做跨 shader stage 边界校验——本编译器在**整个 program** 上检测重复；如果同一个 shader 在 host 端跨 stage bound（`bgfx::setUniform` 在 vs/fs 分别调用），仍然按 program 唯一性保护。
+- UBO 块名 + 字段类型不注册到 body 的 TypeEnvironment——`let p = Camera.position` 推断为 fresh TypeVar，emit 透明，shaderc 端做类型检查。完整 struct 推断留 Phase 4+ 跟 `struct` 类型系统一起做。
 
 ## 7. 改语法的"链路"
 
@@ -1015,6 +1092,12 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
   - 向后兼容：老 storage decl（无 `binding`）继续走"自动分配 slot 0/1/2/..."路径（Phase 3.5-A 之前的行为），emit 不变。`golden/compute_minimal.phoskia` 字节级不变。
   - 推迟：UBO 用户显式 `binding = N`（候选 B）/ HLSL `register(t[N])` / WGSL `@group(0) @binding(N)`。
 
+- [x] **Phase 3.5-B UBO binding 落地**（2026-06-30 完成）：`uniformblock X { ... } binding N;` 可选显式 binding 后缀 + `layout(std140, binding = N) uniform X { ... } X;` emit + 编译期 duplicate binding 校验（per-program 作用域）+ auto-binding 起始点 `max(显式)+1` + 复用 Phase 3.5-A 关键字 `Binding`，**无新词法工作** + 移除 IR 端 `nextBinding_` counter（改为 BGFX emit 端解析）。详见 §6.7.8。总测试 897 → 917+。
+
+  - 向后兼容：老 UBO decl（无 `binding`、无尾 `;`）继续走"自动分配 slot 0/1/2/..."路径，emit 不变。`golden/unlit.phoskia` / `pbr_*.phoskia` 字节级不变。
+  - 与 Phase 3.5-A 差异：duplicate 检测作用域是 per-program（UBO 在 vs/fs/cs 间共享），而 storage 是 per-compute（嵌在 `IRComputeDecl::declarations` 里）。
+  - 推迟：UBO 字段 strict type-check / 嵌套 UBO / HLSL `cbuffer $Element` / WGSL `@group(0) @binding(N) var<uniform>`。
+
 - [ ] IR 设计实现（SSA 形式）
 - [ ] HLSL 后端 (`AYHLSLConverter`) — **Phase 5+ 按需**，当前不计划。仅在项目要求 DXC 一手质量或要摆脱 shaderc 时再做。
 - [ ] WGSL 后端 (`AYWGLSConverter`) — **Phase 5+ 按需**，当前不计划。仅在项目目标 WebGPU 且要原生 WGSL 时再做（bgfx 当前没有 WebGPU 后端，需要换 runtime 到 wgpu-native / Dawn）。
@@ -1100,7 +1183,8 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 | 3.3 | `[numthreads]` + uint + uvec3 strict + groupshared | aa14410 / edd37af / f3c7e47 / c265ea5 | +147 |
 | 3.4 | UBO 表面语法 + std140 binding | 5a49e8c | +50 |
 | 3.5-A | Storage binding 语法 + std430 binding | 57e9c63 / 31e2f6c / 7d93814 / 4058f03 | +60 |
-| 总计 | — | — | **278 → 897** |
+| 3.5-B | UBO binding 语法 + std140 binding（与 3.5-A 对称）| 063664f | +20 |
+| 总计 | — | — | **278 → 917** |
 
 ---
 

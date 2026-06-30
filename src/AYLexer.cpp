@@ -76,12 +76,8 @@ void Lexer::scanToken(std::vector<Token>& out) {
         case '\t':
             break;
         case '\n':
-            std::cerr << "[scanToken] saw \\n before= _line=" << _line
-                      << " _column=" << _column << " _current=" << _current << "\n";
             _line++;
             _column = 0;
-            std::cerr << "[scanToken] saw \\n after= _line=" << _line
-                      << " _column=" << _column << "\n";
             break;
         default:
             if (isdigit(c)) {

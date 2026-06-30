@@ -28,6 +28,7 @@ AYShader 是 AY Engine 的着色器子系统：接受 **Phoskia** DSL 源码，�
 | Phase 3.3 | `[numthreads]` attribute + `uint` builtin + `uvec3` strict + `groupshared` | ✅ |
 | Phase 3.4 | UBO 表面语法（`uniformblock` + `layout(std140, binding = N)` + 全平台 `-p 430`） | ✅ |
 | Phase 3.5-A | Storage binding 表面语法（`storage X : rwstructuredbuffer<T> binding N;` → `layout(std430, binding = N)`） | ✅ |
+| Phase 3.5-B | UBO binding 表面语法（`uniformblock X { ... } binding N;` → `layout(std140, binding = N)`） | ✅ |
 | Phase 5+ | HLSL 后端（按需 — DXC 一手质量 / 减体积） | 🅿 暂缓 |
 | Phase 5+ | WGSL 后端（按需 — WebGPU 目标） | 🅿 暂缓 |
 

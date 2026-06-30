@@ -168,5 +168,16 @@ TEST_CASE(golden_compute_minimal)        { runOneFixture("compute_minimal"); }
 TEST_CASE(golden_compute_with_storage_binding) {
     runOneFixture("compute_with_storage_binding");
 }
+// Phase 3.5-B: material fixture exercising uniformblock explicit
+// binding slots. Camera has no binding (auto slot 0), Lighting has
+// explicit `binding 3`; the BGFX backend emits
+//   `layout(std140, binding = 0) uniform Camera { ... } Camera;`
+//   `layout(std140, binding = 3) uniform Lighting { ... } Lighting;`
+// spliced into both vs and fs. The .sc baseline is auto-generated on
+// first run if missing; regenerate with AY_SHADER_REGEN_GOLDEN=1
+// after an intentional converter change.
+TEST_CASE(golden_material_with_ubo_binding) {
+    runOneFixture("material_with_ubo_binding");
+}
 
 TEST_SUITE_END

@@ -1,0 +1,13 @@
+uniformblock Camera {
+    vec3 position
+    float fov
+}
+material PbrShader {
+    vertex {
+        let p = Camera.position
+        return vec4(p, 1.0)
+    }
+    fragment {
+        return vec4(Camera.fov, 0.0, 0.0, 1.0)
+    }
+}
