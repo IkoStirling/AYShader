@@ -117,6 +117,14 @@ namespace BuiltinTypes {
     std::shared_ptr<VectorType> Vec3() { return std::make_shared<VectorType>(PrimitiveType::Float, 3); }
     std::shared_ptr<VectorType> Vec4() { return std::make_shared<VectorType>(PrimitiveType::Float, 4); }
 
+    // Phase 3.3 Block 3: unsigned int vectors. uvec3 is the canonical
+    // GLSL return type for gl_GlobalInvocationID / gl_WorkGroupID /
+    // gl_NumWorkGroups; thread_id / group_id / dispatch_id surface them
+    // through this singleton.
+    std::shared_ptr<VectorType> UVec2() { return std::make_shared<VectorType>(PrimitiveType::Uint, 2); }
+    std::shared_ptr<VectorType> UVec3() { return std::make_shared<VectorType>(PrimitiveType::Uint, 3); }
+    std::shared_ptr<VectorType> UVec4() { return std::make_shared<VectorType>(PrimitiveType::Uint, 4); }
+
     std::shared_ptr<MatrixType> Mat2() { return std::make_shared<MatrixType>(2, 2); }
     std::shared_ptr<MatrixType> Mat3() { return std::make_shared<MatrixType>(3, 3); }
     std::shared_ptr<MatrixType> Mat4() { return std::make_shared<MatrixType>(4, 4); }

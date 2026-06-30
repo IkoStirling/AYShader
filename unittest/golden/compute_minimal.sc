@@ -10,7 +10,7 @@ buffer counters { int data[]; } counters;
 
 void main()
 {
-    idx = gl_GlobalInvocationID.x;
+    uint idx = gl_GlobalInvocationID.x;
     (counters[idx] = (counters[idx] + 1));
 }
 

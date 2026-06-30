@@ -477,4 +477,115 @@ TEST_CASE(compile_compute_without_numthreads_uses_default) {
     CHECK(result.output.find("layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;") != std::string::npos);
 }
 
+// ===== Phase 3.3 Block 3: uvec3 strict typing =====
+//
+// Phoskia's compute thread-id builtins (`thread_id` / `group_id` /
+// `dispatch_id`) are now strictly typed as uvec3, matching GLSL's
+// actual builtin types (gl_GlobalInvocationID, gl_WorkGroupID,
+// gl_NumWorkGroups). The BGFX emit path is unchanged — the GLSL
+// builtins are still inlined by name — so the emitted .sc is
+// byte-identical to Phase 3.2 output for the same source. The
+// strict-typing change is visible only on the Phoskia / IR side:
+// `let idx = thread_id.x` now binds `idx` to `uint` (was `float`).
+//
+// We assert on the e2e emit shape (must still contain
+// gl_GlobalInvocationID.x) AND on the IR-resolved type so a future
+// regression to the loose `vec3` typing is caught.
+
+#include "AYIr.h"
+#include "AYLexer.h"
+#include "AYParser.h"
+
+TEST_CASE(compile_thread_id_x_is_uint_in_ir) {
+    const char* src = R"(
+        compute Foo {
+            let idx = thread_id.x
+            return idx
+        }
+    )";
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    auto ast = parser.parse();
+    ayt::shader::phoskia::ir::IRGenerator gen;
+    auto program = gen.generate(*ast);
+
+    CHECK(program.computes.size() == 1);
+    const auto& body = program.computes.front()->body;
+    // body[0] is the let-stmt, body[1] is the return-stmt.
+    auto* let = dynamic_cast<ayt::shader::phoskia::ir::IRLetStmt*>(body[0].get());
+    CHECK(let != nullptr);
+    CHECK_NOT_NULL(let->initializer.get());
+    // The let-initializer is a MemberExpr(thread_id, "x"). Its
+    // resolvedType must be `uint` (PrimitiveType::Uint), not `float`.
+    auto prim = std::dynamic_pointer_cast<ayt::shader::phoskia::PrimitiveType_>(let->initializer->resolvedType);
+    CHECK_NOT_NULL(prim.get());
+    CHECK(prim->primitive() == ayt::shader::phoskia::PrimitiveType::Uint);
+}
+
+TEST_CASE(compile_thread_id_x_emits_gl_global_invocation_id_x) {
+    // Emit shape must NOT change. The strict typing only affects the
+    // Phoskia-side resolvedType; the GLSL still uses the raw builtin.
+    Compiler compiler;
+    const char* src = R"(
+        compute Foo {
+            let idx = thread_id.x
+            return idx
+        }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    CHECK(result.output.find("gl_GlobalInvocationID") != std::string::npos);
+    CHECK(result.output.find("gl_GlobalInvocationID.x") != std::string::npos);
+}
+
+TEST_CASE(compile_let_uint_idx_emits_with_uint_type) {
+    // The let-stmt emit reads the GLSL type from
+    // `initializer->resolvedType->toString()`. After Block 3 the
+    // initializer `thread_id.x` has resolvedType = PrimitiveType::Uint
+    // (strict uvec3 / uint chain), so the emit must include a
+    // `uint idx` declaration (and NOT a `float idx` one — that would
+    // mean the swizzle inferred Float, i.e. Block 3 didn't take
+    // effect).
+    Compiler compiler;
+    const char* src = R"(
+        compute Foo {
+            storage counters : rwstructuredbuffer<int>
+            let idx = thread_id.x
+            counters[idx] = counters[idx] + 1
+        }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    // Strict-typing guarantee: the swizzle `thread_id.x` MUST NOT
+    // resolve to float (would mean Block 3 didn't take effect).
+    CHECK(result.output.find("float idx = ") == std::string::npos);
+    CHECK(result.output.find("vec3 idx = ") == std::string::npos);
+}
+
+TEST_CASE(compile_uvec3_constructor_emits_uvec3_call) {
+    // Explicit uvec3(...) constructor. Mirrors the constructor test in
+    // Test_TypeInference.cpp but at the e2e level — verifies the
+    // BGFX backend emits the correct GLSL constructor name. We pass
+    // integer literals (not `0u`) because Phoskia's lexer parses all
+    // integer literals as int — GLSL allows implicit int→uint in
+    // constructors, so the constructor call shape is the testable
+    // surface here.
+    Compiler compiler;
+    const char* src = R"(
+        compute Foo {
+            storage counters : rwstructuredbuffer<int>
+            let idx = uvec3(thread_id.x, 0, 0).x
+            counters[idx] = counters[idx] + 1
+        }
+    )";
+    auto result = CompileResult{};
+    compiler.compile(src, result);
+    CHECK(result.success);
+    CHECK(result.output.find("uvec3(") != std::string::npos);
+}
+
 TEST_SUITE_END

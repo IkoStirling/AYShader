@@ -180,8 +180,11 @@ std::shared_ptr<Type> TypeInference::inferCallExpr(const CallExpr& expr) {
         //   vec4(f, f, f, f) | vec4(vec4) | vec4(vec3, f) | vec4(vec2, f, f)
         //                                                  → 4 components
         //   mat4(v4, v4, v4, v4)                        → mat4
+        // Phase 3.3 Block 3: uvec2/3/4 added so user code can build an
+        // unsigned-int vector explicitly (e.g. `uvec3(thread_id.x, 0, 0)`).
         if (name == "vec2" || name == "vec3" || name == "vec4" ||
             name == "ivec2" || name == "ivec3" || name == "ivec4" ||
+            name == "uvec2" || name == "uvec3" || name == "uvec4" ||
             name == "mat2" || name == "mat3" || name == "mat4") {
             auto inferred = inferConstructor(name, expr.args);
             if (inferred) return inferred;
@@ -209,11 +212,16 @@ std::shared_ptr<Type> TypeInference::inferConstructor(
     const std::vector<ExprPtr>& args) {
     // Count total components requested by the constructor name.
     auto vecFor = [&](int dim) -> std::shared_ptr<VectorType> {
-        bool isInt = (name.size() > 0 && name[0] == 'i');  // ivec2/3/4
+        // Phase 3.3 Block 3: uvec2/3/4 prefix "uvec" — distinguished
+        // from "ivec" by the second character ('v' vs 'e'). "vec"
+        // defaults to float as before.
+        PrimitiveType elem = PrimitiveType::Float;
+        if (name.size() >= 4 && name[0] == 'i' && name[1] == 'v') elem = PrimitiveType::Int;
+        else if (name.size() >= 4 && name[0] == 'u' && name[1] == 'v') elem = PrimitiveType::Uint;
         switch (dim) {
-            case 2: return std::make_shared<VectorType>(isInt ? PrimitiveType::Int : PrimitiveType::Float, 2);
-            case 3: return std::make_shared<VectorType>(isInt ? PrimitiveType::Int : PrimitiveType::Float, 3);
-            case 4: return std::make_shared<VectorType>(isInt ? PrimitiveType::Int : PrimitiveType::Float, 4);
+            case 2: return std::make_shared<VectorType>(elem, 2);
+            case 3: return std::make_shared<VectorType>(elem, 3);
+            case 4: return std::make_shared<VectorType>(elem, 4);
             default: return nullptr;
         }
     };
@@ -228,7 +236,7 @@ std::shared_ptr<Type> TypeInference::inferConstructor(
 
     int dim = 0;
     if (name[0] == 'm') dim = name[3] - '0';        // mat2/3/4
-    else if (name[0] == 'i') dim = name[4] - '0';   // ivec2/3/4
+    else if (name[0] == 'i' || name[0] == 'u') dim = name[4] - '0';   // ivec/uvec + dim
     else dim = name[3] - '0';                       // vec2/3/4
 
     // vec/ivec: sum the component count of each argument.
@@ -291,10 +299,12 @@ std::shared_ptr<Type> TypeInference::inferIdentifierExpr(const IdentifierExpr& e
         // `group_id` / `dispatch_id`) are zero-arg functions but Phoskia
         // source uses them as bare identifiers (`thread_id.x` rather
         // than `thread_id().x`). When a bare identifier resolves to
-        // one of these builtins, return the return type (vec3) so
-        // subsequent member access (`thread_id.x`) type-checks
-        // correctly. Without this, `inferMemberExpr` would see the
-        // FunctionType wrapper and fail to resolve the swizzle.
+        // one of these builtins, return the return type (uvec3 — Phase
+        // 3.3 Block 3 strict-typed; previously vec3) so subsequent
+        // member access (`thread_id.x`) type-checks correctly and the
+        // swizzle result becomes `uint`. Without this, `inferMemberExpr`
+        // would see the FunctionType wrapper and fail to resolve the
+        // swizzle.
         auto builtin = BuiltinFunctionRegistry::instance().getFunction(expr.name);
         if (builtin && builtin->paramTypes.empty() && builtin->returnType) {
             return builtin->returnType;
@@ -362,6 +372,9 @@ std::shared_ptr<Type> TypeInference::inferMemberExpr(const MemberExpr& expr) {
             switch (vec->elementType()) {
                 case PrimitiveType::Float: return BuiltinTypes::Float;
                 case PrimitiveType::Int:   return BuiltinTypes::Int;
+                // Phase 3.3 Block 3: uvec3.x is `uint` (matches GLSL);
+                // before this branch was added it fell through to Dynamic.
+                case PrimitiveType::Uint:  return BuiltinTypes::Uint;
                 case PrimitiveType::Bool:  return BuiltinTypes::Bool;
                 default: return BuiltinTypes::Dynamic;
             }
@@ -369,11 +382,37 @@ std::shared_ptr<Type> TypeInference::inferMemberExpr(const MemberExpr& expr) {
         // Multi-component swizzle — result is a vector of the requested
         // dimension with the same element type. We currently require the
         // swizzle length to match an existing vector dimension (vec2/3/4).
-        switch (n) {
-            case 2: return BuiltinTypes::Vec2();
-            case 3: return BuiltinTypes::Vec3();
-            case 4: return BuiltinTypes::Vec4();
-            default: return newTypeVar();
+        //
+        // Phase 3.3 Block 3: respect the source element type so
+        // `uvec3.xy` resolves to uvec2 (not vec2). Previous code always
+        // returned the float-vector singleton; with strict uvec3 typing
+        // in place that's a type error.
+        switch (vec->elementType()) {
+            case PrimitiveType::Int: {
+                switch (n) {
+                    case 2: return std::make_shared<VectorType>(PrimitiveType::Int, 2);
+                    case 3: return std::make_shared<VectorType>(PrimitiveType::Int, 3);
+                    case 4: return std::make_shared<VectorType>(PrimitiveType::Int, 4);
+                    default: return newTypeVar();
+                }
+            }
+            case PrimitiveType::Uint: {
+                switch (n) {
+                    case 2: return std::make_shared<VectorType>(PrimitiveType::Uint, 2);
+                    case 3: return std::make_shared<VectorType>(PrimitiveType::Uint, 3);
+                    case 4: return std::make_shared<VectorType>(PrimitiveType::Uint, 4);
+                    default: return newTypeVar();
+                }
+            }
+            case PrimitiveType::Float:
+            default: {
+                switch (n) {
+                    case 2: return BuiltinTypes::Vec2();
+                    case 3: return BuiltinTypes::Vec3();
+                    case 4: return BuiltinTypes::Vec4();
+                    default: return newTypeVar();
+                }
+            }
         }
     }
 
@@ -400,6 +439,8 @@ std::shared_ptr<Type> TypeInference::inferIndexExpr(const IndexExpr& expr) {
         switch (vec->elementType()) {
             case PrimitiveType::Float: return BuiltinTypes::Float;
             case PrimitiveType::Int:   return BuiltinTypes::Int;
+            // Phase 3.3 Block 3: uvec3[0] is `uint`.
+            case PrimitiveType::Uint:  return BuiltinTypes::Uint;
             case PrimitiveType::Bool:  return BuiltinTypes::Bool;
             default: return BuiltinTypes::Dynamic;
         }

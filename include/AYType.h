@@ -81,7 +81,19 @@ public:
     size_t dimension() const { return _dimension; }
 
     std::string toString() const override {
-        return "vec" + std::to_string(_dimension);
+        // Phase 3.3 Block 3: GLSL prefixes differ by element type —
+        // float → "vecN", int → "ivecN", uint → "uvecN". The legacy
+        // default ("vecN" for everything) silently mis-encoded
+        // ivec3 / uvec3 as vec3; backends then emitted wrong GLSL.
+        switch (_elementType) {
+            case PrimitiveType::Int:   return "ivec" + std::to_string(_dimension);
+            case PrimitiveType::Uint:  return "uvec" + std::to_string(_dimension);
+            case PrimitiveType::Float: return "vec"  + std::to_string(_dimension);
+            case PrimitiveType::Bool:
+            case PrimitiveType::String:
+            default:
+                return "vec" + std::to_string(_dimension);
+        }
     }
     bool equals(const Type& other) const override;
 
@@ -204,6 +216,14 @@ namespace BuiltinTypes {
     std::shared_ptr<VectorType> Vec2();
     std::shared_ptr<VectorType> Vec3();
     std::shared_ptr<VectorType> Vec4();
+
+    // Phase 3.3 Block 3: unsigned-int vector singletons used by
+    // compute thread-id builtins (thread_id / group_id / dispatch_id
+    // are uvec3 in GLSL). Returned as shared_ptr because VectorType
+    // is by-value today (mirrors the Vec2/Vec3/Vec4 factory style).
+    std::shared_ptr<VectorType> UVec2();
+    std::shared_ptr<VectorType> UVec3();
+    std::shared_ptr<VectorType> UVec4();
 
     std::shared_ptr<MatrixType> Mat2();
     std::shared_ptr<MatrixType> Mat3();

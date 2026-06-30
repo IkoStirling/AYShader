@@ -109,9 +109,18 @@ void Compiler::runPipeline(const std::string& source,
         TypeInference inference(*_typeEnv);
         // Build the builtin env the analyzer normally builds, so the
         // engine's identifier lookup finds `vec4` / `sample` / etc.
+        //
+        // Phase 3.3 Block 3: skip 0-arg builtins (thread_id / group_id
+        // / dispatch_id). They are exposed in Phoskia source as bare
+        // identifiers (`thread_id.x`); the inference engine's
+        // builtin-registry fallback returns the return type (uvec3)
+        // directly when the env doesn't have the name. Adding them as
+        // FunctionType here would shadow that fallback and the swizzle
+        // inference would see a FunctionType rather than uvec3.
         for (const auto& name : BuiltinFunctionRegistry::instance().getAllFunctionNames()) {
             auto func = BuiltinFunctionRegistry::instance().getFunction(name);
             if (func) {
+                if (func->paramTypes.empty()) continue;
                 _typeEnv->addFunction(name,
                     std::make_shared<FunctionType>(func->paramTypes, func->returnType));
             }

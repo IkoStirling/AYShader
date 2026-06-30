@@ -74,6 +74,25 @@ static void populateBuiltinEnv(phoskia::TypeEnvironment& env) {
     for (const auto& name : reg.getAllFunctionNames()) {
         auto func = reg.getFunction(name);
         if (func) {
+            // Phase 3.3 Block 3: zero-arg builtins (thread_id /
+            // group_id / dispatch_id / ...) are exposed in Phoskia as
+            // bare identifiers (`thread_id.x` rather than `thread_id().x`).
+            // When their FunctionType is added to the env,
+            // `inferIdentifierExpr` resolves them to FunctionType — which
+            // then breaks `inferMemberExpr` (it expects a VectorType, not
+            // a FunctionType, for swizzle inference).
+            //
+            // The fix is to skip 0-arg builtins here so
+            // `inferIdentifierExpr` falls through to its Phase 3.2
+            // builtin-registry fallback (which returns the return
+            // type directly — uvec3 today). With this skip, the
+            // strict-typed uvec3 / uint chain lights up for
+            // `thread_id.x` swizzles end-to-end.
+            //
+            // Multi-arg builtins (vec3, normalize, dot, ...) still need
+            // to be in the env so `inferCallExpr`'s FunctionType path
+            // can resolve them when the identifier is followed by `(`.
+            if (func->paramTypes.empty()) continue;
             env.addFunction(name,
                 std::make_shared<FunctionType>(func->paramTypes, func->returnType));
         }

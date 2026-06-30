@@ -23,6 +23,15 @@ namespace {
 // Helper: build a TypeInference pre-loaded with every registered builtin
 // function so identifier lookups for `vec3`, `normalize`, `sample`, etc.
 // resolve correctly.
+//
+// Phase 3.3 Block 3: zero-arg builtins (thread_id / group_id /
+// dispatch_id) are intentionally NOT added to the env here. They are
+// exposed in Phoskia source as bare identifiers (`thread_id.x`), and
+// the inference engine's builtin-registry fallback returns the return
+// type directly (uvec3) when the env doesn't have the name — exactly
+// the path the IRGenerator's populateBuiltinEnv also takes. Adding
+// them here as FunctionType would shadow that fallback and the
+// swizzle inference would see a FunctionType rather than uvec3.
 struct InferenceEnv {
     TypeEnvironment env;
     TypeInference inference;
@@ -30,6 +39,7 @@ struct InferenceEnv {
         for (const auto& name : BuiltinFunctionRegistry::instance().getAllFunctionNames()) {
             auto func = BuiltinFunctionRegistry::instance().getFunction(name);
             if (func) {
+                if (func->paramTypes.empty()) continue;  // see comment above
                 env.addFunction(name,
                     std::make_shared<FunctionType>(func->paramTypes, func->returnType));
             }
@@ -441,6 +451,144 @@ TEST_CASE(inferred_return_type_via_parser_for_vec4) {
     auto t = resolve(e.inference.infer(*ret->value));
     auto v4 = BuiltinTypes::Vec4();
     CHECK(t->equals(*v4));
+}
+
+// ===== Phase 3.3 Block 3: uvec3 strict typing =====
+//
+// Before Block 3, `thread_id` was registered as returning vec3 and
+// `thread_id.x` resolved to float. Now it returns uvec3 and the
+// single-axis swizzle resolves to `uint`. The bare-identifier fallback
+// at inferIdentifierExpr is what makes `thread_id.x` (no parens)
+// type-check: the bare name matches the builtin, the builtin return
+// type is uvec3, and the subsequent MemberExpr sees a vector with
+// elementType() == Uint. We pin both the builtin return type and the
+// swizzle result type so a future regression that drops the strict
+// typing is caught.
+
+TEST_CASE(thread_id_returns_uvec3) {
+    InferenceEnv e;
+    IdentifierExpr id("thread_id");
+    auto t = resolve(e.inference.infer(id));
+    auto expected = std::make_shared<VectorType>(PrimitiveType::Uint, 3);
+    CHECK(t->equals(*expected));
+}
+
+TEST_CASE(group_id_returns_uvec3) {
+    InferenceEnv e;
+    IdentifierExpr id("group_id");
+    auto t = resolve(e.inference.infer(id));
+    auto expected = std::make_shared<VectorType>(PrimitiveType::Uint, 3);
+    CHECK(t->equals(*expected));
+}
+
+TEST_CASE(swizzle_x_of_uvec3_returns_uint) {
+    InferenceEnv e;
+    auto uvec3 = std::make_shared<VectorType>(PrimitiveType::Uint, 3);
+    e.env.addVariable("tid", uvec3);
+    auto obj = std::make_unique<IdentifierExpr>("tid");
+    MemberExpr m(std::move(obj), "x");
+    auto t = resolve(e.inference.infer(m));
+    CHECK(t->equals(*BuiltinTypes::Uint));
+}
+
+TEST_CASE(swizzle_xy_of_uvec3_returns_uvec2) {
+    InferenceEnv e;
+    auto uvec3 = std::make_shared<VectorType>(PrimitiveType::Uint, 3);
+    e.env.addVariable("tid", uvec3);
+    auto obj = std::make_unique<IdentifierExpr>("tid");
+    MemberExpr m(std::move(obj), "xy");
+    auto t = resolve(e.inference.infer(m));
+    auto expected = std::make_shared<VectorType>(PrimitiveType::Uint, 2);
+    CHECK(t->equals(*expected));
+}
+
+TEST_CASE(swizzle_rgb_of_uvec3_returns_uvec3) {
+    // The r/g/b/a axes are aliases for x/y/z/w; they share the
+    // element type, so swizzling with .rgb on a uvec3 yields uvec3.
+    InferenceEnv e;
+    auto uvec3 = std::make_shared<VectorType>(PrimitiveType::Uint, 3);
+    e.env.addVariable("tid", uvec3);
+    auto obj = std::make_unique<IdentifierExpr>("tid");
+    MemberExpr m(std::move(obj), "rgb");
+    auto t = resolve(e.inference.infer(m));
+    auto expected = std::make_shared<VectorType>(PrimitiveType::Uint, 3);
+    CHECK(t->equals(*expected));
+}
+
+TEST_CASE(index_into_uvec3_returns_uint) {
+    InferenceEnv e;
+    auto uvec3 = std::make_shared<VectorType>(PrimitiveType::Uint, 3);
+    e.env.addVariable("tid", uvec3);
+    auto obj = std::make_unique<IdentifierExpr>("tid");
+    auto idx = std::make_unique<LiteralExpr>(0);
+    IndexExpr ix(std::move(obj), std::move(idx));
+    auto t = resolve(e.inference.infer(ix));
+    CHECK(t->equals(*BuiltinTypes::Uint));
+}
+
+TEST_CASE(uvec3_constructor_from_three_uints) {
+    // Explicit uvec3(...) constructor. The literal `uint(0)` is the
+    // canonical uint literal idiom (Phase 3.3 Block 1); we use a
+    // call expression here so the test exercises the constructor path
+    // through inferConstructor (which used to only know vec / ivec).
+    InferenceEnv e;
+    auto callee = std::make_unique<IdentifierExpr>("uvec3");
+    std::vector<ExprPtr> args;
+    args.push_back(std::make_unique<LiteralExpr>(1));
+    args.push_back(std::make_unique<LiteralExpr>(2));
+    args.push_back(std::make_unique<LiteralExpr>(3));
+    CallExpr call(std::move(callee), std::move(args));
+    auto t = resolve(e.inference.infer(call));
+    auto expected = std::make_shared<VectorType>(PrimitiveType::Uint, 3);
+    CHECK(t->equals(*expected));
+}
+
+TEST_CASE(uvec3_constructor_three_args_via_uint_call) {
+    // uvec3(uint(0), uint(0), uint(0)). Each uint() call returns
+    // BuiltinTypes::Uint, so the constructor sees three uint args and
+    // must produce a uvec3 (not vec3 / ivec3). This exercises the
+    // element-type branch in inferConstructor::vecFor.
+    InferenceEnv e;
+    auto makeUint = []() {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<LiteralExpr>(0));
+        return std::make_unique<CallExpr>(
+            std::make_unique<IdentifierExpr>("uint"), std::move(args));
+    };
+    std::vector<ExprPtr> args;
+    args.push_back(makeUint());
+    args.push_back(makeUint());
+    args.push_back(makeUint());
+    CallExpr call(std::make_unique<IdentifierExpr>("uvec3"), std::move(args));
+    auto t = resolve(e.inference.infer(call));
+    auto expected = std::make_shared<VectorType>(PrimitiveType::Uint, 3);
+    CHECK(t->equals(*expected));
+}
+
+TEST_CASE(swizzle_x_of_ivec3_returns_int) {
+    // Pin the ivec branch too — same code path, different element
+    // type. ivec3.x is int (not uint).
+    InferenceEnv e;
+    auto ivec3 = std::make_shared<VectorType>(PrimitiveType::Int, 3);
+    e.env.addVariable("v", ivec3);
+    auto obj = std::make_unique<IdentifierExpr>("v");
+    MemberExpr m(std::move(obj), "x");
+    auto t = resolve(e.inference.infer(m));
+    CHECK(t->equals(*BuiltinTypes::Int));
+}
+
+TEST_CASE(vector_type_tostring_emits_uvec_for_uint) {
+    // Direct check that toString() now respects element type. The
+    // legacy VectorType::toString returned "vecN" regardless of
+    // element type, which made uvec3 silent mis-emit as vec3 in GLSL.
+    auto uvec3 = std::make_shared<VectorType>(PrimitiveType::Uint, 3);
+    CHECK(uvec3->toString() == "uvec3");
+    auto uvec4 = std::make_shared<VectorType>(PrimitiveType::Uint, 4);
+    CHECK(uvec4->toString() == "uvec4");
+    auto ivec3 = std::make_shared<VectorType>(PrimitiveType::Int, 3);
+    CHECK(ivec3->toString() == "ivec3");
+    auto vec3 = BuiltinTypes::Vec3();
+    CHECK(vec3->toString() == "vec3");
 }
 
 // ===== Unify mechanics =====

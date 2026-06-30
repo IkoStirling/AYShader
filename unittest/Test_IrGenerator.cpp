@@ -200,4 +200,28 @@ TEST_CASE(ir_compute_decl_passes_through_faithfully) {
     CHECK(dynamic_cast<IRLetStmt*>(cmp->body[0].get()) != nullptr);
 }
 
+// ===== Phase 3.3 Block 3: uvec3 strict typing on thread_id =====
+TEST_CASE(ir_thread_id_x_resolves_to_uint) {
+    // `thread_id` is registered as a 0-arg builtin returning uvec3.
+    // The bare-identifier form (`thread_id.x` rather than
+    // `thread_id().x`) reaches `inferMemberExpr` with objectType =
+    // uvec3, and the single-axis swizzle resolves to `uint`. The
+    // BGFX backend's let-stmt emission then reads that resolvedType
+    // and emits `uint idx = ...` — strict GLSL type-correctness.
+    auto ir = generateIR(R"(
+        compute Foo {
+            let idx = thread_id.x
+            return idx
+        }
+    )");
+    CHECK(ir.computes.size() == 1);
+    const auto& cmp = ir.computes.front();
+    CHECK(cmp->body.size() == 2);
+    auto* let = dynamic_cast<IRLetStmt*>(cmp->body[0].get());
+    CHECK_NOT_NULL(let);
+    auto prim = std::dynamic_pointer_cast<PrimitiveType_>(let->initializer->resolvedType);
+    CHECK_NOT_NULL(prim.get());
+    CHECK(prim->primitive() == PrimitiveType::Uint);
+}
+
 }
