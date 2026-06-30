@@ -233,9 +233,19 @@ public:
     SamplerKind samplerKind = SamplerKind::Sampler2D;  // only when kind == Texture
     int binding = -1;                                   // optional; backends may override
 
-    // === Storage (Phase 3.2 Block 3) ===
+    // === Storage (Phase 3.2 Block 3 + Phase 3.5-A) ===
     std::shared_ptr<Type> storageElementType;     // non-null only when kind == Storage
     StorageAccess storageAccess = StorageAccess::Read;  // only when kind == Storage
+    // Phase 3.5-A: optional explicit GLSL binding slot. -1 = no
+    // explicit binding (the BGFX backend auto-assigns at emit time,
+    // starting from 0 and skipping any explicit slot). >= 0 = user
+    // wrote `storage X : rwstructuredbuffer<T> binding N;` and the
+    // IRGenerator propagated the literal here. The BGFX backend emits
+    // `layout(std430, binding = N)` when >= 0 and detects duplicate
+    // bindings at compile time. The HLSL backend (Phase 5+) maps
+    // this to `register(t[N])`; the WGSL backend maps to
+    // `@group(0) @binding(N)`.
+    int storageBinding = -1;                     // only when kind == Storage
 
     // === Shared (Phase 3.3 Block 4) ===
     // Workgroup-shared local memory. `shared T name[N];` in GLSL.

@@ -217,6 +217,13 @@ std::unique_ptr<IRDeclaration> IRGenerator::lowerDecl(const phoskia::Stmt& s) {
         out->storageAccess = (st->access == phoskia::StorageDecl::Access::Read)
                                  ? IRDeclaration::StorageAccess::Read
                                  : IRDeclaration::StorageAccess::ReadWrite;
+        // Phase 3.5-A: propagate explicit binding slot if user wrote
+        // `storage X : rwstructuredbuffer<T> binding N;`. The default
+        // -1 (no binding) keeps the historical auto-assign path live.
+        // The BGFX backend reads this field to emit
+        // `layout(std430, binding = N)` and to detect duplicate
+        // bindings across the same compute's decls.
+        out->storageBinding = st->binding;
         if (!out->storageElementType) {
             _warnings.push_back("Storage '" + st->name +
                 "' has unrecognized element type lexeme '" + st->elementType +

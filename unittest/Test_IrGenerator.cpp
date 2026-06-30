@@ -335,4 +335,53 @@ TEST_CASE(ir_uniformblock_unknown_field_type_warns) {
     CHECK_FALSE(ir.warnings.empty());  // at least one warning
 }
 
+// ===== Phase 3.5-A: storage decl explicit binding slot =====
+
+TEST_CASE(ir_storage_lowers_with_explicit_binding) {
+    // `storage foo : rwstructuredbuffer<int> binding 2;` — the
+    // binding literal is propagated onto the IRDeclaration's
+    // storageBinding field. The BGFX backend reads this to emit
+    // `layout(std430, binding = 2)`.
+    auto ir = generateIR(R"(
+        compute Foo {
+            storage counters : rwstructuredbuffer<int> binding 2
+        }
+    )");
+    CHECK(ir.computes.size() == 1);
+    CHECK(ir.computes.front()->declarations.size() == 1);
+    const auto& decl = ir.computes.front()->declarations.front();
+    CHECK(decl->kind == IRDeclaration::Kind::Storage);
+    CHECK(decl->name == "counters");
+    CHECK(decl->storageBinding == 2);
+}
+
+TEST_CASE(ir_storage_lowers_without_binding_keeps_default) {
+    // Absence of `binding` → storageBinding stays at -1 (the default).
+    // The BGFX backend auto-assigns slots at emit time, starting from
+    // max(explicit bindings) + 1.
+    auto ir = generateIR(R"(
+        compute Foo {
+            storage counters : rwstructuredbuffer<int>
+        }
+    )");
+    const auto& decl = ir.computes.front()->declarations.front();
+    CHECK(decl->kind == IRDeclaration::Kind::Storage);
+    CHECK(decl->storageBinding == -1);
+}
+
+TEST_CASE(ir_two_storage_decls_with_distinct_bindings) {
+    // Two storage decls with explicit bindings: the IR carries
+    // each literal as-is (the BGFX backend detects duplicates at
+    // emit time, not at IR time — that keeps lowering simple).
+    auto ir = generateIR(R"(
+        compute Foo {
+            storage counters : rwstructuredbuffer<int> binding 0
+            storage outputs  : rwstructuredbuffer<float> binding 1
+        }
+    )");
+    CHECK(ir.computes.front()->declarations.size() == 2);
+    CHECK(ir.computes.front()->declarations[0]->storageBinding == 0);
+    CHECK(ir.computes.front()->declarations[1]->storageBinding == 1);
+}
+
 }
