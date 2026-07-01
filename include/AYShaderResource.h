@@ -50,7 +50,14 @@ public:
     BindingId getUniformBlockBinding(const std::string& name) const;
     BindingId getStorageBufferBinding(const std::string& name) const;
 
+    size_t getUniformBlockSize(BindingId blockId) const;
+    size_t getUniformBlockFieldOffset(BindingId blockId,
+                                      const std::string& fieldName) const;
+    size_t getUniformBlockFieldSize(BindingId blockId,
+                                    const std::string& fieldName) const;
+
     void setUniform(BindingId id, const void* data, size_t sizeBytes) const;
+    void setUniformBlock(BindingId blockId, const void* data, size_t sizeBytes) const;
     void setTexture(uint8_t stage, BindingId id, const TextureHandle& tex) const;
     void submit(const DrawCallContext& ctx) const;
 

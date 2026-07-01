@@ -10,6 +10,7 @@
 // fs_) to produce the binary shader programs bgfx::createProgram consumes.
 
 #include "AYBGFXConverter.h"
+#include "detail/AYStd140Layout.h"
 #include "AYAst.h"
 #include "AYType.h"
 #include "AYTypeInference.h"  // Phase 2: let stmt needs GLSL type prefix.
@@ -622,8 +623,38 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
 
         BGFXUniformBlock bub;
         bub.name = ub->name;
-        bub.binding = binding;                    // resolved (was ub->uboBinding)
-        bub.fieldNames = ub->uboFieldNames;       // copy
+        bub.binding = binding;
+        bub.fieldNames = ub->uboFieldNames;
+
+        std::vector<std::string> fieldTypes;
+        fieldTypes.reserve(ub->uboFields.size());
+        for (size_t i = 0; i < ub->uboFields.size(); ++i) {
+            std::string fieldTypeLex = "vec4";
+            if (ub->uboFields[i]) {
+                fieldTypeLex = ub->uboFields[i]->toString();
+            }
+            fieldTypes.push_back(fieldTypeLex);
+        }
+
+        detail::Std140Layout layout;
+        std::string layoutError;
+        if (!detail::computeStd140Layout(bub.fieldNames, fieldTypes, layout, &layoutError)) {
+            out.errors.push_back("UniformBlock '" + ub->name + "': " + layoutError);
+            out.success = false;
+            return;
+        }
+
+        bub.sizeBytes = layout.sizeBytes;
+        bub.members.reserve(layout.members.size());
+        for (const detail::Std140Member& member : layout.members) {
+            BGFXUniformBlockMember outMember;
+            outMember.name = member.name;
+            outMember.type = member.type;
+            outMember.offsetBytes = member.offsetBytes;
+            outMember.sizeBytes = member.sizeBytes;
+            bub.members.push_back(std::move(outMember));
+        }
+
         _uniformBlocks.push_back(std::move(bub));
     }
 

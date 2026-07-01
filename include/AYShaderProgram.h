@@ -26,11 +26,19 @@ struct BGFXTexture {
     std::string textureType = "sampler2D";
 };
 
+struct BGFXUniformBlockMember {
+    std::string name;
+    std::string type;
+    size_t      offsetBytes = 0;
+    size_t      sizeBytes = 0;
+};
+
 struct BGFXUniformBlock {
     std::string name;
     int binding = -1;
     size_t sizeBytes = 0;
     std::vector<std::string> fieldNames;
+    std::vector<BGFXUniformBlockMember> members;
 };
 
 struct BGFXStorageBuffer {

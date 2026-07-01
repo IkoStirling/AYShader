@@ -26,6 +26,10 @@ struct BindingEntry {
     std::string         name;
     bgfx::UniformHandle uniformHandle = BGFX_INVALID_HANDLE;
     uint8_t             textureBinding = 0;
+
+    size_t uniformBlockSizeBytes = 0;
+    std::unordered_map<std::string, size_t> uniformBlockFieldOffsets;
+    std::unordered_map<std::string, size_t> uniformBlockFieldSizes;
 };
 
 struct PendingUniform {

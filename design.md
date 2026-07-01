@@ -2530,7 +2530,8 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 - ✅ **Phase 4-E**：`AYShaderProgram.h` 不含 bgfx；legacy `ShaderProgram` 迁至 `detail/AYShaderProgramLegacy.h`
 - ✅ **Phase 4-G**：`AYShader.h` 不再 include `AYShaderCache` / `AYBGFXConverter`（frontend 零 bgfx 泄漏）
 - ✅ **Phase 4-K（contract）**：`Test_ShaderCacheIntegration` — frontend TU 不含 `<bgfx/bgfx.h>`
-- ❌ **Phase 4-D/F+（当前）**：std140 layout 内化、Renderer e2e submit、hot-reload 完整实现、capability 体系（详见 §8.5）
+- ✅ **Phase 4-D**：std140 layout 从 Phoskia AST 字段类型计算；`ShaderResource::getUniformBlockSize` / field offset + `setUniformBlock`
+- ❌ **Phase 4-F+（当前）**：Renderer e2e submit、hot-reload 完整实现、capability 体系（详见 §8.5）
 
 **测试**：
 - **944 / 944 PASS**（Phase 3.6 末状态，2026-07-01）

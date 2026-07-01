@@ -35,8 +35,9 @@ AYShader 是 AY Engine 的着色器子系统：接受 **Phoskia** DSL 源码，�
 | Phase 4-C | `Compiler::compileToShaderResource(src[, opts], pool)` 一站式 compile | ✅ |
 | Phase 4-E | `AYShaderProgram.h` 剥离 bgfx；legacy `ShaderProgram` → `detail/` | ✅ |
 | Phase 4-G | `AYShader.h` 不再 include legacy cache/converter（frontend 零 bgfx） | ✅ |
+| Phase 4-D | std140 layout 内化 + `getUniformBlockSize` / field offset API | ✅ |
 | Phase 4-K | `Test_ShaderCacheIntegration` — frontend TU 不含 `<bgfx/bgfx.h>` | ✅（contract 层） |
-| Phase 4-D/F+ | std140、Renderer e2e、hot-reload、capability 体系 | 🔴 待做 |
+| Phase 4-F+ | Renderer e2e submit、hot-reload、capability 体系 | 🔴 待做 |
 | Phase 5+ | HLSL 后端（按需 — DXC 一手质量 / 减体积） | 🅿 暂缓 |
 | Phase 5+ | WGSL 后端（按需 — WebGPU 目标） | 🅿 暂缓 |
 
@@ -50,6 +51,10 @@ cmake --build D:\Projects\out\build\x64-Debug --target AYShader_Test
 
 # Windows：若裸跑 cl 报 cstdint 找不到，先初始化 MSVC 环境再构建：
 cmd /c "\"D:\Visual Studio\Product\VC\Auxiliary\Build\vcvars64.bat\" && cmake --build D:\Projects\out\build\x64-Debug --target AYShader_Test"
+
+# 若改动了 Pool/wire-up/测试二进制相关代码后测试异常退出（0xC0000005），先 clean 再编：
+cmake --build D:\Projects\out\build\x64-Debug --target clean
+cmake --build D:\Projects\out\build\x64-Debug --target AYShader_Test
 
 # 跑全部测试
 D:\Projects\out\build\x64-Debug\AYRuntime\AYShader\unittest\AYShader_Test.exe
@@ -74,6 +79,7 @@ D:\Projects\out\build\x64-Debug\AYRuntime\AYShader\unittest\AYShader_Test.exe
 | `Test_GoldenFiles.cpp` | 5 个 Phoskia fixture 输出 byte-equal 比对 baseline |
 | `Test_IrGenerator.cpp` | Phase 3.1 IR 层：AST→IR 降级 + resolvedType + 完整 BGFX retarget |
 | `Test_ShaderResource.cpp` | Phase 4 `ShaderResource` / `ShaderResourcePool` / `compileToShaderResource` |
+| `Test_Std140Layout.cpp` | Phase 4-D std140 UBO layout calculator |
 | `Test_ShaderCacheIntegration.cpp` | Phase 4-K frontend header contract（本 TU 不含 bgfx） |
 
 ### Golden fixture

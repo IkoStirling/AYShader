@@ -75,9 +75,15 @@ bool buildBindingTable(ShaderResourceImpl& impl, const CompiledShaderProgram& pr
         BindingEntry entry;
         entry.kind = BindingKind::UniformBlock;
         entry.name = block.name;
+        entry.uniformBlockSizeBytes = block.sizeBytes;
 
-        const uint16_t numVec4 = static_cast<uint16_t>(
-            block.fieldNames.empty() ? 1u : block.fieldNames.size());
+        for (const BGFXUniformBlockMember& member : block.members) {
+            entry.uniformBlockFieldOffsets.emplace(member.name, member.offsetBytes);
+            entry.uniformBlockFieldSizes.emplace(member.name, member.sizeBytes);
+        }
+
+        const size_t blockBytes = block.sizeBytes > 0 ? block.sizeBytes : 16u;
+        const uint16_t numVec4 = static_cast<uint16_t>((blockBytes + 15u) / 16u);
         entry.uniformHandle = bgfx::createUniform(
             block.name.c_str(), bgfx::UniformType::Vec4, numVec4);
 

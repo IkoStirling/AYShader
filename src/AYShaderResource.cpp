@@ -76,6 +76,46 @@ BindingId ShaderResource::getStorageBufferBinding(const std::string& name) const
     return lookupBinding(_impl->storageBufferBindings, name);
 }
 
+size_t ShaderResource::getUniformBlockSize(BindingId blockId) const
+{
+    if (!_impl || blockId == InvalidBinding) {
+        return 0;
+    }
+    const BindingEntry* entry = findBindingEntry(*_impl, blockId);
+    if (entry == nullptr || entry->kind != BindingKind::UniformBlock) {
+        return 0;
+    }
+    return entry->uniformBlockSizeBytes;
+}
+
+size_t ShaderResource::getUniformBlockFieldOffset(BindingId blockId,
+                                                  const std::string& fieldName) const
+{
+    if (!_impl || blockId == InvalidBinding) {
+        return 0;
+    }
+    const BindingEntry* entry = findBindingEntry(*_impl, blockId);
+    if (entry == nullptr || entry->kind != BindingKind::UniformBlock) {
+        return 0;
+    }
+    const auto it = entry->uniformBlockFieldOffsets.find(fieldName);
+    return it != entry->uniformBlockFieldOffsets.end() ? it->second : 0;
+}
+
+size_t ShaderResource::getUniformBlockFieldSize(BindingId blockId,
+                                                const std::string& fieldName) const
+{
+    if (!_impl || blockId == InvalidBinding) {
+        return 0;
+    }
+    const BindingEntry* entry = findBindingEntry(*_impl, blockId);
+    if (entry == nullptr || entry->kind != BindingKind::UniformBlock) {
+        return 0;
+    }
+    const auto it = entry->uniformBlockFieldSizes.find(fieldName);
+    return it != entry->uniformBlockFieldSizes.end() ? it->second : 0;
+}
+
 void ShaderResource::setUniform(BindingId id, const void* data, size_t sizeBytes) const
 {
     if (!_impl || id == InvalidBinding || data == nullptr || sizeBytes == 0) {
@@ -95,6 +135,25 @@ void ShaderResource::setUniform(BindingId id, const void* data, size_t sizeBytes
     pending.data.resize(sizeBytes);
     std::memcpy(pending.data.data(), data, sizeBytes);
     _impl->pendingUniforms.push_back(std::move(pending));
+}
+
+void ShaderResource::setUniformBlock(BindingId blockId,
+                                     const void* data,
+                                     size_t sizeBytes) const
+{
+    if (!_impl || blockId == InvalidBinding || data == nullptr || sizeBytes == 0) {
+        return;
+    }
+
+    const BindingEntry* entry = findBindingEntry(*_impl, blockId);
+    if (entry == nullptr || entry->kind != BindingKind::UniformBlock) {
+        return;
+    }
+    if (entry->uniformBlockSizeBytes != 0 && sizeBytes != entry->uniformBlockSizeBytes) {
+        return;
+    }
+
+    setUniform(blockId, data, sizeBytes);
 }
 
 void ShaderResource::setTexture(uint8_t stage, BindingId id, const TextureHandle& tex) const
