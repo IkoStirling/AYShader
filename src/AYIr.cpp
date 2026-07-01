@@ -201,9 +201,15 @@ std::unique_ptr<IRDeclaration> IRGenerator::lowerDecl(const phoskia::Stmt& s) {
     } else if (auto t = dynamic_cast<const phoskia::TextureDecl*>(&s)) {
         out->kind = IRDeclaration::Kind::Texture;
         out->name = t->name;
-        // The AST's texture2d keyword is the only texture kind recognized
-        // today; future parser additions extend this without IR changes.
-        out->samplerKind = SamplerKind::Sampler2D;
+        switch (t->samplerKind) {
+        case phoskia::TextureSamplerKind::SamplerCube:
+            out->samplerKind = SamplerKind::SamplerCube;
+            break;
+        case phoskia::TextureSamplerKind::Sampler2D:
+        default:
+            out->samplerKind = SamplerKind::Sampler2D;
+            break;
+        }
     } else if (auto st = dynamic_cast<const phoskia::StorageDecl*>(&s)) {
         // Phase 3.2 Block 3: compute storage buffer.
         // The element type is carried as a Type pointer (target-neutral)
@@ -311,6 +317,7 @@ std::unique_ptr<IRShaderParam> IRGenerator::lowerShaderParam(const phoskia::Shad
 std::unique_ptr<IRVertexFunc> IRGenerator::lowerVertexFuncWithEnv(const phoskia::VertexFunc& vf,
                                                                   phoskia::TypeEnvironment& env) {
     auto out = std::make_unique<IRVertexFunc>();
+    env.addVariable("u_modelViewProj", BuiltinTypes::Mat4());
     for (const auto& s : vf.params) {
         if (auto p = dynamic_cast<const phoskia::ShaderParam*>(s.get())) {
             auto sp = lowerShaderParam(*p);

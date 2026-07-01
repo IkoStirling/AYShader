@@ -48,19 +48,37 @@ void mapRendererTypeToPlatformProfile(bgfx::RendererType::Enum type,
                                       std::string& platform,
                                       std::string& profile)
 {
+    // Match bgfx examples/scripts/shader.mk (TARGET → platform/profile).
     switch (type) {
     case bgfx::RendererType::Direct3D11:
+        platform = "windows";
+        profile = "s_5_0";
+        break;
     case bgfx::RendererType::Direct3D12:
         platform = "windows";
-        profile = "430";
+        profile = "s_6_0";
         break;
     case bgfx::RendererType::Metal:
         platform = "osx";
         profile = "metal";
         break;
     case bgfx::RendererType::Vulkan:
+        platform = "linux";
+        profile = "spirv";
+        break;
     case bgfx::RendererType::OpenGL:
+        platform = "linux";
+        profile = "120";
+        break;
     case bgfx::RendererType::OpenGLES:
+        platform = "android";
+        profile = "100_es";
+        break;
+    case bgfx::RendererType::WebGPU:
+        platform = "linux";
+        profile = "wgsl";
+        break;
+    case bgfx::RendererType::Noop:
     default:
         platform = "linux";
         profile = "430";
@@ -337,6 +355,7 @@ struct ShaderResourcePool::Impl {
     std::unordered_map<std::string, std::shared_ptr<const phoskia::ir::IRProgram>> sourceCache;
     std::unordered_map<std::string, HotReloadWatch> hotReloadWatches;
     CacheStats stats;
+    std::vector<std::string> lastCompileErrors;
 
     Impl()
     {
@@ -503,10 +522,10 @@ struct ShaderResourcePool::Impl {
                                      const std::string& src,
                                      const phoskia::CompileOptions& opts) const
     {
-        if (!keyOverride.empty()) {
-            return keyOverride;
-        }
         std::ostringstream oss;
+        if (!keyOverride.empty()) {
+            oss << keyOverride << '|';
+        }
         oss << platform << '|' << profile << '|' << shadercPath << '|';
         for (const std::string& dir : bgfxIncludeDirs) {
             oss << dir << ';';
@@ -648,6 +667,15 @@ CacheStats ShaderResourcePool::cacheStats() const
     return _impl->stats;
 }
 
+const std::vector<std::string>& ShaderResourcePool::lastCompileErrors() const
+{
+    static const std::vector<std::string> kEmpty;
+    if (!_impl) {
+        return kEmpty;
+    }
+    return _impl->lastCompileErrors;
+}
+
 ShaderResourceImpl* ShaderResourcePool::resolveHandle(uint64_t handle)
 {
     if (handle == 0) {
@@ -759,6 +787,7 @@ ShaderResource ShaderResourcePool::acquire(const std::string& src,
         if (!compiler.generateIr(src, opts, generated, irErrors)) {
             prog.success = false;
             prog.errors = std::move(irErrors);
+            _impl->lastCompileErrors = prog.errors;
             return ShaderResource{};
         }
         cachedIr = std::make_shared<const phoskia::ir::IRProgram>(std::move(generated));
@@ -777,6 +806,9 @@ ShaderResource ShaderResourcePool::acquire(const std::string& src,
     ShaderResource res = acquire(prog);
     if (res.isValid()) {
         _impl->cache[key] = res.id();
+        _impl->lastCompileErrors.clear();
+    } else if (!prog.errors.empty()) {
+        _impl->lastCompileErrors = prog.errors;
     }
     return res;
 }
@@ -808,8 +840,11 @@ ShaderResource ShaderResourcePool::acquire(const CompiledShaderProgram& prog)
     std::vector<std::string> errors;
     if (!detail::wireUpProgram(*impl, prog, errors)) {
         impl->destroyGpuResources();
+        _impl->lastCompileErrors = errors;
         return ShaderResource{};
     }
+
+    _impl->lastCompileErrors.clear();
 
     const uint64_t handle = _impl->makeHandle(std::move(impl));
     return ShaderResource(handle);

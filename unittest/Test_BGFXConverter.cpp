@@ -174,6 +174,7 @@ TEST_CASE(uniforms_emitted_in_both_vs_and_fs) {
     CHECK(files.vertex.find("uniform vec4 u_time") != std::string::npos);
     CHECK(files.vertex.find("uniform mat4 u_modelViewProj") != std::string::npos);
     CHECK(files.fragment.find("uniform vec4 u_time") != std::string::npos);
+    CHECK(files.vertex.find("mul(u_modelViewProj, vec4(0.0, 0.0, 0.0, 1.0))") != std::string::npos);
 }
 
 // ===== Properties become uniforms =====

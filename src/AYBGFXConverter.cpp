@@ -79,6 +79,7 @@ void emitExpr(std::ostringstream& out, const phoskia::ir::IRExpr& e);
 // stays bgfx-agnostic.
 struct RenameContext {
     std::unordered_map<std::string, std::string> map;
+    std::unordered_map<std::string, phoskia::ir::SamplerKind> textureKinds;
     bool contains(const std::string& k) const { return map.find(k) != map.end(); }
     const std::string& lookup(const std::string& k) const {
         auto it = map.find(k);
@@ -107,6 +108,21 @@ std::shared_ptr<phoskia::Type> phoskiaGLSLTypeToPhoskiaType(const std::string& l
     if (lex == "mat3")   return BuiltinTypes::Mat3();
     if (lex == "mat4")   return BuiltinTypes::Mat4();
     return nullptr;
+}
+
+bool exprIsMatrix(const std::shared_ptr<phoskia::Type>& type)
+{
+    return type && std::dynamic_pointer_cast<phoskia::MatrixType>(type) != nullptr;
+}
+
+// bgfx common.sh defines mul() for both GLSL (as a * b) and HLSL (native mul).
+// HLSL rejects mat * vec with operator* — emit mul when a matrix is involved.
+bool binaryMulNeedsBgfxMul(const phoskia::ir::IRBinaryExpr& bin)
+{
+    if (bin.op.type != phoskia::TokenType::Star || !bin.left || !bin.right) {
+        return false;
+    }
+    return exprIsMatrix(bin.left->resolvedType) || exprIsMatrix(bin.right->resolvedType);
 }
 
 // Phase 3.1: emit* helpers consume IR nodes. Each IR expression already
@@ -199,11 +215,22 @@ void emitExpr(std::ostringstream& out, const phoskia::ir::IRExpr& e,
         // would emit as `a * b - c * d` and silently change the math
         // under GLSL's left-associative precedence rules. Wrapping
         // every BinaryExpr in (...) is verbose but always correct.
-        out << "(";
-        emitExpr(out, *bin->left, ctx);
-        out << " " << bin->op.lexeme << " ";
-        emitExpr(out, *bin->right, ctx);
-        out << ")";
+        //
+        // Matrix * vector (or matrix * matrix) uses bgfx mul() so the
+        // same .sc compiles under GLSL and HLSL/DXBC profiles.
+        if (binaryMulNeedsBgfxMul(*bin)) {
+            out << "mul(";
+            emitExpr(out, *bin->left, ctx);
+            out << ", ";
+            emitExpr(out, *bin->right, ctx);
+            out << ")";
+        } else {
+            out << "(";
+            emitExpr(out, *bin->left, ctx);
+            out << " " << bin->op.lexeme << " ";
+            emitExpr(out, *bin->right, ctx);
+            out << ")";
+        }
     } else if (auto un = dynamic_cast<const phoskia::ir::IRUnaryExpr*>(&e)) {
         out << un->op.lexeme;
         emitExpr(out, *un->operand, ctx);
@@ -219,7 +246,18 @@ void emitExpr(std::ostringstream& out, const phoskia::ir::IRExpr& e,
         // user would have written by hand from the math.
         if (auto callee = dynamic_cast<const phoskia::ir::IRIdentifierExpr*>(call->callee.get())) {
             if (callee->name == "sample") {
-                out << "texture2D";
+                phoskia::ir::SamplerKind samplerKind = phoskia::ir::SamplerKind::Sampler2D;
+                if (!call->args.empty()) {
+                    if (auto texId = dynamic_cast<const phoskia::ir::IRIdentifierExpr*>(
+                            call->args[0].get())) {
+                        const auto it = ctx.textureKinds.find(texId->name);
+                        if (it != ctx.textureKinds.end()) {
+                            samplerKind = it->second;
+                        }
+                    }
+                }
+                out << ((samplerKind == phoskia::ir::SamplerKind::SamplerCube)
+                            ? "textureCube" : "texture2D");
             } else if (callee->name == "thread_id") {
                 // Phase 3.2 Block 2: compute builtin.
                 // Phoskia `thread_id()` → GLSL `gl_GlobalInvocationID`
@@ -856,8 +894,8 @@ void AYBGFXConverter::compileToBinary(const phoskia::ir::IRProgram& program,
         const std::string fsKey = detail::fragmentStageKey(i);
         const std::string vdKey = detail::kVaryingDefinitionsKey;
 
-        // vs (no varyingdef)
-        if (!compileStage("vertex", mf.vertex, "",
+        // vs (with varyingdef — required for HLSL/DXBC so attributes like a_position are declared)
+        if (!compileStage("vertex", mf.vertex, mf.varyingDefinitions,
                           "material_" + std::to_string(i) + "_vs",
                           out.vsBin)) {
             allOk = false;
@@ -960,6 +998,7 @@ detail::BGFXMaterialStages AYBGFXConverter::convertMaterial(const phoskia::ir::I
     // converter emits GLSL without a type prefix.
     phoskia::TypeEnvironment vsEnv;
     phoskia::TypeEnvironment fsEnv;
+    vsEnv.addVariable("u_modelViewProj", phoskia::BuiltinTypes::Mat4());
     RenameContext vsCtx;
     RenameContext fsCtx;
 
@@ -1002,9 +1041,27 @@ detail::BGFXMaterialStages AYBGFXConverter::convertMaterial(const phoskia::ir::I
             }
             case phoskia::ir::IRDeclaration::Kind::Texture: {
                 uint8_t slot = static_cast<uint8_t>(_textures.size());
-                _textureDecls += "SAMPLER2D(" + decl->name + ", " + std::to_string(slot) + ");\n";
-                BGFXTexture bt; bt.name = decl->name; bt.binding = slot;
+                std::string macro;
+                std::string glslType;
+                switch (decl->samplerKind) {
+                case phoskia::ir::SamplerKind::SamplerCube:
+                    macro = "SAMPLERCUBE(" + decl->name + ", " + std::to_string(slot) + ");\n";
+                    glslType = "samplerCube";
+                    break;
+                case phoskia::ir::SamplerKind::Sampler2D:
+                default:
+                    macro = "SAMPLER2D(" + decl->name + ", " + std::to_string(slot) + ");\n";
+                    glslType = "sampler2D";
+                    break;
+                }
+                _textureDecls += macro;
+                BGFXTexture bt;
+                bt.name = decl->name;
+                bt.binding = slot;
+                bt.textureType = glslType;
                 _textures.push_back(std::move(bt));
+                vsCtx.textureKinds[decl->name] = decl->samplerKind;
+                fsCtx.textureKinds[decl->name] = decl->samplerKind;
                 // Textures are opaque to the type system (Phase 2 Step 2
                 // deferred TextureType); register as Dynamic so lookup
                 // succeeds even though sample() body-side checks pass

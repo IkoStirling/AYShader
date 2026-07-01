@@ -50,6 +50,7 @@ public:
                                   const std::string& profile);
 
     CacheStats cacheStats() const;
+    const std::vector<std::string>& lastCompileErrors() const;
 
     ShaderResource compile(const std::string& src);
     ShaderResource compile(const std::string& src,

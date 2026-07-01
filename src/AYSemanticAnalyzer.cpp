@@ -150,6 +150,8 @@ void AYSemanticAnalyzer::analyzeShaderParam(const ShaderParam& param) {
 void AYSemanticAnalyzer::analyzeVertexFunc(const VertexFunc& func) {
     _env.pushScope();
     _inShaderFunc = true;
+    // bgfx common.sh builtins (not re-declared in generated .sc).
+    _env.addVariable("u_modelViewProj", BuiltinTypes::Mat4());
     for (const auto& p : func.params) {
         if (auto sp = dynamic_cast<const ShaderParam*>(p.get())) {
             analyzeShaderParam(*sp);

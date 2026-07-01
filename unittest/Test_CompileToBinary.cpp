@@ -1,4 +1,4 @@
-// Test_CompileToBinary.cpp �?Phase 3.6 Commit 2 (B2)
+// Test_CompileToBinary.cpp ??Phase 3.6 Commit 2 (B2)
 //
 // Tests AYBGFXConverter::compileToBinary(), the productization entry
 // point that takes a Phoskia IR and returns a CompiledShaderProgram
@@ -42,7 +42,7 @@ using namespace ayt::shader::phoskia;
 
 namespace {
 
-// CMake-injected hints �?same shape as Test_ShadercDriver.cpp. When
+// CMake-injected hints ??same shape as Test_ShadercDriver.cpp. When
 // not injected (i.e. AY_SHADER_BGFX_COMMON_HINT is ""), the shaderc
 // invocation is missing the -i flag for bgfx's `common.sh` and any
 // test that needs an actual compile will SKIP rather than fail.
@@ -158,7 +158,7 @@ TEST_CASE(compileToBinary_minimal_unlit_returns_shape) {
     if (!shadercAvailable() || !bgfxCommonAvailable()) {
         // Failure-shape contract: errors vector has at least one entry
         // mentioning the missing-shaderc diagnostic. We still need to
-        // run compileToBinary once to populate `program.errors` �?but
+        // run compileToBinary once to populate `program.errors` ??but
         // only when shaderc IS missing (the SKIP path is exactly the
         // error path).
         ir::IRProgram ir = buildIr(kMinimalUnlit);
@@ -197,6 +197,53 @@ TEST_CASE(compileToBinary_minimal_unlit_returns_shape) {
     CHECK(program.csBin.empty());
     // Default keepSources=false: no debug map populated.
     CHECK(program.sources.empty());
+}
+
+// D3D11/DXBC (s_5_0) requires --varyingdef on vertex as well as fragment so
+// attributes like a_position are declared for HLSL. Matrix*vector must use
+// bgfx mul() (HLSL rejects mat * vec). Regression for Demo.
+TEST_CASE(compileToBinary_dxbc_profile_compiles_position_shader) {
+    PUTENV_S("AY_PHOSKIA_KEEP_SOURCES", "");
+    PUTENV_S("AY_PHOSKIA_DUMP_SC", "");
+
+    if (!shadercAvailable() || !bgfxCommonAvailable()) {
+        std::cerr << "[compileToBinary test] SKIP: shaderc or bgfx "
+                     "common.sh not available.\n";
+        return;
+    }
+
+    const std::string kMvpMaterial = R"(
+material RotatingCube {
+    property baseColor = vec4(0.25, 0.55, 0.95, 1.0)
+    vertex {
+        in pos : position
+        return u_modelViewProj * vec4(pos, 1.0)
+    }
+    fragment {
+        return baseColor
+    }
+}
+)";
+
+    ir::IRProgram ir = buildIr(kMvpMaterial);
+    AYBGFXConverter conv;
+    BGFXCompileOptions opts;
+    opts.platform = "windows";
+    opts.profile  = "s_5_0";
+    opts.includeDirs = shadercIncludeDirs();
+
+    CompiledShaderProgram program;
+    conv.compileToBinary(ir, opts, program);
+
+    if (!program.success) {
+        std::cerr << "[compileToBinary dxbc] failed:\n";
+        for (const auto& e : program.errors) {
+            std::cerr << "  " << e << "\n";
+        }
+    }
+    CHECK(program.success);
+    CHECK(!program.vsBin.empty());
+    CHECK(!program.fsBin.empty());
 }
 
 // Phase 3.6 Commit 2: keepSources=true populates the in-memory sources

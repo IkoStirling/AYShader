@@ -99,4 +99,8 @@ target_compile_definitions(${TEST_NAME} PRIVATE
     AY_SHADER_BGFX_SRC_HINT="${AY_SHADER_BGFX_SRC_DIR}"
 )
 
+if(MSVC)
+    target_compile_options(${TEST_NAME} PRIVATE /Zc:__cplusplus /Zc:preprocessor)
+endif()
+
 add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})

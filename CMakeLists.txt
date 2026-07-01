@@ -44,6 +44,10 @@ target_link_libraries(AYShader PUBLIC
     bgfx::bgfx
 )
 
+if(MSVC)
+    target_compile_options(AYShader PRIVATE /Zc:__cplusplus /Zc:preprocessor)
+endif()
+
 # Unit tests
 enable_testing()
 add_subdirectory(unittest)
