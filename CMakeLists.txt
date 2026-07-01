@@ -41,6 +41,7 @@ list(APPEND CMAKE_PREFIX_PATH
 find_package(bgfx CONFIG REQUIRED)
 
 target_link_libraries(AYShader PUBLIC
+    AYIO
     bgfx::bgfx
 )
 

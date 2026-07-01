@@ -47,7 +47,7 @@ private:
     void skipBracketedAttributeBody();
     std::unique_ptr<Stmt> parsePropertyDecl();
     std::unique_ptr<Stmt> parseUniformDecl();
-    std::unique_ptr<Stmt> parseTextureDecl();
+    std::unique_ptr<Stmt> parseTextureDecl(TextureSamplerKind kind);
     // Phase 3.2 Block 3: `storage <name> : structuredbuffer<T>` etc.
     std::unique_ptr<Stmt> parseStorageDecl();
     // Phase 3.3 Block 4: `shared <type> <name>[<size>];` workgroup

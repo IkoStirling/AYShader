@@ -3,6 +3,9 @@
 #include "AYPhoskia.h"
 #include "AYBGFXConverter.h"
 #include "AYShaderResourcePool.h"
+
+#include <AYEnv.h>
+
 #include <cctype>
 #include <cstdlib>
 #include <iostream>
@@ -30,10 +33,12 @@ bool parseEnvBool(const char* v) {
 // because callers may want to keep their original value (e.g. for
 // logging).
 CompileOptions applyEnvOverrides(CompileOptions opts) {
-    if (parseEnvBool(std::getenv("AY_PHOSKIA_KEEP_SOURCES"))) {
+    if (auto v = ayt::io::env::get("AY_PHOSKIA_KEEP_SOURCES");
+        v.has_value() && parseEnvBool(v->c_str())) {
         opts.keepSources = true;
     }
-    if (parseEnvBool(std::getenv("AY_PHOSKIA_DUMP_SC"))) {
+    if (auto v = ayt::io::env::get("AY_PHOSKIA_DUMP_SC");
+        v.has_value() && parseEnvBool(v->c_str())) {
         opts.dumpIntermediate = true;
     }
     return opts;

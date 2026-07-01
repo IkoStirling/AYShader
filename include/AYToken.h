@@ -26,6 +26,7 @@ enum class TokenType : uint8_t {
     Binding,   // Phase 3.5-A: storage decl binding syntax
                //   storage NAME : rwstructuredbuffer<T> binding N;
     Texture2D,
+    TextureCube,  // Phase 5 slice: texturecube envMap;
     Sampler,
     Vertex,
     Fragment,

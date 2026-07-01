@@ -987,7 +987,7 @@ AYBGFXConverter::convertBGFX(program)
 |---|---|
 | `.sc` 字符串从 `BGFXConvertResult` 公开字段移走 | bgfx::createShader / createProgram 调用 |
 | shaderc 调用内化进 `AYBGFXConverter::compileToBinary()` | bgfx wire-up（frontend 拿 bin 后调 bgfx API） |
-| `AY_PHOSKIA_DUMP_SC=1` 控制 .sc 落盘 | 与具体 frontend (AYRenderer) 集成 |
+| `AY_PHOSKIA_DUMP_SC=1` 控制 .sc 落盘 | 与具体 frontend (AYRenderer) 集成 — 见 [`AYRenderer/design.md`](../AYRenderer/design.md) §2 |
 | 测试 plumbing 从 "手工写 .sc 盘 → spawn shaderc 读 .sc" 改为 "emit in-memory → driver 调 shaderc" | WGSL / HLSL backend 的 binary 输出 |
 
 **为什么 Phase 3.6 仍走路线 A**（spawn shaderc.exe 而不是 in-process）：
@@ -2630,13 +2630,15 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 
 #### 🟡 Phase 5 — Compute + Texture 补完（覆盖 90% 真实项目需求）— **原 Phase 3.7，降级**
 
-| # | 能力 | 表面语法 | emit | 估算 | 依赖 |
-|---|---|---|---|---|---|
-| 1 | **Storage image** | `storageimage X : rwimage2d<float> binding N;` | `layout(r32f, binding = N) uniform image2D X;` + `imageLoad / imageStore` 内置 | 1.5 天 | — |
-| 2 | **多 texture kind** | `texturecube envMap;` / `texture3d noise;` / `texture2darray lookup;` | `SAMPLERCUBE / SAMPLER3D / SAMPLER2DARRAY` 宏 | 2 天 | — |
-| 3 | **Compute barrier** | `barrier();` `memoryBarrierShared();` 内置 | `barrier();` `memoryBarrierShared();` | 0.5 天 | — |
-| 4 | **原子操作** | `atomicAdd(ptr, val);` `atomicMin(...);` 等内置 | `atomicAdd(ptr.data[idx], val);` 等 | 1 天 | — |
-| 5 | **Fragment 导数** | `dFdx(v) / dFdy(v) / fwidth(v)` 内置 | `dFdx / dFdy / fwidth` | 0.25 天 | — |
+> **2026-07 小步切片（已落地）**：`dFdx`/`dFdy`/`fwidth` 内置 + `texturecube`/`SAMPLERCUBE`/`textureCube`；其余项标注 🅿 延后。
+
+| # | 能力 | 表面语法 | emit | 估算 | 依赖 | 状态 |
+|---|---|---|---|---|---|---|
+| 1 | **Storage image** | `storageimage X : rwimage2d<float> binding N;` | `layout(r32f, binding = N) uniform image2D X;` + `imageLoad / imageStore` 内置 | 1.5 天 | — | 🅿 |
+| 2 | **多 texture kind** | `texturecube envMap;` / `texture3d noise;` / `texture2darray lookup;` | `SAMPLERCUBE / SAMPLER3D / SAMPLER2DARRAY` 宏 | 2 天 | — | **cube ✅**；3d/array 🅿 |
+| 3 | **Compute barrier** | `barrier();` `memoryBarrierShared();` 内置 | `barrier();` `memoryBarrierShared();` | 0.5 天 | — | 🅿 |
+| 4 | **原子操作** | `atomicAdd(ptr, val);` `atomicMin(...);` 等内置 | `atomicAdd(ptr.data[idx], val);` 等 | 1 天 | — | 🅿 |
+| 5 | **Fragment 导数** | `dFdx(v) / dFdy(v) / fwidth(v)` 内置 | `dFdx / dFdy / fwidth` | 0.25 天 | — | ✅ |
 
 合计：~5 天。**打开 PBR 后处理 / 流体模拟 / GPGPU 通用计算 / 法线贴图等关键场景**。
 
@@ -2889,6 +2891,9 @@ res.submit(drawCtx);
 | RFC-008 | Result<T, E> API | Pending（§8.8） | Phase 6+ |
 | RFC-009 | CompileOptions builder pattern | Pending（§8.4） | Phase 6+ |
 | RFC-010 | API Stability Promise | Stabilized（§0） | Phase 4 入口 |
+| RFC-011 | File I/O via AYIO | Accepted（§16） | Phase 4+ |
+| RFC-012 | AYIO::Process 模块（shaderc spawn 统一化） | Pending | Future Work |
+| RFC-013 | env::get / env::contains on AYIO | Accepted（§16） | Phase 4+ |
 
 ---
 
@@ -3073,3 +3078,145 @@ frontend 想做"只改了一个 material → 只重编这一个"。当前 cache 
 - [RSL (RenderMan Shader Language)](https://renderman.pixar.com/resources/RenderMan_20/shadingLanguage.html)
 - Unity ShaderLab
 - [GLSL ES 3.00 Specification](https://www.khronos.org/registry/OpenGL/specs/gl/GLSLangSpec.3.00.pdf)
+
+---
+
+## 16. File I/O via AYIO（RFC-011 / RFC-013）
+
+### 16.1 范围与决策
+
+AYShader 的 production `src/` 通过 `ayt::io`（AYFoundation/AYIO）收敛所有 file I/O，彻底删除 `std::ifstream` / `std::ofstream` / `::stat` / `::remove` / `mkdir` / `_mkdir` / `GetFileAttributesExA` 的手写实现。
+
+**迁移范围**：6 个 TU
+- `src/AYShaderDiskCache.cpp`（cache 读写）
+- `src/AYShaderFileWatch.cpp`（hot-reload mtime）
+- `src/AYShaderResourcePool.cpp`（cache key 删除）
+- `src/AYShadercDriver.cpp`（shaderc 临时文件）
+- `src/AYBGFXConverter.cpp`（dumpIntermediate 写盘）
+- `src/AYPhoskia.cpp`（env-var 读取）
+
+**决策**：
+- 文件读写主路径用 `ayt::io::File` (raw `read`/`write`) + `queryAttributes` 预 reserve；增加 `File::readAllText` / `readAllBytes` / `writeAllText` / `writeAllBytes` 四个便利函数（RFC-011 配套扩展）
+- 整文件读（.aysc cache、.phoskia 源）用 `ayt::io::MemoryMappedFile`（零拷贝）
+- 临时文件用 `ayt::io::TempFile::tempDir()` 探测系统 temp 目录，**保留手写的 pid_counter 命名以维持 .sc 后缀**（见 §16.5）
+- 写 cache / dump .sc 用 `ayt::io::File::writeAllText`（dump 是 best-effort，不需要 atomicWrite 的额外开销）
+- env-var 读取统一走 `ayt::io::env::get` / `env::contains`（RFC-013 新增 API）
+
+### 16.2 替换映射表（关键 11 处）
+
+| 调用点 | 旧实现 | 新实现 |
+|---|---|---|
+| `AYShadercDriver.cpp::fileExists` | `::stat` | `ayt::io::File::exists` |
+| `AYShadercDriver.cpp::uniqueScTempPath` | `std::getenv("TEMP"/"TMPDIR")` + 手写 fallback | `ayt::io::TempFile::tempDir()` + `path::join` |
+| `AYShadercDriver.cpp::compile`（写 .sc） | `std::ofstream` + RAII `::remove` cleanup | `ayt::io::File::writeAllText` + `File::remove` |
+| `AYShadercDriver.cpp::compile`（读 .bin） | `std::ifstream` + `istreambuf_iterator` | `ayt::io::MemoryMappedFile` |
+| `AYShaderDiskCache.cpp::loadCompiledProgram` | `std::ifstream` | `MemoryMappedFile` + `std::stringstream` |
+| `AYShaderDiskCache.cpp::saveCompiledProgram` | `std::ofstream(trunc)` | `File::atomicWrite`（write-temp-then-rename，防 crash 残留 truncated .aysc）|
+| `AYShaderFileWatch.cpp::fileMtimeMs` | `GetFileAttributesExA` / `::stat` | `File::lastModifiedTime` × 1000（见 §16.4）|
+| `AYShaderFileWatch.cpp::readTextFile` | `std::ifstream` + seekg/tellg | `File::readAllText` + `File::queryAttributes` 兜底 |
+| `AYBGFXConverter.cpp::dumpScFile` | `std::ofstream` + `dir + "/" + key` 拼接 | `File::writeAllText` + `path::join` |
+| `AYShaderResourcePool.cpp::Impl::eraseCacheKey` | `std::remove` | `File::remove` |
+| `AYPhoskia.cpp::applyEnvOverrides` | `std::getenv` | `ayt::io::env::get` |
+
+### 16.3 不在范围（Future Work）
+
+- **进程 spawn**：`CreateProcessW` / `popen` 仍保留在 `AYShadercDriver.cpp::spawnCapturing`。这是 OS process API，不是 file I/O。AYIO 当前**未**暴露 Process 模块。**RFC-012**：`ayt::io::Process` 命名空间（spawn / capture / kill / env-block），把 AYShadercDriver 也迁过去。跟本任务解耦，单独 phase。
+- **unittest/ 内 file I/O**：不在本任务范围（user explicitly excluded）。
+- **shaderc 输出 .bin 大文件零拷贝**：当前 `MemoryMappedFile` → `vector<uint8_t>(ptr, ptr+sz)` 仍然有一次拷贝；如需彻底零拷贝可让 `CompiledShaderProgram` 持有 `MemoryMappedFile` handle，与 handle 生命周期绑定——单独 RFC。
+
+### 16.4 mtime 单位语义转换
+
+AYShader 旧实现返回 `int64_t` 毫秒（POSIX 用 `st_mtim.tv_nsec / 1e6`）。
+AYIO `File::lastModifiedTime(const std::string& path)` 静态版本返回 `uint64_t` Unix 秒。
+
+**简化决策**：取秒精度（×1000）。hot-reload 检测差异 ms 级无意义——文件修改是秒级事件，ms 精度不增加分辨力。**损失**：POSIX 上 ms 内多次修改无法分辨；**收益**：代码简化 + 跨平台一致（Win32 `GetFileAttributesExA` 返回的 FILETIME 本来就是 100ns 单位，但精度等同于秒）。
+
+### 16.5 临时文件后缀（.sc）决策
+
+旧实现 `uniqueScTempPath` 输出 `ayshader_<pid>_<counter>.sc`，带 `.sc` 后缀便于人类肉眼识别 / 调试。
+
+新实现**保留手写路径生成**（不走 `TempFile::create` RAII）以维持 `.sc` 后缀：
+```cpp
+const std::string dir = ayt::io::TempFile::tempDir();
+return ayt::io::path::join(dir,
+    "ayshader_" + std::to_string(pid) + "_" + std::to_string(n) + ".sc");
+```
+
+**为什么不直接用 TempFile RAII**：`ayt::io::TempFile::create(dir, prefix)` 生成的路径没有固定后缀（AYIO 当前不暴露后缀控制）。shaderc 不在意扩展名（看 `--type` 参数），但**调试体验**需要肉眼识别 `ayshader_*.sc`。
+
+**未来扩展路径**：如需要 RAII + 后缀，扩展 AYIO `TempFile` 加 `createWithSuffix(dir, prefix, suffix)` 或 `setExtension`；届时可以收回手写路径生成。
+
+### 16.6 AYIO 配套扩展（RFC-011 / RFC-013）
+
+本任务同步在 AYIO 增加 4 + 2 个 API：
+
+**`File` 类新增静态便利函数**（`include/AYFile.h`，`src/AYFile.cpp`）：
+```cpp
+static std::string         readAllText(const std::string& path);
+static std::vector<uint8_t> readAllBytes(const std::string& path);
+static bool                writeAllText(const std::string& path, const std::string& text);
+static bool                writeAllBytes(const std::string& path, const std::vector<uint8_t>& bytes);
+static uint64_t            lastModifiedTime(const std::string& path);  // RFC-011 配套扩展
+```
+
+**`Directory` 类补全静态实现**（`src/AYDirectory.cpp`）：
+```cpp
+static bool createRecursive(const std::string& path);  // 已在 AYDirectory.h:151 声明但缺实现，补全
+```
+
+**`ayt::io::env` 命名空间新增**（`include/AYEnv.h`，`src/AYEnv.cpp`）：
+```cpp
+namespace ayt::io::env {
+    std::optional<std::string> get(const std::string& name);
+    bool contains(const std::string& name);
+}
+```
+
+**语义契约**：
+- `readAllText/Bytes` 缺失文件 → 空 string / 空 vector（caller 用 `.empty()` 判定）
+- `writeAllText/Bytes` 写失败 → false（不抛异常，与 `File` 类一致）
+- `static lastModifiedTime(path)` 文件缺失或路径空 → 0（与 instance method 关闭 handle 时返回 0 一致；caller 用 `t > 0` 判定有效）
+- `env::get` 未设 → `std::nullopt`；设为空字符串 → `Some("")`（与 `std::getenv` 语义一致）
+- `env::contains` 未设 → false；设为空字符串 → true（变量**存在**但值为空）
+
+**为什么单独加 `static lastModifiedTime(path)` 而不是让 caller 用 `File::lastModifiedTimePoint(path)`**：
+- `lastModifiedTimePoint(path)` 已经存在但返回 `unique_ptr<ITimePoint>`，调用方还要 `.toUnixMs()` 拿 ms；多一次间接 + 一次堆分配
+- 直接返回 `uint64_t Unix 秒` 对 hot-reload 检测已经足够（秒级精度，见 §16.4）
+- 实现走 `stat()` / `GetFileAttributesExA`，比 open-then-close-File 的实例方法少一对 syscall
+
+**测试覆盖**（在 AYIO 自带 unittest，**不在** AYShader unittest）：
+- `readAllText_writes_round_trip` / `readAllBytes_writes_round_trip` / `readAllText_missing_file_returns_empty` / `writeAllText_empty_string_truncates`
+- `lastModifiedTime_static_by_path_returns_nonzero` / `lastModifiedTime_static_missing_file_returns_zero` / `lastModifiedTime_static_empty_path_returns_zero`
+- `directory_createRecursive_static_creates_nested` / `directory_createRecursive_static_returns_false_when_already_exists`（防止 declared-but-not-defined 再发生；锁定非幂等语义）
+- `env_contains_set_var_returns_true` / `env_contains_set_to_empty_returns_true`（Win32 `_putenv_s(name, "")` 实际是 unset；POSIX `setenv(name, "", 1)` 是 set-to-empty — 测试按平台分流）
+
+**Linker-error 教训**：本任务第一次 build 报 `LNK2019 ayt::io::Directory::createRecursive`，根因是 `Directory::createRecursive(path)` **已在 `AYDirectory.h:151` 声明但无对应实现**——属于 AYIO 自身的 declared-but-not-defined bug（之前只有实例版本被实现，静态版本是空头支票）。Free function `ayt::io::createDirectory(path)` 已存在并走相同的递归 mkdir 路径。修复方法：在 `src/AYDirectory.cpp` 补 4 行 delegate 实现，让 `Directory` 类 API 自洽。后续 AYResource / AYFont 走同样的静态 API 不会再踩坑。
+- `env_get_returns_value_when_set` / `env_get_returns_nullopt_when_unset` / `env_contains_set_var_returns_true` / `env_contains_unset_var_returns_false`
+
+### 16.7 CMakeLists 改动
+
+只有 1 处：
+```diff
+# D:/Projects/AYRuntime/AYShader/CMakeLists.txt
+ target_link_libraries(AYShader PUBLIC
++    AYIO
+     bgfx::bgfx
+ )
+```
+
+AYIO 自身 PUBLIC 依赖 AYTime + AYString，无需显式 link。`add_subdirectory(AYFoundation/AYIO)` 已在根 `CMakeLists.txt:31` 排好。
+
+### 16.8 设计教训（§15.x 候选）
+
+**自实现 file I/O 的成本被低估了 5 年**。原作者写 `::stat` 是为了"避免 std::filesystem 名字冲突"，结果代码里到处是同一段 stat 模板。AYIO 出来后，AYShader 单点绕路失去了存在理由。
+
+**教训**：单点避坑（"我这个 TU 不该 include filesystem"）的解药不是写一份手写实现，而是**跟上游模块 owner 沟通修复 namespace 污染**。AYIO 已经把 stat/ofstream 抽象干净，AYShader 没必要再重复一遍。
+
+### 16.9 完成判据
+
+- [x] AYIO `readAllText` / `writeAllText` / `readAllBytes` / `writeAllBytes` / `env::get` / `env::contains` 已实现 + 自测（RFC-011 / RFC-013）
+- [x] `CMakeLists.txt` 链 `AYIO`
+- [x] 6 个生产 TU 全部迁移，无 `<fstream>` / `<sys/stat.h>` / `<direct.h>` / `GetFileAttributesExA` 残留（grep 验证通过）
+- [x] `AYShader_Test` 939 测试不变（migration 是 internal refactor，测试 API 不变）
+- [x] design.md §16 + §14.7.4 RFC-011/012/013 已更新
+- [x] unittest/ 内 file I/O 不变（按 user 要求）

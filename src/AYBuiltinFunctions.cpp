@@ -235,11 +235,25 @@ void BuiltinFunctionRegistry::registerDefaults() {
     registerFunction("sample", {BuiltinTypes::Dynamic, V2}, V4,
         vec3Return, "Sample a texture2d at UV");
     registerFunction("sample", {BuiltinTypes::Dynamic, V3}, V4,
-        vec3Return, "Sample a texture2d array (vec3 UV)");
+        vec3Return, "Sample a texturecube or 2d array at vec3 coordinates");
     registerFunction("sampleLod", {BuiltinTypes::Dynamic, V2, F}, V4,
         vec3Return, "Sample a texture2d at UV with explicit LOD");
     registerFunction("sampleGrad", {BuiltinTypes::Dynamic, V2, V2, V2}, V4,
         vec3Return, "Sample a texture2d with explicit gradients");
+
+    // ---- Fragment derivatives (Phase 5 slice) ----
+    registerFunction("dFdx", {F}, F, vec3Return, "GLSL dFdx (float)");
+    registerFunction("dFdx", {V2}, V2, vec3Return, "GLSL dFdx (vec2)");
+    registerFunction("dFdx", {V3}, V3, vec3Return, "GLSL dFdx (vec3)");
+    registerFunction("dFdx", {V4}, V4, vec3Return, "GLSL dFdx (vec4)");
+    registerFunction("dFdy", {F}, F, vec3Return, "GLSL dFdy (float)");
+    registerFunction("dFdy", {V2}, V2, vec3Return, "GLSL dFdy (vec2)");
+    registerFunction("dFdy", {V3}, V3, vec3Return, "GLSL dFdy (vec3)");
+    registerFunction("dFdy", {V4}, V4, vec3Return, "GLSL dFdy (vec4)");
+    registerFunction("fwidth", {F}, F, vec3Return, "GLSL fwidth (float)");
+    registerFunction("fwidth", {V2}, V2, vec3Return, "GLSL fwidth (vec2)");
+    registerFunction("fwidth", {V3}, V3, vec3Return, "GLSL fwidth (vec3)");
+    registerFunction("fwidth", {V4}, V4, vec3Return, "GLSL fwidth (vec4)");
 
     // ---- Mix / step / smoothstep extended to vectors (Phase 2 Step 2) ----
     registerFunction("mix", {V3, V3, F}, V3, vec3Return, "Linear blend of two vec3");

@@ -15,11 +15,14 @@
 #include "AYAst.h"
 #include "AYType.h"
 #include "AYTypeInference.h"  // Phase 2: let stmt needs GLSL type prefix.
+
+#include <AYFile.h>
+#include <AYDirectory.h>
+#include <AYPath.h>
+
 #include <cstdio>
-#include <fstream>
 #include <sstream>
 #include <stdexcept>
-#include <sys/stat.h>
 #include <unordered_map>
 
 namespace ayt::shader
@@ -757,28 +760,31 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
 // guarantees bit-identical input to shaderc.
 namespace {
 
-// stat()-based existence check (same rationale as AYShadercDriver.cpp).
+// stat()-based existence check, now backed by AYIO. We previously hand-rolled
+// stat() to dodge std::filesystem::exists name pollution; AYIO's
+// Directory::exists is the canonical replacement.
 bool dirExists(const std::string& p) {
     if (p.empty()) return false;
-    struct stat st;
-    return ::stat(p.c_str(), &st) == 0;
+    return ayt::io::Directory::exists(p);
 }
 
 // Best-effort write of one .sc debug file. Failures surface in
 // program.warnings (not errors) — the .bin bytes were already produced
 // successfully and dump failures shouldn't poison the success flag.
+//
+// AYIO migration: writeAllBytes + path::join replace std::ofstream +
+// manual string concat. atomicWrite is overkill here (debug dumps are
+// re-runnable and a crash mid-dump just means a truncated .sc which the
+// user can delete), so we stick with the simpler writeAllBytes path.
 void dumpScFile(const std::string& dumpDir,
                 const std::string& key,
                 const std::string& source,
                 std::vector<std::string>& warnings) {
-    const std::string path = dumpDir + "/" + key;
-    std::ofstream f(path, std::ios::binary);
-    if (!f) {
+    const std::string path = ayt::io::path::join(dumpDir, key);
+    if (!ayt::io::File::writeAllText(path, source)) {
         warnings.push_back("dumpIntermediate: cannot write " + path +
                            " (does dumpDir exist?)");
-        return;
     }
-    f << source;
 }
 
 } // namespace

@@ -1,19 +1,17 @@
 // AYShaderDiskCache.cpp — CompiledShaderProgram disk tier (Phase 4-I)
+//
+// File I/O migrated to AYFoundation/AYIO (ayt::io) per the AYShader
+// file-IO migration plan. The on-disk binary format is unchanged; only
+// the read/write open/close plumbing moved.
 
 #include "detail/AYShaderDiskCache.h"
 
+#include <AYFile.h>
+#include <AYDirectory.h>
+
 #include <cstdint>
 #include <cstring>
-#include <fstream>
-#include <sys/stat.h>
-
-#ifdef _WIN32
-#  include <direct.h>
-#  define MKDIR(path) _mkdir(path)
-#else
-#  include <sys/types.h>
-#  define MKDIR(path) mkdir(path, 0755)
-#endif
+#include <sstream>
 
 namespace ayt::shader::detail
 {
@@ -236,11 +234,13 @@ bool ensureParentDirectory(const std::string& filePath)
     if (dir.empty()) {
         return true;
     }
-    struct stat st;
-    if (stat(dir.c_str(), &st) == 0) {
+    // AYIO Directory::exists covers both files and directories; for our
+    // purposes we only need "is the path resolvable" before we attempt
+    // createRecursive, so we collapse the stat/mkdir dance into two calls.
+    if (ayt::io::Directory::exists(dir)) {
         return true;
     }
-    return MKDIR(dir.c_str()) == 0;
+    return ayt::io::Directory::createRecursive(dir);
 }
 
 } // namespace
@@ -254,10 +254,18 @@ std::string diskCacheFilePath(const std::string& cacheDirectory,
 bool loadCompiledProgramFromDisk(const std::string& path,
                                  CompiledShaderProgram& out)
 {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) {
+    // Read whole file as bytes via AYIO, then pipe through a stringstream
+    // so the existing read* helpers (which take std::istream&) keep working
+    // unchanged. The on-disk binary format is byte-for-byte identical to
+    // the pre-migration version.
+    const std::vector<uint8_t> bytes = ayt::io::File::readAllBytes(path);
+    if (bytes.empty()) {
         return false;
     }
+    std::stringstream ss;
+    ss.write(reinterpret_cast<const char*>(bytes.data()),
+             static_cast<std::streamsize>(bytes.size()));
+    std::istream& in = ss;
 
     char magic[4] = {};
     uint32_t version = 0;
@@ -293,22 +301,34 @@ bool saveCompiledProgramToDisk(const std::string& path,
         return false;
     }
 
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out) {
+    // Serialize to an in-memory buffer first, then atomically write to disk
+    // via AYIO. atomicWrite does write-temp-then-rename, which means a crash
+    // mid-write leaves the previous good .aysc on disk rather than a
+    // truncated corrupted one. Pre-migration used std::ofstream(trunc), which
+    // truncated before any bytes were written — strict regression risk.
+    std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
+    std::ostream& out = ss;
+
+    const uint8_t success = 1;
+    if (!writeBytes(out, kMagic, sizeof(kMagic))
+        || !writeBytes(out, &kVersion, sizeof(kVersion))
+        || !writeBytes(out, &success, sizeof(success))
+        || !writeBlob(out, prog.vsBin)
+        || !writeBlob(out, prog.fsBin)
+        || !writeBlob(out, prog.csBin)
+        || !writeVectorT<BGFXUniformBlock, writeUniformBlock>(out, prog.uniformBlocks)
+        || !writeVectorT<BGFXUniform, writeUniform>(out, prog.uniforms)
+        || !writeVectorT<BGFXTexture, writeTexture>(out, prog.textures)
+        || !writeVectorT<BGFXStorageBuffer, writeStorageBuffer>(out, prog.storageBuffers)) {
         return false;
     }
 
-    const uint8_t success = 1;
-    return writeBytes(out, kMagic, sizeof(kMagic))
-        && writeBytes(out, &kVersion, sizeof(kVersion))
-        && writeBytes(out, &success, sizeof(success))
-        && writeBlob(out, prog.vsBin)
-        && writeBlob(out, prog.fsBin)
-        && writeBlob(out, prog.csBin)
-        && writeVectorT<BGFXUniformBlock, writeUniformBlock>(out, prog.uniformBlocks)
-        && writeVectorT<BGFXUniform, writeUniform>(out, prog.uniforms)
-        && writeVectorT<BGFXTexture, writeTexture>(out, prog.textures)
-        && writeVectorT<BGFXStorageBuffer, writeStorageBuffer>(out, prog.storageBuffers);
+    // Drain the stringstream into a contiguous byte buffer for AYIO.
+    const std::string& buf = ss.str();
+    return ayt::io::File::atomicWrite(
+        path,
+        buf.data(),
+        buf.size());
 }
 
 } // namespace ayt::shader::detail

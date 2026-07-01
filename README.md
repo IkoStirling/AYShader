@@ -10,7 +10,7 @@ AYShader 是 AY Engine 的着色器子系统：接受 **Phoskia** DSL 源码，�
 
 ## 状态
 
-**Phase 4 已关闭**（Phase 3.6 已关闭；1050+ 测试全绿）。
+**Phase 4 已关闭**（Phase 3.6 已关闭；Phase 5 小步切片已落地，测试全绿后更新计数）。
 
 | Phase | 范围 | 状态 |
 |---|---|---|
@@ -48,6 +48,9 @@ AYShader 是 AY Engine 的着色器子系统：接受 **Phoskia** DSL 源码，�
 | Phase 4-P | neutral source keys（`vertex_stage_N` / `varying_definitions`） | ✅ |
 | Phase 4-Q | 两级 cache（IR + binary）+ `CacheStats` | ✅ |
 | Phase 4-R | `CompileOptions` 精简（`defines` / debug flags only） | ✅ |
+| Phase 5 | Fragment 导数（`dFdx` / `dFdy` / `fwidth`） | ✅ |
+| Phase 5 | `texturecube` + `SAMPLERCUBE` + `sample(tex, vec3)` → `textureCube` | ✅ |
+| Phase 5 | Storage image / texture3d / barrier / atomic 等 | 🅿 延后 |
 | Phase 5+ | HLSL 后端（按需 — DXC 一手质量 / 减体积） | 🅿 暂缓 |
 | Phase 5+ | WGSL 后端（按需 — WebGPU 目标） | 🅿 暂缓 |
 
@@ -70,7 +73,7 @@ cmake --build D:\Projects\out\build\x64-Debug --target AYShader_Test
 D:\Projects\out\build\x64-Debug\AYRuntime\AYShader\unittest\AYShader_Test.exe
 ```
 
-最后一次完整跑：**1050 / 1050 PASS**（Phase 4 全量）。
+最后一次完整跑：**1080 / 1080 PASS**（Phase 5 小步切片）。
 
 ### 测试套件
 
@@ -97,6 +100,7 @@ D:\Projects\out\build\x64-Debug\AYRuntime\AYShader\unittest\AYShader_Test.exe
 | `Test_DiagnosticStructure.cpp` | Phase 4-N `PhoskiaDiagnostic::toHumanString()` |
 | `Test_HandleABI.cpp` | Phase 4-O opaque handle ABI |
 | `Test_CacheStats.cpp` | Phase 4-Q 两级 cache 统计 |
+| `Test_Phase5Slice.cpp` | Phase 5 小步：`dFdx`/`dFdy`/`fwidth`、`texturecube` emit |
 
 ### Golden fixture
 

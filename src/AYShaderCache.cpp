@@ -2,7 +2,6 @@
 
 #include "AYShaderCache.h"
 #include "IAYBackendConverter.h"
-#include <fstream>
 
 namespace ayt::shader
 {

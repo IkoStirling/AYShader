@@ -218,11 +218,19 @@ public:
     std::string name;
 };
 
+enum class TextureSamplerKind : uint8_t {
+    Sampler2D,
+    SamplerCube,
+};
+
 class TextureDecl : public Stmt {
 public:
-    explicit TextureDecl(const std::string& name) : name(name) {}
+    TextureDecl(const std::string& name,
+                TextureSamplerKind samplerKind = TextureSamplerKind::Sampler2D)
+        : name(name), samplerKind(samplerKind) {}
     void accept(AstVisitor& visitor) override;
     std::string name;
+    TextureSamplerKind samplerKind = TextureSamplerKind::Sampler2D;
 };
 
 // Phase 3.2 Block 3: compute storage buffer declaration.

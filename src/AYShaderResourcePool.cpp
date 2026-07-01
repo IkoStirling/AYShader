@@ -11,9 +11,10 @@
 #include "detail/AYShaderHandleTable.h"
 #include "AYIr.h"
 
+#include <AYFile.h>
+
 #include <algorithm>
 #include <atomic>
-#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <optional>
@@ -415,7 +416,9 @@ struct ShaderResourcePool::Impl {
         cache.erase(key);
         if (!cacheDirectory.empty()) {
             const std::string diskPath = detail::diskCacheFilePath(cacheDirectory, key);
-            std::remove(diskPath.c_str());
+            // AYIO File::remove is a thin wrapper that maps std::remove's
+            // error semantics to a bool (true == success or already absent).
+            ayt::io::File::remove(diskPath);
         }
     }
 

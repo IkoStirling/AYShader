@@ -133,6 +133,7 @@ TokenType Lexer::identifierType(const std::string& lexeme) {
         // be a syntax error anyway).
         {"binding", TokenType::Binding},
         {"texture2d", TokenType::Texture2D},
+        {"texturecube", TokenType::TextureCube},
         {"sampler", TokenType::Sampler},
         {"vertex", TokenType::Vertex},
         {"fragment", TokenType::Fragment},

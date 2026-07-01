@@ -1,5 +1,5 @@
 // ============================================================
-// AYShader Parser Unit Tests (Phase 1 closure â€?vertex/fragment syntax)
+// AYShader Parser Unit Tests (Phase 1 closure ?vertex/fragment syntax)
 // ============================================================
 
 #include "AYLexer.h"
@@ -90,6 +90,16 @@ TEST_CASE(material_declaration_with_texture) {
     CHECK(tex->name == "albedoMap");
 }
 
+TEST_CASE(material_declaration_with_texturecube) {
+    auto prog = parseSource(
+        "material X { texturecube envMap; vertex { } fragment { } }");
+    auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
+    auto* tex = dynamic_cast<TextureDecl*>(mat->declarations[0].get());
+    CHECK(tex != nullptr);
+    CHECK(tex->name == "envMap");
+    CHECK(tex->samplerKind == TextureSamplerKind::SamplerCube);
+}
+
 TEST_CASE(material_declaration_mixed) {
     const char* src = R"(
         material PBR {
@@ -135,7 +145,7 @@ TEST_CASE(compute_declaration_minimal) {
     CHECK(cmp != nullptr);
     CHECK(cmp->name == "Foo");
     CHECK(cmp->body.empty());
-    // Compute is not a Material â€?the dispatch must NOT treat it as one.
+    // Compute is not a Material ?the dispatch must NOT treat it as one.
     CHECK(dynamic_cast<MaterialDecl*>(prog->declarations[0].get()) == nullptr);
 }
 
@@ -168,7 +178,7 @@ TEST_CASE(compute_keyword_recognized) {
 }
 
 TEST_CASE(compute_top_level_alongside_material) {
-    // `compute` is a top-level decl â€?it sits next to `material`, not
+    // `compute` is a top-level decl ?it sits next to `material`, not
     // inside it. The dispatcher must produce one MaterialDecl and one
     // ComputeDecl in the program's declarations list.
     const char* src = R"(
@@ -188,7 +198,7 @@ TEST_CASE(compute_top_level_alongside_material) {
 // ===== Phase 3.3 Block 4: workgroup-shared local memory =====
 
 TEST_CASE(shared_keyword_recognized) {
-    // `shared` must be a dedicated TokenType, not Identifier â€?    // the parser dispatch relies on it to route to parseSharedDecl.
+    // `shared` must be a dedicated TokenType, not Identifier ?    // the parser dispatch relies on it to route to parseSharedDecl.
     Lexer lexer("shared float tile[64]");
     std::vector<Token> tokens;
     lexer.tokenize(tokens);
@@ -240,7 +250,7 @@ TEST_CASE(shared_with_uint_element_type) {
 // ===== Phase 3.5-A: storage decl explicit binding slot =====
 
 TEST_CASE(storage_with_explicit_binding) {
-    // `storage foo : rwstructuredbuffer<int> binding 2;` â€?the
+    // `storage foo : rwstructuredbuffer<int> binding 2;` ?the
     // optional `binding <int>` suffix parses into StorageDecl::binding.
     const char* src = R"(
         compute Foo {
@@ -289,7 +299,7 @@ TEST_CASE(storage_binding_keyword_recognized) {
 }
 
 TEST_CASE(storage_binding_negative_int_is_error) {
-    // `binding -1;` â€?a negative literal after the keyword. The
+    // `binding -1;` ?a negative literal after the keyword. The
     // parser should reject (storageBinding must be >= 0).
     const char* src = R"(
         compute Foo {
@@ -306,7 +316,7 @@ TEST_CASE(storage_binding_negative_int_is_error) {
 }
 
 TEST_CASE(storage_binding_non_int_is_error) {
-    // `binding foo;` â€?an identifier instead of an integer literal.
+    // `binding foo;` ?an identifier instead of an integer literal.
     // The parser must report the error (consume(IntLiteral, ...)
     // fails when the next token is `foo`).
     const char* src = R"(
@@ -343,7 +353,7 @@ TEST_CASE(storage_binding_works_with_structuredbuffer_too) {
 }
 
 TEST_CASE(shared_missing_size_is_error) {
-    // `shared float tile;` â€?no size, no brackets. Parser must
+    // `shared float tile;` ?no size, no brackets. Parser must
     // surface the error (it consumes `tile` and then expects `[`).
     const char* src = R"(
         compute NoSize {
@@ -360,7 +370,7 @@ TEST_CASE(shared_missing_size_is_error) {
 }
 
 TEST_CASE(shared_non_integer_size_is_error) {
-    // `shared float tile[3.14];` â€?float literal as size. Parser
+    // `shared float tile[3.14];` ?float literal as size. Parser
     // consumes `tile[`, then expects an IntLiteral but gets
     // FloatLiteral, so it must report an error.
     const char* src = R"(
@@ -380,7 +390,7 @@ TEST_CASE(shared_non_integer_size_is_error) {
 // ===== Phase 3.4: uniform block (UBO) =====
 
 TEST_CASE(uniformblock_keyword_recognized) {
-    // `uniformblock` must be a dedicated TokenType, not Identifier â€?    // the parser dispatch relies on it to route to parseUniformBlockDecl.
+    // `uniformblock` must be a dedicated TokenType, not Identifier ?    // the parser dispatch relies on it to route to parseUniformBlockDecl.
     Lexer lexer("uniformblock Camera { vec3 pos }");
     std::vector<Token> tokens;
     lexer.tokenize(tokens);
@@ -448,7 +458,7 @@ TEST_CASE(parse_uniformblock_with_uint_field) {
 }
 
 TEST_CASE(parse_uniformblock_missing_closing_brace) {
-    // No closing `}` â€?parser must report an error.
+    // No closing `}` ?parser must report an error.
     const char* src = "uniformblock Camera { vec3 pos";
     Lexer lexer(src);
     std::vector<Token> tokens;
@@ -459,7 +469,7 @@ TEST_CASE(parse_uniformblock_missing_closing_brace) {
 }
 
 TEST_CASE(compute_missing_brace_is_error) {
-    // No closing '}' â€?the parser must report a structural error
+    // No closing '}' ?the parser must report a structural error
     // rather than silently accept the partial program.
     Lexer lexer("compute Foo { let x = 0");
     std::vector<Token> tokens;
@@ -542,7 +552,7 @@ TEST_CASE(vertex_with_out_default) {
     CHECK(p1->dir == ShaderParam::Direction::Out);
     CHECK(p1->semantic == PhoskiaSemantic::Normal);
     CHECK(p1->defaultValue != nullptr);
-    // defaultValue is vec3(0.0, 1.0, 0.0) â€?a constructor call, not a
+    // defaultValue is vec3(0.0, 1.0, 0.0) ?a constructor call, not a
     // bare LiteralExpr. Confirm both the CallExpr shape and that the
     // callee name is "vec3".
     auto* call = dynamic_cast<CallExpr*>(p1->defaultValue.get());
@@ -590,7 +600,7 @@ TEST_CASE(fragment_with_in_params) {
 }
 
 TEST_CASE(fragment_out_is_error) {
-    // 'out' inside a fragment block is meaningless â€?parser records an
+    // 'out' inside a fragment block is meaningless ?parser records an
     // error but still consumes the token so it can recover.
     const char* src = R"(
         material X {
@@ -775,7 +785,7 @@ TEST_CASE(missing_fragment_block_is_error) {
 
 TEST_CASE(uniform_with_builtin_type_parses_cleanly) {
     // After the token demotion, "vec3" is a plain Identifier whose
-    // lexeme is "vec3". The parser should accept it without complaint â€?    // the type validation is the SemanticAnalyzer's job.
+    // lexeme is "vec3". The parser should accept it without complaint ?    // the type validation is the SemanticAnalyzer's job.
     const char* src = R"(
         material X { vertex { return vec4(0.0) } fragment { return vec4(1.0) } }
     )";
@@ -785,7 +795,7 @@ TEST_CASE(uniform_with_builtin_type_parses_cleanly) {
     Parser parser(tokens);
     parser.parse();
     // Note: not asserting !parser.hasErrors() because Parser does NOT
-    // enforce uniform's `vec3` lexeme â€?that's the SemanticAnalyzer's
+    // enforce uniform's `vec3` lexeme ?that's the SemanticAnalyzer's
     // role via AYBuiltinTypes::isBuiltinType (Step 5d).
     (void)parser.hasErrors();
 }

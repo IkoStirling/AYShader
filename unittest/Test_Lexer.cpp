@@ -54,6 +54,14 @@ TEST_CASE(keyword_texture2d) {
     CHECK(tokens[0].type == TokenType::Texture2D);
 }
 
+TEST_CASE(keyword_texturecube) {
+    Lexer lexer("texturecube");
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    CHECK(tokens.size() == 2);
+    CHECK(tokens[0].type == TokenType::TextureCube);
+}
+
 TEST_CASE(keyword_vertex_fragment) {
     Lexer lexer("vertex fragment");
     std::vector<Token> tokens;

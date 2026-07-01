@@ -1,4 +1,4 @@
-// AYShadercDriver.cpp — Phase 3.6
+// AYShadercDriver.cpp — Phase 3.6 + AYIO migration
 //
 // See AYShadercDriver.h. Implementation lifted from
 // unittest/Test_ShaderCompile.cpp shaderc plumbing (lines 46-285).
@@ -11,19 +11,30 @@
 //     temp .sc file is deleted on every code path.
 //   * Use atomic pid+counter naming for the temp file so concurrent
 //     compile() calls in the same process don't collide.
+//
+// AYIO migration (per design.md §16):
+//   * `fileExists` self-roll → `ayt::io::File::exists`
+//   * Temp path discovery (TEMP/TMPDIR env dance) → `ayt::io::TempFile::tempDir()`
+//   * `std::ofstream` write of .sc/.varyingdef → `ayt::io::File::writeAllText`
+//   * `std::ifstream` read of .bin → `ayt::io::MemoryMappedFile` (zero-copy)
+//   * `::remove` cleanup → `ayt::io::File::remove`
+//
+// What stays:
+//   * CreateProcessW / popen / ReadFile over pipe — that's OS process
+//     API, not file I/O. AYIO does not (yet) expose a Process module.
+//     See design.md §16.3 Future Work.
 
 #include "AYShadercDriver.h"
 
+#include <AYFile.h>
+#include <AYPath.h>
+#include <AYEnv.h>
+
 #include <atomic>
-#include <cstdio>
-#include <cstdlib>
-#include <cstdio>          // ::remove
-#include <fstream>
 #include <memory>          // std::shared_ptr (for the global default)
-#include <sstream>
 #include <stdexcept>
 #include <string>
-#include <sys/stat.h>
+#include <vector>
 
 #ifdef _WIN32
 #  include <io.h>
@@ -37,13 +48,13 @@ namespace ayt::shader
 
 namespace {
 
-// stat()-based file existence check. Same reason as in
-// Test_ShadercDriver.cpp: avoids std::filesystem::exists ambiguity
-// that surfaces when other AY headers leak into this TU.
-bool fileExists(const std::string& p) {
+// File existence check, now backed by AYIO. We previously hand-rolled
+// stat() to dodge std::filesystem::exists name pollution from upstream
+// AY headers; AYIO's File::exists is the canonical replacement and is
+// itself a thin stat() wrapper.
+inline bool fileExists(const std::string& p) {
     if (p.empty()) return false;
-    struct stat st;
-    return ::stat(p.c_str(), &st) == 0;
+    return ayt::io::File::exists(p);
 }
 
 // Spawn a child process with an arbitrary command line, capture
@@ -53,6 +64,9 @@ bool fileExists(const std::string& p) {
 // exactly, minus the .sc-specific bits. The {hRead, hWrite} pipe
 // pattern is the standard Win32 inheritance dance; POSIX uses popen
 // for brevity.
+//
+// NOTE: This stays as raw OS API for now — it's process spawn, not
+// file I/O. See design.md §16.3 for the future AYIO::Process module.
 struct SpawnResult { int exitCode; std::string output; };
 
 #if defined(_WIN32)
@@ -150,32 +164,38 @@ SpawnResult spawnCapturing(const std::string& exe,
 // sidesteps race conditions if multiple drivers / threads happen to
 // compile concurrently. Caller is responsible for deleting the file
 // (we RAII that in compile()).
+//
+// AYIO migration: we now defer to `ayt::io::TempFile::tempDir()` for
+// the system temp directory instead of hand-rolling the TEMP/TMPDIR
+// env-var dance. The .sc suffix is preserved so debug dumps in the
+// temp directory remain human-recognizable (see design.md §16.5).
 std::string uniqueScTempPath() {
     static std::atomic<uint64_t> counter{0};
     const uint64_t n = counter.fetch_add(1, std::memory_order_relaxed);
 #ifdef _WIN32
     const unsigned pid = ::GetCurrentProcessId();
-    const char* tmp = std::getenv("TEMP");
-    std::string dir = (tmp && *tmp) ? std::string(tmp) + "\\" : std::string("C:\\Temp\\");
 #else
     const unsigned pid = static_cast<unsigned>(::getpid());
-    const char* tmp = std::getenv("TMPDIR");
-    std::string dir = (tmp && *tmp) ? std::string(tmp) + "/" : std::string("/tmp/");
 #endif
-    return dir + "ayshader_" + std::to_string(pid) +
-           "_" + std::to_string(n) + ".sc";
+    const std::string dir = ayt::io::TempFile::tempDir();
+    return ayt::io::path::join(
+        dir,
+        std::string("ayshader_") + std::to_string(pid) +
+        "_" + std::to_string(n) + ".sc");
 }
 
 // Path-with-optional-extension: shaderc chooses .bin / .vert / .frag
 // / .comp based on the matching --type we already pass, so we just
 // slap ".bin" here. Driver cleans up after spawn.
+//
+// Replaces the hand-rolled `find_last_of('.')` substring replace with
+// AYIO path utilities. We could go further and use MemoryMappedFile
+// later, but path::stem / path::extension / path::join is enough for
+// now.
 std::string siblingBinPath(const std::string& scPath) {
-    // Hand-rolled replace_extension — std::filesystem::path is dodged
-    // here for the same reason fileExists() is: it draws in
-    // <filesystem> global symbols that collide with older AY headers.
-    auto dotPos = scPath.find_last_of('.');
-    if (dotPos == std::string::npos) return scPath + ".bin";
-    return scPath.substr(0, dotPos) + ".bin";
+    const std::string dir = ayt::io::path::directory(scPath);
+    const std::string base = ayt::io::path::stem(ayt::io::path::filename(scPath));
+    return ayt::io::path::join(dir, base + ".bin");
 }
 
 } // namespace
@@ -270,20 +290,17 @@ ShaderCompileResult AYShadercDriver::compile(const ShaderCompileRequest& req) {
     // 1) Stage the in-memory .sc to a temp file.
     std::string scPath = uniqueScTempPath();
     std::string binPath = siblingBinPath(scPath);
-    {
-        std::ofstream f(scPath, std::ios::binary);
-        if (!f) {
-            result.stderrText = "cannot write temp .sc: " + scPath;
-            return result;
-        }
-        f << req.scSource;
+
+    if (!ayt::io::File::writeAllText(scPath, req.scSource)) {
+        result.stderrText = "cannot write temp .sc: " + scPath;
+        return result;
     }
 
     // RAII guard: delete temp files on every exit path. We capture
     // both paths by value so the lambda outlives local variables.
     auto cleanup = [&]() {
-        (void)::remove(scPath.c_str());
-        (void)::remove(binPath.c_str());
+        ayt::io::File::remove(scPath);
+        ayt::io::File::remove(binPath);
     };
 
     // 2) Build argv. Mirrors Test_ShaderCompile.cpp's per-test argv
@@ -306,25 +323,48 @@ ShaderCompileResult AYShadercDriver::compile(const ShaderCompileRequest& req) {
         // bgfx shaderc wants --varyingdef <path>; we materialize the
         // varyingdef into a sibling temp file too.
         std::string vdPath = scPath + ".varyingdef";
-        std::ofstream f(vdPath, std::ios::binary);
-        if (!f) {
+        if (!ayt::io::File::writeAllText(vdPath, req.varyingdefSource)) {
             cleanup();
             result.stderrText = "cannot write temp varyingdef: " + vdPath;
             return result;
         }
-        f << req.varyingdefSource;
         args.push_back("--varyingdef"); args.push_back(vdPath);
+        // The varyingdef sibling is also a temp file; it should not
+        // outlive the call. Track it for cleanup.
+        auto cleanupVd = [&]() {
+            ayt::io::File::remove(vdPath);
+        };
+        // Run the actual spawn and read-back through a scope that
+        // deletes vdPath on the way out regardless of outcome.
+        SpawnResult sr = spawnCapturing(_shadercPath, args);
+        if (sr.exitCode == 0) {
+            ayt::io::MemoryMappedFile mm(binPath);
+            if (mm.isValid()) {
+                const uint8_t* p = static_cast<const uint8_t*>(mm.data());
+                result.bytes.assign(p, p + mm.size());
+                result.ok = !result.bytes.empty();
+            } else {
+                result.stderrText = "shaderc exit 0 but .bin missing: " + binPath;
+            }
+        } else {
+            result.stderrText = "shaderc exit " + std::to_string(sr.exitCode) +
+                                ": " + sr.output + "\n(request: " + req.outputName + ")";
+        }
+        cleanupVd();
+        cleanup();
+        return result;
     }
 
     // 3) Spawn.
     SpawnResult sr = spawnCapturing(_shadercPath, args);
 
-    // 4) Read .bin back into memory.
+    // 4) Read .bin back into memory via MemoryMappedFile (zero-copy
+    //    versus the pre-migration std::ifstream + istreambuf_iterator).
     if (sr.exitCode == 0) {
-        std::ifstream in(binPath, std::ios::binary);
-        if (in) {
-            result.bytes.assign(std::istreambuf_iterator<char>(in),
-                                std::istreambuf_iterator<char>());
+        ayt::io::MemoryMappedFile mm(binPath);
+        if (mm.isValid()) {
+            const uint8_t* p = static_cast<const uint8_t*>(mm.data());
+            result.bytes.assign(p, p + mm.size());
             result.ok = !result.bytes.empty();
         } else {
             result.stderrText = "shaderc exit 0 but .bin missing: " + binPath;

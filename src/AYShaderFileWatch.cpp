@@ -1,15 +1,22 @@
 // AYShaderFileWatch.cpp — source file helpers (Phase 4-J)
+//
+// File I/O migrated to AYFoundation/AYIO (ayt::io). The hot-reload semantics
+// (mtime in milliseconds, file existence checks, source text reads) are
+// preserved; only the underlying open/stat/ifstream plumbing moved.
+//
+// Note on mtime precision: pre-migration this returned int64_t milliseconds
+// derived from POSIX st_mtim.tv_nsec / 1e6 (sub-millisecond jitter present).
+// The AYIO `File::lastModifiedTime` API returns whole Unix seconds, so we
+// multiply by 1000. The loss of sub-second precision is acceptable for
+// hot-reload — file modifications are seconds-spaced events. See
+// design.md §16.4 for the full reasoning.
 
 #include "detail/AYShaderFileWatch.h"
 
+#include <AYFile.h>
+
 #include <algorithm>
 #include <chrono>
-#include <fstream>
-#include <sys/stat.h>
-
-#ifdef _WIN32
-#  include <windows.h>
-#endif
 
 namespace ayt::shader::detail
 {
@@ -23,57 +30,46 @@ std::string normalizeSourcePath(const std::string& path)
 
 std::optional<int64_t> fileMtimeMs(const std::string& path)
 {
-#ifdef _WIN32
-    WIN32_FILE_ATTRIBUTE_DATA info;
-    if (!GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &info)) {
+    if (!ayt::io::File::exists(path)) {
         return std::nullopt;
     }
-    ULARGE_INTEGER ull;
-    ull.LowPart = info.ftLastWriteTime.dwLowDateTime;
-    ull.HighPart = info.ftLastWriteTime.dwHighDateTime;
-    return static_cast<int64_t>(ull.QuadPart / 10000);
-#else
-    struct stat st;
-    if (::stat(path.c_str(), &st) != 0) {
+    // AYIO returns Unix timestamp in seconds; convert to milliseconds.
+    const uint64_t sec = ayt::io::File::lastModifiedTime(path);
+    if (sec == 0) {
         return std::nullopt;
     }
-    return static_cast<int64_t>(st.st_mtime) * 1000
-         + static_cast<int64_t>(st.st_mtim.tv_nsec / 1000000);
-#endif
+    return static_cast<int64_t>(sec) * 1000;
 }
 
 bool readTextFile(const std::string& path, std::string& out, std::string* error)
 {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) {
+    if (!ayt::io::File::exists(path)) {
         if (error != nullptr) {
             *error = "failed to open source file: " + path;
         }
         return false;
     }
-
-    in.seekg(0, std::ios::end);
-    const std::streamoff size = in.tellg();
-    if (size < 0) {
-        if (error != nullptr) {
-            *error = "failed to read source file size: " + path;
+    // readAllText returns "" on open failure or empty file. We disambiguate
+    // "file does not exist" (handled above) from "empty file" (success, out
+    // stays empty). After this point, an empty return == open failure post-
+    // existence-check (e.g. permission denied mid-call) — extremely rare.
+    const std::string contents = ayt::io::File::readAllText(path);
+    // We can't perfectly distinguish "empty file" from "readAllText failed
+    // after the exists() probe". Pre-migration's std::ifstream operator!
+    // distinguished them via `if (!in)`. We mirror that by re-checking the
+    // size: if exists() says yes, readAllText of a non-empty file must
+    // produce bytes. readAllText returning "" on a >0-byte file is a
+    // genuine failure.
+    if (contents.empty()) {
+        const auto attrs = ayt::io::File::queryAttributes(path);
+        if (attrs.size > 0) {
+            if (error != nullptr) {
+                *error = "failed to read source file: " + path;
+            }
+            return false;
         }
-        return false;
     }
-
-    out.resize(static_cast<size_t>(size));
-    if (size == 0) {
-        return true;
-    }
-
-    in.seekg(0, std::ios::beg);
-    in.read(out.data(), size);
-    if (!in) {
-        if (error != nullptr) {
-            *error = "failed to read source file: " + path;
-        }
-        return false;
-    }
+    out = std::move(contents);
     return true;
 }
 

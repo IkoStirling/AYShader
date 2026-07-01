@@ -13,6 +13,7 @@ static const char* tokenTypeName(TokenType t) {
         case TokenType::Property: return "Property";
         case TokenType::Uniform: return "Uniform";
         case TokenType::Texture2D: return "Texture2D";
+        case TokenType::TextureCube: return "TextureCube";
         case TokenType::Sampler: return "Sampler";
         case TokenType::Vertex: return "Vertex";
         case TokenType::Fragment: return "Fragment";
@@ -175,7 +176,10 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
         return parseUniformBlockDecl();
     }
     if (match(TokenType::Texture2D)) {
-        return parseTextureDecl();
+        return parseTextureDecl(TextureSamplerKind::Sampler2D);
+    }
+    if (match(TokenType::TextureCube)) {
+        return parseTextureDecl(TextureSamplerKind::SamplerCube);
     }
     if (match(TokenType::Vertex)) {
         return parseVertexFunc();
@@ -512,10 +516,10 @@ std::unique_ptr<Stmt> Parser::parseUniformDecl() {
     return std::make_unique<UniformDecl>(type.lexeme, name.lexeme);
 }
 
-std::unique_ptr<Stmt> Parser::parseTextureDecl() {
+std::unique_ptr<Stmt> Parser::parseTextureDecl(TextureSamplerKind kind) {
     Token name = consumeName("Expected texture name");
     match(TokenType::Semicolon);  // ';' is optional (Python-like)
-    return std::make_unique<TextureDecl>(name.lexeme);
+    return std::make_unique<TextureDecl>(name.lexeme, kind);
 }
 
 // Phase 3.2 Block 3: parse a storage buffer declaration.
@@ -1073,6 +1077,7 @@ void Parser::synchronize() {
             case TokenType::Property:
             case TokenType::Uniform:
             case TokenType::Texture2D:
+            case TokenType::TextureCube:
             case TokenType::Vertex:
             case TokenType::Fragment:
             case TokenType::Let:
