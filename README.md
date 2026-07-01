@@ -34,6 +34,8 @@ AYShader 是 AY Engine 的着色器子系统：接受 **Phoskia** DSL 源码，�
 | Phase 4-B | Pool 引擎配置 + `compile()` / `acquire(src)` + 内存 cache + `release()` | ✅ |
 | Phase 4-C | `Compiler::compileToShaderResource(src[, opts], pool)` 一站式 compile | ✅ |
 | Phase 4-E | `AYShaderProgram.h` 剥离 bgfx；legacy `ShaderProgram` → `detail/` | ✅ |
+| Phase 4-G | `AYShader.h` 不再 include legacy cache/converter（frontend 零 bgfx） | ✅ |
+| Phase 4-K | `Test_ShaderCacheIntegration` — frontend TU 不含 `<bgfx/bgfx.h>` | ✅（contract 层） |
 | Phase 4-D/F+ | std140、Renderer e2e、hot-reload、capability 体系 | 🔴 待做 |
 | Phase 5+ | HLSL 后端（按需 — DXC 一手质量 / 减体积） | 🅿 暂缓 |
 | Phase 5+ | WGSL 后端（按需 — WebGPU 目标） | 🅿 暂缓 |
@@ -43,17 +45,17 @@ AYShader 是 AY Engine 的着色器子系统：接受 **Phoskia** DSL 源码，�
 ## 测试
 
 ```bash
-# Build（CMake 已配置 AYShader / AYShader_Test）
-cmake --build <build-dir>
+# Build（CMake preset: D:\Projects\out\build\x64-Debug）
+cmake --build D:\Projects\out\build\x64-Debug --target AYShader_Test
 
-# 跑全部测试（默认 opt-in：624 测试，包含 shaderc e2e 自动跳过若 shaderc 不可用）
-<build-dir>/AYShader_Test.exe
+# Windows：若裸跑 cl 报 cstdint 找不到，先初始化 MSVC 环境再构建：
+cmd /c "\"D:\Visual Studio\Product\VC\Auxiliary\Build\vcvars64.bat\" && cmake --build D:\Projects\out\build\x64-Debug --target AYShader_Test"
 
-# 重生成 golden baseline（converter 改动后用一次）
-AY_SHADER_REGEN_GOLDEN=1 <build-dir>/AYShader_Test.exe
+# 跑全部测试
+D:\Projects\out\build\x64-Debug\AYRuntime\AYShader\unittest\AYShader_Test.exe
 ```
 
-最后一次完整跑：**837 / 837 PASS**（截至 Phase 3.4 commit）。
+最后一次完整跑：**974 / 974 PASS**（Phase 4-B/C/E/G/K）。
 
 ### 测试套件
 
@@ -72,6 +74,7 @@ AY_SHADER_REGEN_GOLDEN=1 <build-dir>/AYShader_Test.exe
 | `Test_GoldenFiles.cpp` | 5 个 Phoskia fixture 输出 byte-equal 比对 baseline |
 | `Test_IrGenerator.cpp` | Phase 3.1 IR 层：AST→IR 降级 + resolvedType + 完整 BGFX retarget |
 | `Test_ShaderResource.cpp` | Phase 4 `ShaderResource` / `ShaderResourcePool` / `compileToShaderResource` |
+| `Test_ShaderCacheIntegration.cpp` | Phase 4-K frontend header contract（本 TU 不含 bgfx） |
 
 ### Golden fixture
 

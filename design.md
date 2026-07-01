@@ -2528,8 +2528,9 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 - ✅ **Phase 4-B**：`ShaderResourcePool` 引擎配置 + `compile()` / `acquire(src)` + 内存 cache + `release()`
 - ✅ **Phase 4-C**：`Compiler::compileToShaderResource(src[, opts], pool)` 一站式 compile + wire-up
 - ✅ **Phase 4-E**：`AYShaderProgram.h` 不含 bgfx；legacy `ShaderProgram` 迁至 `detail/AYShaderProgramLegacy.h`
-- ❌ **Phase 4-D/F+（当前）**：std140、Renderer e2e、hot-reload 完整实现、capability 体系（详见 §8.5）
-- ❌ 退役 `class ShaderProgram`（Phase 1 老接口，含 `bgfx::ShaderHandle` 字段）— Phase 4-G
+- ✅ **Phase 4-G**：`AYShader.h` 不再 include `AYShaderCache` / `AYBGFXConverter`（frontend 零 bgfx 泄漏）
+- ✅ **Phase 4-K（contract）**：`Test_ShaderCacheIntegration` — frontend TU 不含 `<bgfx/bgfx.h>`
+- ❌ **Phase 4-D/F+（当前）**：std140 layout 内化、Renderer e2e submit、hot-reload 完整实现、capability 体系（详见 §8.5）
 
 **测试**：
 - **944 / 944 PASS**（Phase 3.6 末状态，2026-07-01）
