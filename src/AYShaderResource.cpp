@@ -17,6 +17,11 @@ ShaderResource::ShaderResource(std::shared_ptr<ShaderResourceImpl> impl)
 
 ShaderResource::~ShaderResource() = default;
 
+void ShaderResource::reset() noexcept
+{
+    _impl.reset();
+}
+
 bool ShaderResource::isValid() const noexcept
 {
     return _impl && bgfx::isValid(_impl->programHandle);

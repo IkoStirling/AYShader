@@ -1,4 +1,4 @@
-// Test_ShaderResource.cpp — Phase 4-A
+// Test_ShaderResource.cpp — Phase 4-A / 4-B / 4-C
 //
 // Layer A: API contract without bgfx runtime.
 // Layer B: wire-up via ShaderResourcePool + bgfx::RendererType::Noop
@@ -16,6 +16,7 @@
 #include <iostream>
 #include <string>
 #include <sys/stat.h>
+#include <vector>
 
 #ifdef _WIN32
 #  define PUTENV_S(name, val) _putenv_s(name, val)
@@ -93,6 +94,24 @@ bool bgfxCommonAvailable()
 bool wireUpEnvironmentAvailable()
 {
     return shadercAvailable() && bgfxCommonAvailable();
+}
+
+std::vector<std::string> shadercIncludeDirs()
+{
+    std::vector<std::string> dirs;
+    if (AY_SHADER_BGFX_COMMON_HINT[0] && fileExists(AY_SHADER_BGFX_COMMON_HINT)) {
+        dirs.push_back(AY_SHADER_BGFX_COMMON_HINT);
+    }
+    if (AY_SHADER_BGFX_SRC_HINT[0] && fileExists(AY_SHADER_BGFX_SRC_HINT)) {
+        dirs.push_back(AY_SHADER_BGFX_SRC_HINT);
+    }
+    return dirs;
+}
+
+void configurePool(ShaderResourcePool& pool)
+{
+    pool.setShadercExecutable(AY_SHADER_SHADERC_HINT);
+    pool.setBgfxIncludeDirs(shadercIncludeDirs());
 }
 
 struct BgfxNoopScope {
@@ -209,6 +228,106 @@ TEST_CASE(pool_acquire_unlit_wires_up)
 
     pool.shutdown();
     CHECK_FALSE(res.isValid());
+}
+
+TEST_CASE(pool_compile_end_to_end)
+{
+    if (!wireUpEnvironmentAvailable()) {
+        std::cerr << "[ShaderResource test] SKIP: shaderc/bgfx common not available.\n";
+        return;
+    }
+
+    clearPhase36Env();
+    AYShadercDriver::clearDefaultExecutable();
+    if (!shadercAvailable()) {
+        std::cerr << "[ShaderResource test] SKIP: shaderc not available.\n";
+        return;
+    }
+
+    BgfxNoopScope bgfxScope;
+    if (!bgfxScope.active) {
+        std::cerr << "[ShaderResource test] SKIP: bgfx::init(Noop) failed.\n";
+        return;
+    }
+
+    ShaderResourcePool pool;
+    configurePool(pool);
+
+    ShaderResource res = pool.compile(kMinimalUnlit);
+    CHECK(res.isValid());
+    CHECK(res.getUniformBinding("baseColor") != InvalidBinding);
+
+    pool.shutdown();
+}
+
+TEST_CASE(compiler_compile_to_shader_resource)
+{
+    if (!wireUpEnvironmentAvailable()) {
+        std::cerr << "[ShaderResource test] SKIP: shaderc/bgfx common not available.\n";
+        return;
+    }
+
+    clearPhase36Env();
+    AYShadercDriver::clearDefaultExecutable();
+    if (!shadercAvailable()) {
+        std::cerr << "[ShaderResource test] SKIP: shaderc not available.\n";
+        return;
+    }
+
+    BgfxNoopScope bgfxScope;
+    if (!bgfxScope.active) {
+        std::cerr << "[ShaderResource test] SKIP: bgfx::init(Noop) failed.\n";
+        return;
+    }
+
+    ShaderResourcePool pool;
+    configurePool(pool);
+
+    Compiler compiler;
+    ShaderResource res = compiler.compileToShaderResource(kMinimalUnlit, pool);
+    CHECK(res.isValid());
+    CHECK(res.getUniformBinding("baseColor") != InvalidBinding);
+
+    pool.shutdown();
+}
+
+TEST_CASE(pool_acquire_cache_returns_same_resource)
+{
+    if (!wireUpEnvironmentAvailable()) {
+        std::cerr << "[ShaderResource test] SKIP: shaderc/bgfx common not available.\n";
+        return;
+    }
+
+    clearPhase36Env();
+    AYShadercDriver::clearDefaultExecutable();
+    if (!shadercAvailable()) {
+        std::cerr << "[ShaderResource test] SKIP: shaderc not available.\n";
+        return;
+    }
+
+    BgfxNoopScope bgfxScope;
+    if (!bgfxScope.active) {
+        std::cerr << "[ShaderResource test] SKIP: bgfx::init(Noop) failed.\n";
+        return;
+    }
+
+    ShaderResourcePool pool;
+    configurePool(pool);
+
+    ShaderResource first = pool.acquire(kMinimalUnlit, "test-cache-key");
+    ShaderResource second = pool.acquire(kMinimalUnlit, "test-cache-key");
+    CHECK(first.isValid());
+    CHECK(second.isValid());
+    CHECK(first.getUniformBinding("baseColor") == second.getUniformBinding("baseColor"));
+
+    pool.release(first);
+    CHECK_FALSE(first.isValid());
+    CHECK_FALSE(second.isValid());
+
+    ShaderResource third = pool.acquire(kMinimalUnlit, "test-cache-key");
+    CHECK(third.isValid());
+
+    pool.shutdown();
 }
 
 TEST_CASE(set_uniform_and_submit_no_crash)

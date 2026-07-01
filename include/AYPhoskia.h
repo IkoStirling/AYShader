@@ -27,13 +27,20 @@
 #include "IAYBackendConverter.h"
 #include "AYBuiltinFunctions.h"
 #include "AYIr.h"
-#include "AYShaderProgram.h"  // Phase 3.6: CompiledShaderProgram lives here.
+#include "AYShaderProgram.h"
 
 #include <memory>
 #include <string>
 #include <variant>
 #include <unordered_map>
 #include <functional>
+
+namespace ayt::shader
+{
+class ShaderResource;
+class ShaderResourcePool;
+struct BGFXCompileOptions;
+}
 
 namespace ayt::shader::phoskia
 {
@@ -150,6 +157,19 @@ public:
                           const CompileOptions& opts,
                           CompiledShaderProgram& out);
 
+    // Phase 4-B: engine-side BGFX/shaderc config owned by ShaderResourcePool.
+    void compileToProgram(const std::string& source,
+                          const CompileOptions& opts,
+                          const shader::BGFXCompileOptions& engineOpts,
+                          CompiledShaderProgram& out);
+
+    // Phase 4-C: compile + wire-up in one call via an active pool.
+    shader::ShaderResource compileToShaderResource(const std::string& source,
+                                                   shader::ShaderResourcePool& pool);
+    shader::ShaderResource compileToShaderResource(const std::string& source,
+                                                   const CompileOptions& opts,
+                                                   shader::ShaderResourcePool& pool);
+
     // Register a backend converter factory (e.g. "bgfx" -> AYBGFXConverter).
     void registerBackend(const std::string& name, BackendFactory factory);
 
@@ -171,6 +191,11 @@ private:
     // `compileToProgram` overloads.
     void runToProgram(const std::string& source,
                       const CompileOptions& opts,
+                      CompiledShaderProgram& out);
+
+    void runToProgram(const std::string& source,
+                      const CompileOptions& opts,
+                      const shader::BGFXCompileOptions& engineOpts,
                       CompiledShaderProgram& out);
 
     CompileOptions _options;

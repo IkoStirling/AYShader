@@ -1,14 +1,20 @@
 #pragma once
-// AYShaderResourcePool.h - ShaderResource factory + lifetime (Phase 4-A skeleton)
+// AYShaderResourcePool.h - ShaderResource factory + engine config (Phase 4-B+)
 //
-// Phase 4-B expands this with cache, hot-reload, and engine config.
-// Phase 4-A provides acquire() wire-up from CompiledShaderProgram and
-// shutdown() for bgfx handle cleanup.
+// Engine startup configures shaderc path / include dirs / platform once;
+// per-shader calls use compile() with optional phoskia::CompileOptions.
 
 #include "AYShaderResource.h"
 #include "AYShaderProgram.h"
 
 #include <memory>
+#include <string>
+#include <vector>
+
+namespace ayt::shader::phoskia
+{
+struct CompileOptions;
+}
 
 namespace ayt::shader
 {
@@ -23,11 +29,29 @@ public:
     ShaderResourcePool(ShaderResourcePool&&) noexcept;
     ShaderResourcePool& operator=(ShaderResourcePool&&) noexcept;
 
-    // Wire CompiledShaderProgram bytes + binding metadata into bgfx and
-    // return an opaque handle. Returns an invalid ShaderResource on failure.
+    // --- Engine config (Phase 4-B) ---
+    void setShadercExecutable(const std::string& path);
+    void setBgfxIncludeDirs(const std::vector<std::string>& dirs);
+    void setPlatform(const std::string& platform);
+    void setGLSLProfile(const std::string& profile);
+    void setCacheDirectory(const std::string& path);
+    void setHotReloadEnabled(bool enabled);
+
+    // --- Primary frontend path (Phase 4-B/C) ---
+    ShaderResource compile(const std::string& src);
+    ShaderResource compile(const std::string& src,
+                           const phoskia::CompileOptions& opts);
+
+    // Lower-level: wire an already-compiled program (Phase 4-A API).
     ShaderResource acquire(const CompiledShaderProgram& prog);
 
-    // Destroy all bgfx resources owned by this pool. Call before bgfx::shutdown().
+    ShaderResource acquire(const std::string& src,
+                           const std::string& cacheKey = "");
+    ShaderResource acquire(const std::string& src,
+                           const phoskia::CompileOptions& opts,
+                           const std::string& cacheKey = "");
+
+    void release(ShaderResource& res);
     void shutdown();
 
 private:

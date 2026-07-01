@@ -2,6 +2,7 @@
 
 #include "AYPhoskia.h"
 #include "AYBGFXConverter.h"
+#include "AYShaderResourcePool.h"
 #include <cctype>
 #include <cstdlib>
 #include <iostream>
@@ -76,11 +77,8 @@ void Compiler::compileToBackend(const std::string& source,
 
 CompiledShaderProgram Compiler::compileToProgram(const std::string& source) {
     CompiledShaderProgram out;
-    // _options is the default; env-var overrides apply here too.
-    // We call runToProgram directly (not the 3-arg overload) to avoid
-    // applying env overrides twice — the 3-arg version applies them
-    // internally as well.
-    runToProgram(source, applyEnvOverrides(_options), out);
+    shader::BGFXCompileOptions engineDefaults;
+    runToProgram(source, applyEnvOverrides(_options), engineDefaults, out);
     return out;
 }
 
@@ -94,7 +92,30 @@ CompiledShaderProgram Compiler::compileToProgram(const std::string& source,
 void Compiler::compileToProgram(const std::string& source,
                                 const CompileOptions& opts,
                                 CompiledShaderProgram& out) {
-    runToProgram(source, applyEnvOverrides(opts), out);
+    shader::BGFXCompileOptions engineDefaults;
+    runToProgram(source, applyEnvOverrides(opts), engineDefaults, out);
+}
+
+void Compiler::compileToProgram(const std::string& source,
+                                const CompileOptions& opts,
+                                const shader::BGFXCompileOptions& engineOpts,
+                                CompiledShaderProgram& out) {
+    runToProgram(source, applyEnvOverrides(opts), engineOpts, out);
+}
+
+shader::ShaderResource Compiler::compileToShaderResource(
+    const std::string& source,
+    shader::ShaderResourcePool& pool)
+{
+    return pool.compile(source);
+}
+
+shader::ShaderResource Compiler::compileToShaderResource(
+    const std::string& source,
+    const CompileOptions& opts,
+    shader::ShaderResourcePool& pool)
+{
+    return pool.compile(source, opts);
 }
 
 void Compiler::tokenize(const std::string& source, std::vector<Token>& out) {
@@ -306,6 +327,14 @@ void Compiler::runPipeline(const std::string& source,
 void Compiler::runToProgram(const std::string& source,
                             const CompileOptions& opts,
                             CompiledShaderProgram& out) {
+    shader::BGFXCompileOptions engineDefaults;
+    runToProgram(source, opts, engineDefaults, out);
+}
+
+void Compiler::runToProgram(const std::string& source,
+                            const CompileOptions& opts,
+                            const shader::BGFXCompileOptions& engineOpts,
+                            CompiledShaderProgram& out) {
     out = CompiledShaderProgram{};
     _errorReporter.clear();
 
@@ -369,11 +398,13 @@ void Compiler::runToProgram(const std::string& source,
     // know about them. Phase 4 may add `CompileOptions::bgfxPlatform`
     // if frontend needs to override.)
     shader::AYBGFXConverter converter;
-    shader::BGFXCompileOptions bgfxOpts;
+    shader::BGFXCompileOptions bgfxOpts = engineOpts;
     bgfxOpts.keepSources      = opts.keepSources;
     bgfxOpts.dumpIntermediate = opts.dumpIntermediate;
     bgfxOpts.dumpDir          = opts.dumpDir;
-    bgfxOpts.includeDirs      = opts.includeDirs;
+    if (!opts.includeDirs.empty()) {
+        bgfxOpts.includeDirs = opts.includeDirs;
+    }
 
     converter.compileToBinary(irProgram, bgfxOpts, out);
 }

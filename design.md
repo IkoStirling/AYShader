@@ -2525,7 +2525,10 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 **Frontend API 形态**：
 - ✅ Phase 3.6：`.sc` 从 frontend API 完全消失；`compileToProgram(src[, opts])` 返回 `CompiledShaderProgram`（raw bytes + binding metadata + debug sources）
 - ✅ **Phase 4-A**：`ShaderResource` + 最小 `ShaderResourcePool::acquire(CompiledShaderProgram)` — bgfx wire-up 内化；公开头 `AYShaderResource.h` 不含 bgfx
-- ❌ **Phase 4-B+（当前）**：`compileToShaderResource`、cache 收编、header 从 `AYShaderProgram.h` 剥离 bgfx（详见 §8.5）
+- ✅ **Phase 4-B**：`ShaderResourcePool` 引擎配置 + `compile()` / `acquire(src)` + 内存 cache + `release()`
+- ✅ **Phase 4-C**：`Compiler::compileToShaderResource(src[, opts], pool)` 一站式 compile + wire-up
+- ✅ **Phase 4-E**：`AYShaderProgram.h` 不含 bgfx；legacy `ShaderProgram` 迁至 `detail/AYShaderProgramLegacy.h`
+- ❌ **Phase 4-D/F+（当前）**：std140、Renderer e2e、hot-reload 完整实现、capability 体系（详见 §8.5）
 - ❌ 退役 `class ShaderProgram`（Phase 1 老接口，含 `bgfx::ShaderHandle` 字段）— Phase 4-G
 
 **测试**：

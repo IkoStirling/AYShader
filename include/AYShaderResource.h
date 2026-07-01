@@ -58,6 +58,7 @@ private:
     friend class ShaderResourcePool;
 
     explicit ShaderResource(std::shared_ptr<ShaderResourceImpl> impl);
+    void reset() noexcept;
 
     std::shared_ptr<ShaderResourceImpl> _impl;
 };

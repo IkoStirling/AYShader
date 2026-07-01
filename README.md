@@ -10,7 +10,7 @@ AYShader 是 AY Engine 的着色器子系统：接受 **Phoskia** DSL 源码，�
 
 ## 状态
 
-**Phase 4 进行中**（Phase 3.6 已关闭；944 测试基线 + Phase 4-A ShaderResource API）。
+**Phase 4 进行中**（Phase 3.6 已关闭；958 测试基线含 Phase 4-A/B/C/E）。
 
 | Phase | 范围 | 状态 |
 |---|---|---|
@@ -31,7 +31,10 @@ AYShader 是 AY Engine 的着色器子系统：接受 **Phoskia** DSL 源码，�
 | Phase 3.5-B | UBO binding 表面语法（`uniformblock X { ... } binding N;` → `layout(std140, binding = N)`） | ✅ |
 | Phase 3.6 | 产品化：`compileToProgram()` + `.sc` 内化 + `AYShadercDriver` | ✅ |
 | Phase 4-A | `ShaderResource` opaque handle + 最小 `ShaderResourcePool` wire-up | ✅ |
-| Phase 4-B+ | Pool cache/config、`compileToShaderResource`、header 隔离 | 🔴 待做 |
+| Phase 4-B | Pool 引擎配置 + `compile()` / `acquire(src)` + 内存 cache + `release()` | ✅ |
+| Phase 4-C | `Compiler::compileToShaderResource(src[, opts], pool)` 一站式 compile | ✅ |
+| Phase 4-E | `AYShaderProgram.h` 剥离 bgfx；legacy `ShaderProgram` → `detail/` | ✅ |
+| Phase 4-D/F+ | std140、Renderer e2e、hot-reload、capability 体系 | 🔴 待做 |
 | Phase 5+ | HLSL 后端（按需 — DXC 一手质量 / 减体积） | 🅿 暂缓 |
 | Phase 5+ | WGSL 后端（按需 — WebGPU 目标） | 🅿 暂缓 |
 
@@ -68,7 +71,7 @@ AY_SHADER_REGEN_GOLDEN=1 <build-dir>/AYShader_Test.exe
 | `Test_BuiltinTypes.cpp` | `AYBuiltinTypes::isBuiltinType` 全覆盖 |
 | `Test_GoldenFiles.cpp` | 5 个 Phoskia fixture 输出 byte-equal 比对 baseline |
 | `Test_IrGenerator.cpp` | Phase 3.1 IR 层：AST→IR 降级 + resolvedType + 完整 BGFX retarget |
-| `Test_ShaderResource.cpp` | Phase 4-A `ShaderResource` / `ShaderResourcePool` wire-up + binding API |
+| `Test_ShaderResource.cpp` | Phase 4 `ShaderResource` / `ShaderResourcePool` / `compileToShaderResource` |
 
 ### Golden fixture
 

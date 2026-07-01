@@ -2,6 +2,7 @@
 // AYShaderCache.h - Shader compilation cache
 
 #include "AYShaderProgram.h"
+#include "detail/AYShaderProgramLegacy.h"
 #include "IAYBackendConverter.h"
 #include <string>
 #include <vector>
