@@ -1,4 +1,4 @@
-// Test_ShaderResource.cpp — Phase 4-A / 4-B / 4-C
+// Test_ShaderResource.cpp �?Phase 4-A / 4-B / 4-C
 //
 // Layer A: API contract without bgfx runtime.
 // Layer B: wire-up via ShaderResourcePool + bgfx::RendererType::Noop
@@ -48,12 +48,12 @@ material Unlit {
     property baseColor = vec4(1.0, 1.0, 1.0, 1.0);
 
     vertex {
-        in  position : POSITION;
-        out position : POSITION;
+        in  position : position;
+        out position : position;
         return vec4(position, 1.0);
     }
     fragment {
-        in  position : POSITION;
+        in  position : position;
         return baseColor;
     }
 }
@@ -165,7 +165,7 @@ void clearPhase36Env()
 TEST_SUITE(ShaderResourceTests)
 
 // ---------------------------------------------------------------------------
-// Layer A — no bgfx runtime required
+// Layer A �?no bgfx runtime required
 // ---------------------------------------------------------------------------
 
 TEST_CASE(empty_shader_resource_is_invalid)
@@ -206,7 +206,7 @@ TEST_CASE(invalid_binding_queries_return_zero)
 }
 
 // ---------------------------------------------------------------------------
-// Layer B — bgfx wire-up (opt-in when shaderc + bgfx common available)
+// Layer B �?bgfx wire-up (opt-in when shaderc + bgfx common available)
 // ---------------------------------------------------------------------------
 
 TEST_CASE(pool_acquire_unlit_wires_up)

@@ -66,7 +66,7 @@ void Compiler::registerBackend(const std::string& name, BackendFactory factory) 
 }
 
 void Compiler::compile(const std::string& source, CompileResult& out) {
-    runPipeline(source, _options.targetBackend, out);
+    runPipeline(source, kDefaultBackend, out);
 }
 
 void Compiler::compileToBackend(const std::string& source,
@@ -179,15 +179,11 @@ void Compiler::runPipeline(const std::string& source,
     }
 
     // 3) Optional semantic analysis
-    if (_options.enableSemanticAnalysis) {
+    if (kEnableSemanticAnalysis) {
         analyzeSemantics(*out.ast);
     }
 
-    // 4) Type inference — Phase 2 Step 2: when enabled, walk every
-    //    material body and verify each return value has type vec4.
-    //    We use a fresh TypeInference per pipeline so the engine's
-    //    internal type-var list doesn't leak between materials.
-    if (_options.enableTypeInference) {
+    if (kEnableTypeInference) {
         TypeInference inference(*_typeEnv);
         // Build the builtin env the analyzer normally builds, so the
         // engine's identifier lookup finds `vec4` / `sample` / etc.
@@ -294,7 +290,6 @@ void Compiler::runPipeline(const std::string& source,
     }();
 
     auto backendResult = backend->convert(irProgram);
-    out.output = std::move(backendResult.output);
     // Promote backend string errors to CompilerError entries.
     for (const auto& msg : backendResult.errors) {
         out.errors.emplace_back(ErrorCode::InvalidOperation, msg, 0, 0);
@@ -372,7 +367,7 @@ void Compiler::runToProgram(const std::string& source,
     }
 
     // 3) Optional semantic analysis (same gates as runPipeline).
-    if (opts.enableSemanticAnalysis && ast) {
+    if (kEnableSemanticAnalysis && ast) {
         analyzeSemantics(*ast);
         for (const auto& e : _errorReporter.errors()) {
             out.errors.push_back(e.message);
@@ -399,14 +394,58 @@ void Compiler::runToProgram(const std::string& source,
     // if frontend needs to override.)
     shader::AYBGFXConverter converter;
     shader::BGFXCompileOptions bgfxOpts = engineOpts;
-    bgfxOpts.keepSources      = opts.keepSources;
+    bgfxOpts.defines = opts.defines;
+    bgfxOpts.keepSources = opts.keepSources;
     bgfxOpts.dumpIntermediate = opts.dumpIntermediate;
-    bgfxOpts.dumpDir          = opts.dumpDir;
-    if (!opts.includeDirs.empty()) {
-        bgfxOpts.includeDirs = opts.includeDirs;
-    }
+    bgfxOpts.dumpDir = opts.dumpDir;
 
     converter.compileToBinary(irProgram, bgfxOpts, out);
+}
+
+bool Compiler::generateIr(const std::string& source,
+                          const CompileOptions& opts,
+                          ir::IRProgram& out,
+                          std::vector<std::string>& errors)
+{
+    (void)opts;
+    _errorReporter.clear();
+
+    std::vector<Token> tokens;
+    try {
+        tokenize(source, tokens);
+    } catch (const std::exception& e) {
+        errors.push_back(e.what());
+        return false;
+    }
+
+    Parser parser(tokens);
+    std::unique_ptr<Program> ast;
+    try {
+        ast = parser.parse();
+    } catch (const std::exception& e) {
+        errors.push_back(e.what());
+        return false;
+    }
+    if (!ast) {
+        for (const auto& e : parser.errors()) {
+            errors.push_back(e.message);
+        }
+        return false;
+    }
+
+    if (kEnableSemanticAnalysis) {
+        analyzeSemantics(*ast);
+        for (const auto& e : _errorReporter.errors()) {
+            errors.push_back(e.message);
+        }
+        if (!errors.empty()) {
+            return false;
+        }
+    }
+
+    ir::IRGenerator gen;
+    out = gen.generate(*ast, _typeEnv);
+    return true;
 }
 
 } // namespace ayt::shader::phoskia

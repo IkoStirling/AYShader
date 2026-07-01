@@ -9,6 +9,7 @@
 #include "AYAst.h"
 #include "AYIr.h"
 #include "AYShaderProgram.h"
+#include "detail/AYBGFXStageSources.h"
 #include "AYShadercDriver.h"  // Phase 3.6: _driver is a unique_ptr<AYShadercDriver>;
                                 // MSVC <memory>'s unique_ptr destructor requires the
                                 // complete type at the point of destruction (i.e. every
@@ -63,43 +64,6 @@ struct BGFXCompileOptions {
     std::string              dumpDir;
 };
 
-// Three-piece output for a single material: the two shader programs plus
-// the shared varying.def.sc that bgfx shaderc consumes.
-//
-// DEPRECATED (Phase 3.6): the three string fields below carry .sc source
-// text, but the production frontend now reads `CompiledShaderProgram::vsBin`
-// / `fsBin` instead. These fields remain readable for the test-only
-// golden-file joiner (Test_GoldenFiles.cpp) and for any user code that
-// still wants to spawn shaderc itself; new frontend code should call
-// `Compiler::compileToProgram(src)` and inspect the returned
-// `CompiledShaderProgram`. Removal target: Phase 3.7.
-struct BGFXShaderFiles {
-    /// @deprecated Use `CompiledShaderProgram::vsBin` (per-material
-    ///             `sources["vs_<i>.sc"]` for debug view).
-    std::string vs;           // vs_<Material>.sc contents
-    /// @deprecated Use `CompiledShaderProgram::fsBin` (per-material
-    ///             `sources["fs_<i>.sc"]` for debug view).
-    std::string fs;           // fs_<Material>.sc contents
-    /// @deprecated Use `CompiledShaderProgram::sources["varying.def.sc"]`.
-    std::string varyingDef;   // varying.def.sc contents
-};
-
-// One compute declaration's output: the single .sc source that bgfx's
-// shaderc compiles with `--type compute`. Compute has no vs/fs/varying
-// split and no varying.def.sc (it has no attributes, no varyings).
-//
-// Phase 3.2: the compiler body is empty-only — no storage buffers, no
-// thread-id builtins. The two additions land in the next two blocks
-// (storage buffer syntax + thread-id builtins).
-//
-// DEPRECATED (Phase 3.6): same rationale as `BGFXShaderFiles`. The
-// frontend should consume `CompiledShaderProgram::csBin` instead.
-struct BGFXComputeFile {
-    /// @deprecated Use `CompiledShaderProgram::csBin`
-    ///             (per-compute `sources["cs_<i>.sc"]` for debug view).
-    std::string cs;           // cs_<Compute>.sc contents
-};
-
 // Binding-info structs (`BGFXUniform`, `BGFXUniformBlock`,
 // `BGFXStorageBuffer`, `BGFXTexture`) moved to AYShaderProgram.h in
 // Phase 3.6 so that `CompiledShaderProgram` can hold them by value
@@ -109,14 +73,8 @@ struct BGFXComputeFile {
 
 struct BGFXConvertResult {
     bool success = false;
-    // Per-material three-piece sets, in declaration order. Empty when
-    // success == false.
-    std::vector<BGFXShaderFiles> materialFiles;
-    // Per-compute single-piece sets, in declaration order. Phase 3.2:
-    // BGFX .sc IS the compute target backend (bgfx 1.18 / shaderc 1.18
-    // both support `--type compute` and `bgfx::createProgram(_csh)`),
-    // so compute declarations are first-class here just like materials.
-    std::vector<BGFXComputeFile> computeFiles;
+    std::vector<detail::BGFXMaterialStages> materialStages;
+    std::vector<detail::BGFXComputeStage> computeStages;
     std::vector<BGFXUniform> uniforms;
     std::vector<BGFXTexture> textures;
     // Phase 3.4: top-level UBO decls (one per UniformBlockDecl).
@@ -174,17 +132,8 @@ public:
                          const BGFXCompileOptions& opts,
                          CompiledShaderProgram& out);
 
-    // Compile one material into its three-piece set.
-    BGFXShaderFiles convertMaterial(const phoskia::ir::IRMaterialDecl& material);
-
-    // Compile one compute declaration into its single-piece .sc output.
-    // Phase 3.2: BGFX .sc is the compute target backend — bgfx 1.18 +
-    // shaderc 1.18 fully support compute via `bgfx::createProgram(_csh)`
-    // and `shaderc --type compute`. Earlier Phase 2.5 had a placeholder
-    // that claimed BGFX .sc does not support compute — that conclusion
-    // was wrong and has been corrected. Compute declarations are now
-    // first-class alongside materials.
-    BGFXComputeFile convertComputeDecl(const phoskia::ir::IRComputeDecl& compute);
+    detail::BGFXMaterialStages convertMaterial(const phoskia::ir::IRMaterialDecl& material);
+    detail::BGFXComputeStage convertComputeDecl(const phoskia::ir::IRComputeDecl& compute);
 
     std::vector<std::string_view> getCompilerArgs() const override {
         // BGFX backend emits a three-piece set per material; the frontend

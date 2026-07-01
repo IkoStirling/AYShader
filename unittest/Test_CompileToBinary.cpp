@@ -1,4 +1,4 @@
-// Test_CompileToBinary.cpp — Phase 3.6 Commit 2 (B2)
+// Test_CompileToBinary.cpp �?Phase 3.6 Commit 2 (B2)
 //
 // Tests AYBGFXConverter::compileToBinary(), the productization entry
 // point that takes a Phoskia IR and returns a CompiledShaderProgram
@@ -42,7 +42,7 @@ using namespace ayt::shader::phoskia;
 
 namespace {
 
-// CMake-injected hints — same shape as Test_ShadercDriver.cpp. When
+// CMake-injected hints �?same shape as Test_ShadercDriver.cpp. When
 // not injected (i.e. AY_SHADER_BGFX_COMMON_HINT is ""), the shaderc
 // invocation is missing the -i flag for bgfx's `common.sh` and any
 // test that needs an actual compile will SKIP rather than fail.
@@ -122,15 +122,15 @@ ir::IRProgram buildIr(const std::string& src) {
 // shadercPath() test plumbing) can verify byte-equal .bin output.
 const std::string kMinimalUnlit = R"(
 material Unlit {
-    property vec4 baseColor : const = vec4(1.0, 1.0, 1.0, 1.0);
+    property baseColor = vec4(1.0, 1.0, 1.0, 1.0);
 
     vertex {
-        in  position : POSITION;
-        out position : POSITION;
+        in  position : position;
+        out position : position;
         return vec4(position, 1.0);
     }
     fragment {
-        in  position : POSITION;
+        in  position : position;
         return baseColor;
     }
 }
@@ -158,7 +158,7 @@ TEST_CASE(compileToBinary_minimal_unlit_returns_shape) {
     if (!shadercAvailable() || !bgfxCommonAvailable()) {
         // Failure-shape contract: errors vector has at least one entry
         // mentioning the missing-shaderc diagnostic. We still need to
-        // run compileToBinary once to populate `program.errors` — but
+        // run compileToBinary once to populate `program.errors` �?but
         // only when shaderc IS missing (the SKIP path is exactly the
         // error path).
         ir::IRProgram ir = buildIr(kMinimalUnlit);
@@ -224,15 +224,15 @@ TEST_CASE(compileToBinary_keep_sources_populates_map) {
     conv.compileToBinary(ir, opts, program);
 
     CHECK(program.success);
-    CHECK(program.sources.count("vs_0.sc") == 1);
-    CHECK(program.sources.count("fs_0.sc") == 1);
-    CHECK(program.sources.count("varying.def.sc") == 1);
+    CHECK(program.sources.count("vertex_stage_0") == 1);
+    CHECK(program.sources.count("fragment_stage_0") == 1);
+    CHECK(program.sources.count("varying_definitions") == 1);
     // Spot-check a couple of substrings that should be in any emitted
     // .sc: the bgfx $input marker for vs, and the gl_FragColor slot
     // for fs. These are stable across versions / unrelated to
     // shaderc-specific syntax.
-    CHECK(program.sources.at("vs_0.sc").find("$input") != std::string::npos);
-    CHECK(program.sources.at("fs_0.sc").find("$input") != std::string::npos);
+    CHECK(program.sources.at("vertex_stage_0").find("$input") != std::string::npos);
+    CHECK(program.sources.at("fragment_stage_0").find("$input") != std::string::npos);
 }
 
 // Phase 3.6 Commit 2: dumpIntermediate writes the .sc files to the
@@ -288,9 +288,9 @@ TEST_CASE(compileToBinary_dump_intermediate_writes_files) {
 
     CHECK(program.success);
     // Both .sc files should now exist on disk.
-    CHECK(fileExists(dumpDir + "/vs_0.sc"));
-    CHECK(fileExists(dumpDir + "/fs_0.sc"));
-    CHECK(fileExists(dumpDir + "/varying.def.sc"));
+    CHECK(fileExists(dumpDir + "/vertex_stage_0"));
+    CHECK(fileExists(dumpDir + "/fragment_stage_0"));
+    CHECK(fileExists(dumpDir + "/varying_definitions"));
 }
 
 // Phase 3.6 Commit 2: failure on duplicate UBO binding surfaces in
@@ -306,12 +306,12 @@ uniformblock B { vec4 y; } binding 0;
 
 material Test {
     vertex {
-        in position : POSITION;
-        out position : POSITION;
+        in position : position;
+        out position : position;
         return vec4(A.x.xyz, 1.0);
     }
     fragment {
-        in position : POSITION;
+        in position : position;
         return B.y;
     }
 }

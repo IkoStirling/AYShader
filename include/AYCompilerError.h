@@ -19,6 +19,28 @@ enum class ErrorCode : uint8_t {
     InvalidOperation
 };
 
+enum class DiagnosticSeverity : uint8_t {
+    Error,
+    Warning,
+    Info,
+};
+
+struct SourceLocation {
+    std::string file;
+    int line = 0;
+    int column = 0;
+};
+
+struct PhoskiaDiagnostic {
+    DiagnosticSeverity severity = DiagnosticSeverity::Error;
+    ErrorCode errorCode = ErrorCode::UnexpectedToken;
+    std::string message;
+    SourceLocation location;
+    std::string hint;
+
+    std::string toHumanString() const;
+};
+
 struct CompilerError {
     ErrorCode code = ErrorCode::UnexpectedToken;
     std::string message;

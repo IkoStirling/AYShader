@@ -1,12 +1,11 @@
 #pragma once
 // AYShaderResourcePool.h - ShaderResource factory + engine config (Phase 4-B+)
-//
-// Engine startup configures shaderc path / include dirs / platform once;
-// per-shader calls use compile() with optional phoskia::CompileOptions.
 
 #include "AYShaderResource.h"
 #include "AYShaderProgram.h"
+#include "detail/AYShaderCapability.h"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -19,6 +18,15 @@ struct CompileOptions;
 namespace ayt::shader
 {
 
+class ShaderResourceImpl;
+
+struct CacheStats {
+    uint64_t sourceHits = 0;
+    uint64_t sourceMisses = 0;
+    uint64_t binaryHits = 0;
+    uint64_t binaryMisses = 0;
+};
+
 class ShaderResourcePool {
 public:
     ShaderResourcePool();
@@ -29,7 +37,6 @@ public:
     ShaderResourcePool(ShaderResourcePool&&) noexcept;
     ShaderResourcePool& operator=(ShaderResourcePool&&) noexcept;
 
-    // --- Engine config (Phase 4-B) ---
     void setShadercExecutable(const std::string& path);
     void setBgfxIncludeDirs(const std::vector<std::string>& dirs);
     void setPlatform(const std::string& platform);
@@ -37,20 +44,22 @@ public:
     void setCacheDirectory(const std::string& path);
     void setHotReloadEnabled(bool enabled);
 
-    // --- Primary frontend path (Phase 4-B/C) ---
+    void require(ShaderCapability capability);
+    void setAutoProbeFromRendererType(bool enabled);
+    void bindRendererTypeForTests(uint8_t bgfxRendererType, const std::string& platform,
+                                  const std::string& profile);
+
+    CacheStats cacheStats() const;
+
     ShaderResource compile(const std::string& src);
     ShaderResource compile(const std::string& src,
                            const phoskia::CompileOptions& opts);
     ShaderResource compileFromFile(const std::string& path);
     ShaderResource compileFromFile(const std::string& path,
                                    const phoskia::CompileOptions& opts);
-
-    // Dev-only hot-reload poll (no-op when setHotReloadEnabled(false)).
     void pollHotReload();
 
-    // Lower-level: wire an already-compiled program (Phase 4-A API).
     ShaderResource acquire(const CompiledShaderProgram& prog);
-
     ShaderResource acquire(const std::string& src,
                            const std::string& cacheKey = "");
     ShaderResource acquire(const std::string& src,
@@ -59,6 +68,8 @@ public:
 
     void release(ShaderResource& res);
     void shutdown();
+
+    static ShaderResourceImpl* resolveHandle(uint64_t handle);
 
 private:
     struct Impl;

@@ -41,6 +41,8 @@ void AYSemanticAnalyzer::analyze(const Stmt& stmt) {
         analyzeUniformDecl(*uniform);
     } else if (auto texture = dynamic_cast<const TextureDecl*>(&stmt)) {
         analyzeTextureDecl(*texture);
+    } else if (auto ub = dynamic_cast<const UniformBlockDecl*>(&stmt)) {
+        analyzeUniformBlockDecl(*ub);
     } else if (auto vert = dynamic_cast<const VertexFunc*>(&stmt)) {
         analyzeVertexFunc(*vert);
     } else if (auto frag = dynamic_cast<const FragmentFunc*>(&stmt)) {
@@ -109,6 +111,14 @@ void AYSemanticAnalyzer::analyzeTextureDecl(const TextureDecl& decl) {
     // existing Dynamic placeholder so `sample(tex, uv)` still resolves
     // (the sample builtin takes a Texture2D param which currently maps
     // to Dynamic in the env).
+    _env.addVariable(decl.name, BuiltinTypes::Dynamic);
+    _symbols[decl.name] = BuiltinTypes::Dynamic;
+}
+
+void AYSemanticAnalyzer::analyzeUniformBlockDecl(const UniformBlockDecl& decl) {
+    // Phase 4-N: register UBO names so `Camera.position` member access
+    // resolves during semantic analysis (layout/binding validation stays
+    // in the BGFX converter).
     _env.addVariable(decl.name, BuiltinTypes::Dynamic);
     _symbols[decl.name] = BuiltinTypes::Dynamic;
 }

@@ -1,4 +1,4 @@
-// Test_ShaderDiskCache.cpp — Phase 4-I disk cache tier
+// Test_ShaderDiskCache.cpp ??Phase 4-I disk cache tier
 
 #include "AYPhoskia.h"
 #include "AYShaderResourcePool.h"
@@ -50,12 +50,12 @@ material Unlit {
     property baseColor = vec4(1.0, 1.0, 1.0, 1.0);
 
     vertex {
-        in  position : POSITION;
-        out position : POSITION;
+        in  position : position;
+        out position : position;
         return vec4(position, 1.0);
     }
     fragment {
-        in  position : POSITION;
+        in  position : position;
         return baseColor;
     }
 }
@@ -171,6 +171,9 @@ void configurePool(ShaderResourcePool& pool, const std::string& cacheDir)
 {
     pool.setShadercExecutable(AY_SHADER_SHADERC_HINT);
     pool.setBgfxIncludeDirs(shadercIncludeDirs());
+    pool.setAutoProbeFromRendererType(false);
+    pool.setPlatform("windows");
+    pool.setGLSLProfile("430");
     pool.setCacheDirectory(cacheDir);
 }
 
@@ -268,7 +271,7 @@ TEST_CASE(pool_disk_cache_persists_across_pool_instances)
         for (const std::string& dir : shadercIncludeDirs()) {
             oss << dir << ';';
         }
-        oss << "|0000|" << kMinimalUnlit;
+        oss << "|15||00|" << kMinimalUnlit;
         const std::string cacheFile =
             diskCacheFilePath(cacheDir, sha256Hex(oss.str()));
         CHECK(fileExists(cacheFile));

@@ -10,7 +10,7 @@ AYShader 是 AY Engine 的着色器子系统：接受 **Phoskia** DSL 源码，�
 
 ## 状态
 
-**Phase 4 进行中**（Phase 3.6 已关闭；958 测试基线含 Phase 4-A/B/C/E）。
+**Phase 4 已关闭**（Phase 3.6 已关闭；1050+ 测试全绿）。
 
 | Phase | 范围 | 状态 |
 |---|---|---|
@@ -40,7 +40,14 @@ AYShader 是 AY Engine 的着色器子系统：接受 **Phoskia** DSL 源码，�
 | Phase 4-F | `DrawCallContext::state` + `submit()` 帧期 `bgfx::setState` | ✅ |
 | Phase 4-J | hot-reload：`compileFromFile` + `pollHotReload`（mtime + 100ms debounce） | ✅ |
 | Phase 4-K | `Test_ShaderCacheIntegration` — frontend TU 不含 `<bgfx/bgfx.h>` | ✅（contract 层） |
-| Phase 4-L+ | capability 体系 | 🔴 待做 |
+| Phase 4-H | `.sc` stage text 移入 `detail/`；public API 不再暴露 `.sc` 字段 | ✅ |
+| Phase 4-L | `ShaderCapability` + `pool.require()` | ✅ |
+| Phase 4-M | `setAutoProbeFromRendererType` + renderer→platform/profile 探测 | ✅ |
+| Phase 4-N | `PhoskiaDiagnostic` 结构化错误 + UBO 名称语义注册 | ✅ |
+| Phase 4-O | `ShaderResource` 8-byte opaque handle + handle table | ✅ |
+| Phase 4-P | neutral source keys（`vertex_stage_N` / `varying_definitions`） | ✅ |
+| Phase 4-Q | 两级 cache（IR + binary）+ `CacheStats` | ✅ |
+| Phase 4-R | `CompileOptions` 精简（`defines` / debug flags only） | ✅ |
 | Phase 5+ | HLSL 后端（按需 — DXC 一手质量 / 减体积） | 🅿 暂缓 |
 | Phase 5+ | WGSL 后端（按需 — WebGPU 目标） | 🅿 暂缓 |
 
@@ -63,7 +70,7 @@ cmake --build D:\Projects\out\build\x64-Debug --target AYShader_Test
 D:\Projects\out\build\x64-Debug\AYRuntime\AYShader\unittest\AYShader_Test.exe
 ```
 
-最后一次完整跑：**1050 / 1050 PASS**（Phase 4-I/F/J）。
+最后一次完整跑：**1050 / 1050 PASS**（Phase 4 全量）。
 
 ### 测试套件
 
@@ -86,6 +93,10 @@ D:\Projects\out\build\x64-Debug\AYRuntime\AYShader\unittest\AYShader_Test.exe
 | `Test_ShaderDiskCache.cpp` | Phase 4-I disk cache roundtrip + pool persistence |
 | `Test_ShaderHotReload.cpp` | Phase 4-J hot-reload debounce + compileFromFile |
 | `Test_ShaderCacheIntegration.cpp` | Phase 4-K frontend header contract（本 TU 不含 bgfx） |
+| `Test_CapabilityDispatch.cpp` | Phase 4-L capability 位掩码 |
+| `Test_DiagnosticStructure.cpp` | Phase 4-N `PhoskiaDiagnostic::toHumanString()` |
+| `Test_HandleABI.cpp` | Phase 4-O opaque handle ABI |
+| `Test_CacheStats.cpp` | Phase 4-Q 两级 cache 统计 |
 
 ### Golden fixture
 

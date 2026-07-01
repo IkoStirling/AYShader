@@ -1,9 +1,9 @@
-// Test_CompileToProgram.cpp — Phase 3.6 Commit 3 (B3)
+// Test_CompileToProgram.cpp �?Phase 3.6 Commit 3 (B3)
 //
 // Tests the Compiler::compileToProgram() productization entry point
 // and the env-var precedence contract for AY_PHOSKIA_KEEP_SOURCES /
 // AY_PHOSKIA_DUMP_SC. These tests live at the Compiler level (not
-// AYBGFXConverter level — see Test_CompileToBinary.cpp for that).
+// AYBGFXConverter level �?see Test_CompileToBinary.cpp for that).
 //
 // Scope is intentionally small for Commit 3:
 //   - compileToProgram default opts produces a CompiledShaderProgram
@@ -43,15 +43,15 @@ namespace {
 
 const std::string kMinimalUnlit = R"(
 material Unlit {
-    property vec4 baseColor : const = vec4(1.0, 1.0, 1.0, 1.0);
+    property baseColor = vec4(1.0, 1.0, 1.0, 1.0);
 
     vertex {
-        in  position : POSITION;
-        out position : POSITION;
+        in  position : position;
+        out position : position;
         return vec4(position, 1.0);
     }
     fragment {
-        in  position : POSITION;
+        in  position : position;
         return baseColor;
     }
 }
@@ -105,8 +105,7 @@ std::string shadercTestDumpDir(const char* tag) {
 TEST_SUITE(CompileToProgramTests)
 
 // Smoke: default opts. The full shaderc pipeline may or may not be
-// available on the host. We don't assert on the binary shape here —
-// just on the contract that compileToProgram returns a struct with
+// available on the host. We don't assert on the binary shape here �?// just on the contract that compileToProgram returns a struct with
 // the expected fields populated (even when shaderc is missing, the
 // errors vector carries the diagnostic and success is false).
 TEST_CASE(compileToProgram_default_opts_returns_shape) {
@@ -117,9 +116,9 @@ TEST_CASE(compileToProgram_default_opts_returns_shape) {
     CompiledShaderProgram program = c.compileToProgram(kMinimalUnlit);
 
     // The struct must exist with the expected fields. Don't assert
-    // success — that depends on shaderc availability on the host.
+    // success �?that depends on shaderc availability on the host.
     // Either success=true (with vsBin/fsBin populated), or success=false
-    // (with errors mentioning AYShadercDriver somewhere — earlier
+    // (with errors mentioning AYShadercDriver somewhere �?earlier
     // parser-diagnostic messages may also be in the errors vector
     // since they get surfaced too).
     if (!program.success) {
@@ -157,8 +156,8 @@ TEST_CASE(compileToProgram_keep_sources_via_opts) {
         std::cerr << "[compileToProgram test] SKIP: shaderc not available.\n";
         return;
     }
-    CHECK(program.sources.count("vs_0.sc") == 1);
-    CHECK(program.sources.count("fs_0.sc") == 1);
+    CHECK(program.sources.count("vertex_stage_0") == 1);
+    CHECK(program.sources.count("fragment_stage_0") == 1);
 }
 
 // Env var override: AY_PHOSKIA_KEEP_SOURCES=1 with opts.keepSources=false
@@ -178,12 +177,12 @@ TEST_CASE(env_AY_PHOSKIA_KEEP_SOURCES_overrides_opts_false) {
         return;
     }
     // Sources populated even though explicit opts.keepSources=false.
-    CHECK(program.sources.count("vs_0.sc") == 1);
-    CHECK(program.sources.count("fs_0.sc") == 1);
+    CHECK(program.sources.count("vertex_stage_0") == 1);
+    CHECK(program.sources.count("fragment_stage_0") == 1);
 }
 
 // Env var override: same as above but explicit opts.keepSources=true
-// AND env=1 — still works (idempotent).
+// AND env=1 �?still works (idempotent).
 TEST_CASE(env_AY_PHOSKIA_KEEP_SOURCES_combines_with_opts_true) {
     clearPhase36Env();
     clearShadercDefault();
@@ -198,10 +197,10 @@ TEST_CASE(env_AY_PHOSKIA_KEEP_SOURCES_combines_with_opts_true) {
         std::cerr << "[compileToProgram test] SKIP: shaderc not available.\n";
         return;
     }
-    CHECK(program.sources.count("vs_0.sc") == 1);
+    CHECK(program.sources.count("vertex_stage_0") == 1);
 }
 
-// Env var override: env says OFF, opts say ON — the contract is
+// Env var override: env says OFF, opts say ON �?the contract is
 // true-wins OR, so the result is ON (opts wants it on). This locks
 // the asymmetry: opts.keepSources=true always wins regardless of env.
 TEST_CASE(env_AY_PHOSKIA_KEEP_SOURCES_zero_opts_true_wins) {
@@ -218,10 +217,10 @@ TEST_CASE(env_AY_PHOSKIA_KEEP_SOURCES_zero_opts_true_wins) {
         std::cerr << "[compileToProgram test] SKIP: shaderc not available.\n";
         return;
     }
-    CHECK(program.sources.count("vs_0.sc") == 1);
+    CHECK(program.sources.count("vertex_stage_0") == 1);
 }
 
-// Env var override: env=0 + opts=false → sources empty (both want it
+// Env var override: env=0 + opts=false �?sources empty (both want it
 // off). This is the "no override" baseline.
 TEST_CASE(env_AY_PHOSKIA_KEEP_SOURCES_zero_opts_false_is_off) {
     clearPhase36Env();
@@ -270,8 +269,8 @@ TEST_CASE(env_AY_PHOSKIA_DUMP_SC_overrides_opts_false) {
         std::cerr << "[dump_sc test] SKIP: shaderc not available.\n";
         return;
     }
-    CHECK(fileExists(opts.dumpDir + "/vs_0.sc"));
-    CHECK(fileExists(opts.dumpDir + "/fs_0.sc"));
+    CHECK(fileExists(opts.dumpDir + "/vertex_stage_0"));
+    CHECK(fileExists(opts.dumpDir + "/fragment_stage_0"));
 }
 
 TEST_CASE(env_AY_PHOSKIA_DUMP_SC_combines_with_opts_true) {
@@ -289,7 +288,7 @@ TEST_CASE(env_AY_PHOSKIA_DUMP_SC_combines_with_opts_true) {
         std::cerr << "[dump_sc test] SKIP: shaderc not available.\n";
         return;
     }
-    CHECK(fileExists(opts.dumpDir + "/vs_0.sc"));
+    CHECK(fileExists(opts.dumpDir + "/vertex_stage_0"));
 }
 
 TEST_CASE(env_AY_PHOSKIA_DUMP_SC_zero_opts_true_wins) {
@@ -308,7 +307,7 @@ TEST_CASE(env_AY_PHOSKIA_DUMP_SC_zero_opts_true_wins) {
         return;
     }
     // opts wins because the contract is true-wins OR.
-    CHECK(fileExists(opts.dumpDir + "/vs_0.sc"));
+    CHECK(fileExists(opts.dumpDir + "/vertex_stage_0"));
 }
 
 TEST_CASE(env_AY_PHOSKIA_DUMP_SC_zero_opts_false_is_off) {
@@ -326,7 +325,7 @@ TEST_CASE(env_AY_PHOSKIA_DUMP_SC_zero_opts_false_is_off) {
         std::cerr << "[dump_sc test] SKIP: shaderc not available.\n";
         return;
     }
-    CHECK(!fileExists(opts.dumpDir + "/vs_0.sc"));
+    CHECK(!fileExists(opts.dumpDir + "/vertex_stage_0"));
 }
 
 // Parse error surfaces in program.errors without throwing.
@@ -335,7 +334,7 @@ TEST_CASE(compileToProgram_parser_error_surfaces) {
     clearShadercDefault();
 
     Compiler c;
-    // Unclosed brace → parser error.
+    // Unclosed brace �?parser error.
     const std::string bad = "material X { vertex { return vec4(0,0,0,0); ";
     CompiledShaderProgram program = c.compileToProgram(bad);
 
@@ -393,9 +392,9 @@ TEST_CASE(compileToProgram_respects_dump_dir) {
         return;
     }
     // Happy path: dumpDir is created and the .sc files exist.
-    CHECK(fileExists(opts.dumpDir + "/vs_0.sc"));
-    CHECK(fileExists(opts.dumpDir + "/fs_0.sc"));
-    CHECK(fileExists(opts.dumpDir + "/varying.def.sc"));
+    CHECK(fileExists(opts.dumpDir + "/vertex_stage_0"));
+    CHECK(fileExists(opts.dumpDir + "/fragment_stage_0"));
+    CHECK(fileExists(opts.dumpDir + "/varying_definitions"));
 }
 
 TEST_SUITE_END

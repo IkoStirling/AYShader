@@ -15,12 +15,13 @@
 //
 // Each test names the exact mismatch on failure so regenerating is
 // safe: a typo in source will reproduce the exact same .sc, and a
-// converter change will produce a different one — the env flag is the
+// converter change will produce a different one ??the env flag is the
 // single switch to accept the new baseline.
 
 #include "AYPhoskia.h"
 #include "AYShadercDriver.h"
 #include "AYTest.h"
+#include "detail/AYShaderSourceKeys.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -38,8 +39,8 @@ using namespace ayt::shader::phoskia;
 namespace {
 
 // Lock the process-wide shaderc default for `compileToOutput`. The
-// golden joiner doesn't actually need shaderc — it reconstructs the
-// shape from `prog.sources` which is populated pre-shaderc — but
+// golden joiner doesn't actually need shaderc ??it reconstructs the
+// shape from `prog.sources` which is populated pre-shaderc ??but
 // `compileToProgram` lazily initializes the driver from the global
 // default and surfaces a "no default executable configured" error
 // when unset. Call `setDefaultExecutable` once so the golden path
@@ -106,26 +107,26 @@ void writeFile(const std::string& path, const std::string& content) {
 }
 
 // Run the Phoskia source through the full pipeline and return the
-// backend's concatenated output (varying.def.sc + vs_ + fs_ fences).
+// backend's concatenated output (varying_definitions + vs_ + fs_ fences).
 //
 // Phase 3.6 Commit 5: the new pipeline populates
 // `CompiledShaderProgram::sources` instead of
 // `CompileResult::output` (the latter is now deprecated / empty by
 // default). To keep the golden .sc baselines byte-equal against the
 // historical fence-prefixed joiner, we reconstruct the same shape
-// from `prog.sources` here. This is a test-only joiner — production
+// from `prog.sources` here. This is a test-only joiner ??production
 // `CompiledShaderProgram::sources` stays a map and the frontend is
 // free to use whatever structure it wants.
 //
-// Key conventions (kept stable; locked in design.md §8.4):
+// Key conventions (kept stable; locked in design.md ?8.4):
 //   "vs_<i>.sc"          - vertex stage for material i
 //   "fs_<i>.sc"          - fragment stage for material i
 //   "cs_<i>.sc"          - compute stage for compute i
-//   "varying.def.sc"     - shared varying/attribute table (single key)
+//   "varying_definitions"     - shared varying/attribute table (single key)
 //
 // Joins:
 //   For each material i:
-//     // === material <i> varying.def.sc ===
+//     // === material <i> varying_definitions ===
 //     <varying.def sc>     (only the FIRST material emits varyingdef; later
 //                            materials share the same per-program varyingdef)
 //     // === material <i> vs ===
@@ -136,15 +137,15 @@ void writeFile(const std::string& path, const std::string& content) {
 //     // === compute <i> cs ===
 //     <cs>
 //
-// (The historical joiner emitted `// === material 0 varying.def.sc ===` only
-// for material 0 — subsequent materials' varying.def was identical and not
+// (The historical joiner emitted `// === material 0 varying_definitions ===` only
+// for material 0 ??subsequent materials' varying.def was identical and not
 // repeated.)
 std::string compileToOutput(const std::string& src) {
     Compiler compiler;
     CompileOptions opts;
     opts.keepSources = true;
     ensureShadercDefaultForGolden();
-    // Isolate env-var influence on the joiner — envs could otherwise
+    // Isolate env-var influence on the joiner ??envs could otherwise
     // toggle keepSources at runtime, which is fine for production
     // but would make this baseline-diff test order-dependent.
 #ifdef _WIN32
@@ -165,19 +166,21 @@ std::string compileToOutput(const std::string& src) {
     // Empty keys indicate "no stage in this slot".
     //
     // Note: the historical joiner (see AYBGFXConverter.cpp::convert())
-    // repeated `// === material <i> varying.def.sc ===` per material —
-    // i.e. material 0's varyingdef appears once, material 1's appears
+    // repeated `// === material <i> varying_definitions ===` per material ??    // i.e. material 0's varyingdef appears once, material 1's appears
     // once (even if it's the same string as material 0's), etc. The
     // sources map only carries varying.def under a single shared
     // key; we re-emit it per material so the golden .sc baseline
     // remains byte-equal.
     std::ostringstream oss;
     const std::string varyingDef =
-        prog.sources.count("varying.def.sc")
-            ? prog.sources.at("varying.def.sc") : std::string{};
+        prog.sources.count("varying_definitions")
+            ? prog.sources.at("varying_definitions") : std::string{};
+    using detail::computeStageKey;
+    using detail::fragmentStageKey;
+    using detail::vertexStageKey;
     for (size_t i = 0; ; ++i) {
-        std::string vsKey = "vs_" + std::to_string(i) + ".sc";
-        std::string fsKey = "fs_" + std::to_string(i) + ".sc";
+        const std::string vsKey = vertexStageKey(i);
+        const std::string fsKey = fragmentStageKey(i);
         if (!prog.sources.count(vsKey)) break;  // past last material
         oss << "// === material " << i << " varying.def.sc ===\n"
             << varyingDef << "\n";
@@ -187,7 +190,7 @@ std::string compileToOutput(const std::string& src) {
             << prog.sources.at(fsKey) << "\n";
     }
     for (size_t i = 0; ; ++i) {
-        std::string csKey = "cs_" + std::to_string(i) + ".sc";
+        const std::string csKey = computeStageKey(i);
         if (!prog.sources.count(csKey)) break;
         oss << "// === compute " << i << " cs ===\n"
             << prog.sources.at(csKey) << "\n";
@@ -233,7 +236,7 @@ void runOneFixture(const std::string& name) {
 
     std::string expected = readFile(outPath);
     if (actual == expected) {
-        // PASS — no message body needed; the AYTest framework prints [PASS].
+        // PASS ??no message body needed; the AYTest framework prints [PASS].
         return;
     }
 

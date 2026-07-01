@@ -398,7 +398,7 @@ TEST_CASE(realistic_material_declaration) {
 }
 
 TEST_CASE(variant_attribute_syntax) {
-    // Phoskia `[variant name]` syntax: 5 tokens â€” `[` `variant` `<name>` `]` EOF.
+    // Phoskia `[variant name]` syntax: 5 tokens â€?`[` `variant` `<name>` `]` EOF.
     Lexer lexer("[ variant useEmission ]");
     std::vector<Token> tokens;
     lexer.tokenize(tokens);
@@ -417,7 +417,7 @@ TEST_CASE(type_names_are_plain_identifiers) {
     // Round-trip every builtin type name through the lexer and assert
     // each one is a TokenType::Identifier carrying the literal name as
     // its lexeme. No more TokenType::Vec3 / Float / Mat4 / Bool / ...
-    // â€” those enum values have been removed from AYToken.h.
+    // â€?those enum values have been removed from AYToken.h.
     const char* names[] = {
         "float", "vec2", "vec3", "vec4",
         "int", "ivec2", "ivec3", "ivec4",

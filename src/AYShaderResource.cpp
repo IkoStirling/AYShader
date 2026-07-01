@@ -1,6 +1,7 @@
-// AYShaderResource.cpp - ShaderResource public API forwarding
+// AYShaderResource.cpp - ShaderResource public API (Phase 4-O handle table)
 
 #include "AYShaderResource.h"
+#include "AYShaderResourcePool.h"
 #include "ShaderResourceImpl.h"
 
 #include <cstring>
@@ -8,26 +9,12 @@
 namespace ayt::shader
 {
 
-ShaderResource::ShaderResource() = default;
-
-ShaderResource::ShaderResource(std::shared_ptr<ShaderResourceImpl> impl)
-    : _impl(std::move(impl))
-{
-}
-
-ShaderResource::~ShaderResource() = default;
-
-void ShaderResource::reset() noexcept
-{
-    _impl.reset();
-}
-
-bool ShaderResource::isValid() const noexcept
-{
-    return _impl && bgfx::isValid(_impl->programHandle);
-}
-
 namespace {
+
+ShaderResourceImpl* resolveImpl(uint64_t handle)
+{
+    return ShaderResourcePool::resolveHandle(handle);
+}
 
 BindingId lookupBinding(const std::unordered_map<std::string, BindingId>& table,
                         const std::string& name)
@@ -44,44 +31,55 @@ const BindingEntry* findBindingEntry(const ShaderResourceImpl& impl, BindingId i
 
 } // namespace
 
+bool ShaderResource::isValid() const noexcept
+{
+    ShaderResourceImpl* impl = resolveImpl(_id);
+    return impl != nullptr && bgfx::isValid(impl->programHandle);
+}
+
 BindingId ShaderResource::getUniformBinding(const std::string& name) const
 {
-    if (!_impl) {
+    ShaderResourceImpl* impl = resolveImpl(_id);
+    if (impl == nullptr) {
         return InvalidBinding;
     }
-    return lookupBinding(_impl->uniformBindings, name);
+    return lookupBinding(impl->uniformBindings, name);
 }
 
 BindingId ShaderResource::getTextureBinding(const std::string& name) const
 {
-    if (!_impl) {
+    ShaderResourceImpl* impl = resolveImpl(_id);
+    if (impl == nullptr) {
         return InvalidBinding;
     }
-    return lookupBinding(_impl->textureBindings, name);
+    return lookupBinding(impl->textureBindings, name);
 }
 
 BindingId ShaderResource::getUniformBlockBinding(const std::string& name) const
 {
-    if (!_impl) {
+    ShaderResourceImpl* impl = resolveImpl(_id);
+    if (impl == nullptr) {
         return InvalidBinding;
     }
-    return lookupBinding(_impl->uniformBlockBindings, name);
+    return lookupBinding(impl->uniformBlockBindings, name);
 }
 
 BindingId ShaderResource::getStorageBufferBinding(const std::string& name) const
 {
-    if (!_impl) {
+    ShaderResourceImpl* impl = resolveImpl(_id);
+    if (impl == nullptr) {
         return InvalidBinding;
     }
-    return lookupBinding(_impl->storageBufferBindings, name);
+    return lookupBinding(impl->storageBufferBindings, name);
 }
 
 size_t ShaderResource::getUniformBlockSize(BindingId blockId) const
 {
-    if (!_impl || blockId == InvalidBinding) {
+    ShaderResourceImpl* impl = resolveImpl(_id);
+    if (impl == nullptr || blockId == InvalidBinding) {
         return 0;
     }
-    const BindingEntry* entry = findBindingEntry(*_impl, blockId);
+    const BindingEntry* entry = findBindingEntry(*impl, blockId);
     if (entry == nullptr || entry->kind != BindingKind::UniformBlock) {
         return 0;
     }
@@ -91,10 +89,11 @@ size_t ShaderResource::getUniformBlockSize(BindingId blockId) const
 size_t ShaderResource::getUniformBlockFieldOffset(BindingId blockId,
                                                   const std::string& fieldName) const
 {
-    if (!_impl || blockId == InvalidBinding) {
+    ShaderResourceImpl* impl = resolveImpl(_id);
+    if (impl == nullptr || blockId == InvalidBinding) {
         return 0;
     }
-    const BindingEntry* entry = findBindingEntry(*_impl, blockId);
+    const BindingEntry* entry = findBindingEntry(*impl, blockId);
     if (entry == nullptr || entry->kind != BindingKind::UniformBlock) {
         return 0;
     }
@@ -105,10 +104,11 @@ size_t ShaderResource::getUniformBlockFieldOffset(BindingId blockId,
 size_t ShaderResource::getUniformBlockFieldSize(BindingId blockId,
                                                 const std::string& fieldName) const
 {
-    if (!_impl || blockId == InvalidBinding) {
+    ShaderResourceImpl* impl = resolveImpl(_id);
+    if (impl == nullptr || blockId == InvalidBinding) {
         return 0;
     }
-    const BindingEntry* entry = findBindingEntry(*_impl, blockId);
+    const BindingEntry* entry = findBindingEntry(*impl, blockId);
     if (entry == nullptr || entry->kind != BindingKind::UniformBlock) {
         return 0;
     }
@@ -118,11 +118,12 @@ size_t ShaderResource::getUniformBlockFieldSize(BindingId blockId,
 
 void ShaderResource::setUniform(BindingId id, const void* data, size_t sizeBytes) const
 {
-    if (!_impl || id == InvalidBinding || data == nullptr || sizeBytes == 0) {
+    ShaderResourceImpl* impl = resolveImpl(_id);
+    if (impl == nullptr || id == InvalidBinding || data == nullptr || sizeBytes == 0) {
         return;
     }
 
-    const BindingEntry* entry = findBindingEntry(*_impl, id);
+    const BindingEntry* entry = findBindingEntry(*impl, id);
     if (entry == nullptr) {
         return;
     }
@@ -134,18 +135,19 @@ void ShaderResource::setUniform(BindingId id, const void* data, size_t sizeBytes
     pending.id = id;
     pending.data.resize(sizeBytes);
     std::memcpy(pending.data.data(), data, sizeBytes);
-    _impl->pendingUniforms.push_back(std::move(pending));
+    impl->pendingUniforms.push_back(std::move(pending));
 }
 
 void ShaderResource::setUniformBlock(BindingId blockId,
                                      const void* data,
                                      size_t sizeBytes) const
 {
-    if (!_impl || blockId == InvalidBinding || data == nullptr || sizeBytes == 0) {
+    ShaderResourceImpl* impl = resolveImpl(_id);
+    if (impl == nullptr || blockId == InvalidBinding || data == nullptr || sizeBytes == 0) {
         return;
     }
 
-    const BindingEntry* entry = findBindingEntry(*_impl, blockId);
+    const BindingEntry* entry = findBindingEntry(*impl, blockId);
     if (entry == nullptr || entry->kind != BindingKind::UniformBlock) {
         return;
     }
@@ -158,11 +160,12 @@ void ShaderResource::setUniformBlock(BindingId blockId,
 
 void ShaderResource::setTexture(uint8_t stage, BindingId id, const TextureHandle& tex) const
 {
-    if (!_impl || id == InvalidBinding || !tex.isValid()) {
+    ShaderResourceImpl* impl = resolveImpl(_id);
+    if (impl == nullptr || id == InvalidBinding || !tex.isValid()) {
         return;
     }
 
-    const BindingEntry* entry = findBindingEntry(*_impl, id);
+    const BindingEntry* entry = findBindingEntry(*impl, id);
     if (entry == nullptr || entry->kind != BindingKind::Texture) {
         return;
     }
@@ -171,17 +174,18 @@ void ShaderResource::setTexture(uint8_t stage, BindingId id, const TextureHandle
     pending.stage = stage;
     pending.id = id;
     pending.texture.idx = static_cast<uint16_t>(tex.id & 0xFFFFu);
-    _impl->pendingTextures.push_back(pending);
+    impl->pendingTextures.push_back(pending);
 }
 
 void ShaderResource::submit(const DrawCallContext& ctx) const
 {
-    if (!_impl || !bgfx::isValid(_impl->programHandle)) {
+    ShaderResourceImpl* impl = resolveImpl(_id);
+    if (impl == nullptr || !bgfx::isValid(impl->programHandle)) {
         return;
     }
 
-    for (const PendingUniform& pending : _impl->pendingUniforms) {
-        const BindingEntry* entry = findBindingEntry(*_impl, pending.id);
+    for (const PendingUniform& pending : impl->pendingUniforms) {
+        const BindingEntry* entry = findBindingEntry(*impl, pending.id);
         if (entry == nullptr || !bgfx::isValid(entry->uniformHandle)) {
             continue;
         }
@@ -191,8 +195,8 @@ void ShaderResource::submit(const DrawCallContext& ctx) const
         bgfx::setUniform(entry->uniformHandle, pending.data.data());
     }
 
-    for (const PendingTexture& pending : _impl->pendingTextures) {
-        const BindingEntry* entry = findBindingEntry(*_impl, pending.id);
+    for (const PendingTexture& pending : impl->pendingTextures) {
+        const BindingEntry* entry = findBindingEntry(*impl, pending.id);
         if (entry == nullptr || !bgfx::isValid(entry->uniformHandle)) {
             continue;
         }
@@ -206,10 +210,10 @@ void ShaderResource::submit(const DrawCallContext& ctx) const
         bgfx::setState(ctx.state);
     }
 
-    bgfx::submit(ctx.viewId, _impl->programHandle);
+    bgfx::submit(ctx.viewId, impl->programHandle);
 
-    _impl->pendingUniforms.clear();
-    _impl->pendingTextures.clear();
+    impl->pendingUniforms.clear();
+    impl->pendingTextures.clear();
 }
 
 } // namespace ayt::shader

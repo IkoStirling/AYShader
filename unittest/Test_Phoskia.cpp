@@ -1,11 +1,11 @@
 // ============================================================
 // AYShader Compiler (AYPhoskia) End-to-End Unit Tests
-// (Phase 1 closure â€” vertex/fragment syntax)
+// (Phase 1 closure â€?vertex/fragment syntax)
 //
 // Phase 3.6 Commit 5: every assertion that used to read
-// `result.output.find(...)` or `result.output.empty()` now reads
+// `result.success.find(...)` or `result.success.empty()` now reads
 // the same shape from `CompiledShaderProgram::sources` (keyed by
-// "vs_N.sc" / "fs_N.sc" / "cs_N.sc" / "varying.def.sc"). The
+// "vs_N.sc" / "fs_N.sc" / "cs_N.sc" / "varying_definitions"). The
 // frontend `.sc` joiner shape lives in `CompileResult::output`
 // (deprecated) but no unit test reads it directly anymore.
 // ============================================================
@@ -74,19 +74,17 @@ bool ensureShadercDefault() {
 
 // Commit 5 helper: drive the full pipeline with keepSources=true so
 // `program.sources` carries every emitted .sc string. Tests that
-// used to read `result.output.find(...)` now read
+// used to read `result.success.find(...)` now read
 // `prog.sources.at(k).find(...)` for the same substring contract.
 //
 // We deliberately do NOT use the `Compiler::compile()` legacy API
-// (whose `result.output` is deprecated / empty by default) â€”
-// `compileToProgram` is the documented Phase 3.6 entry point and
+// (whose `result.success` is deprecated / empty by default) â€?// `compileToProgram` is the documented Phase 3.6 entry point and
 // the thing future engine code will actually call.
 //
 // On hosts without a working shaderc binary, `success` will be
 // false (lazy-init fails, error lands in `prog.errors[0]`). The
 // sources map is still populated from `convertBGFX` regardless of
-// shaderc availability (Commit 5: pre-shaderc populate point) â€”
-// so substring assertions on `prog.sources[k]` succeed even when
+// shaderc availability (Commit 5: pre-shaderc populate point) â€?// so substring assertions on `prog.sources[k]` succeed even when
 // the host has no shaderc. The legacy e2e suite
 // (Test_ShaderCompile.cpp) is the only one that hard-requires
 // shaderc to be installed.
@@ -109,7 +107,7 @@ CompiledShaderProgram compileWithSources(
     // it. Without this, the first test in this file (or any test run
     // before Test_ShadercDriver set the default) would fail with
     // "no default executable configured". SKIPPED silently when the
-    // vendored binary isn't on disk â€” see Test_ShaderCompile.cpp's
+    // vendored binary isn't on disk â€?see Test_ShaderCompile.cpp's
     // shadercReachable() rationale for SKIP semantics.
     (void)ensureShadercDefault();
 
@@ -154,7 +152,7 @@ TEST_CASE(compile_minimal_unlit) {
 }
 
 TEST_CASE(compile_empty_material) {
-    // Must include both blocks now â€” the converter rejects otherwise.
+    // Must include both blocks now â€?the converter rejects otherwise.
     CompiledShaderProgram prog = compileWithSourcesDefault(
         "material X { vertex { } fragment { } }");
     CHECK(prog.success || !prog.sources.empty());
@@ -216,22 +214,20 @@ TEST_CASE(register_custom_backend) {
 
 // ===== Compilation options =====
 
-TEST_CASE(options_default_target_is_bgfx) {
+TEST_CASE(compile_options_supports_defines)
+{
     CompileOptions opts;
-    CHECK(opts.targetBackend == "bgfx");
+    opts.defines.push_back("USE_SHADOWS=1");
+    CHECK(opts.defines.size() == 1);
+    CHECK(opts.defines[0] == "USE_SHADOWS=1");
 }
 
-TEST_CASE(options_can_be_customized) {
+TEST_CASE(compile_options_default_debug_toggles_off)
+{
     CompileOptions opts;
-    opts.targetBackend = "myBackend";
-    opts.enableTypeInference = true;
-    opts.enableSemanticAnalysis = false;
-    Compiler compiler(opts);
-    CompileResult result{};
-    compiler.compile(
-        "material X { vertex { return vec4(0.0) } "
-        "fragment { return vec4(1.0) } }", result);
-    CHECK(!result.success);
+    CHECK_FALSE(opts.keepSources);
+    CHECK_FALSE(opts.dumpIntermediate);
+    CHECK(opts.dumpDir.empty());
 }
 
 // ===== Pipeline phases exposed =====
@@ -259,7 +255,7 @@ TEST_CASE(parse_phase) {
 
 TEST_CASE(lex_error_propagated) {
     Compiler compiler;
-    // missing material name â†’ parser reports a missing-identifier error.
+    // missing material name â†?parser reports a missing-identifier error.
     CompileResult result{};
     compiler.compile("material { vertex { } fragment { } }", result);
     CHECK(!result.errors.empty());
@@ -321,9 +317,9 @@ TEST_CASE(compile_pbr_like_material) {
     )");
     CHECK(prog.success || !prog.sources.empty());
     // Frontend-facing shape: the .sc strings live in program.sources
-    // keyed by `varying.def.sc` + per-material `vs_N.sc` / `fs_N.sc`.
-    CHECK(prog.sources.count("varying.def.sc") == 1);
-    CHECK(prog.sources.at("vs_0.sc").find("$input") != std::string::npos);
+    // keyed by `varying_definitions` + per-material `vs_N.sc` / `fs_N.sc`.
+    CHECK(prog.sources.count("varying_definitions") == 1);
+    CHECK(prog.sources.at("vertex_stage_0").find("$input") != std::string::npos);
 }
 
 TEST_CASE(compile_with_if_else) {
@@ -341,8 +337,7 @@ TEST_CASE(compile_with_if_else) {
     )");
     // Frontend shape contract: `prog.sources` is a well-formed map.
     // Whether populate happens depends on `convertBGFX` succeeding
-    // (the legacy `.output != empty` check was overly permissive â€”
-    // we don't ship empty garbage to the frontend in 3.6).
+    // (the legacy `.output != empty` check was overly permissive â€?    // we don't ship empty garbage to the frontend in 3.6).
     if (prog.success) {
         CHECK(!prog.sources.empty());
     }
@@ -375,9 +370,9 @@ TEST_CASE(compile_minimal_compute) {
     )");
     CHECK(prog.success || !prog.sources.empty());
     // cs source must be present in the sources map.
-    CHECK(prog.sources.count("cs_0.sc") == 1);
-    CHECK(prog.sources.at("cs_0.sc").find("void main()") != std::string::npos);
-    CHECK(prog.sources.at("cs_0.sc").find("layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;") != std::string::npos);
+    CHECK(prog.sources.count("compute_stage_0") == 1);
+    CHECK(prog.sources.at("compute_stage_0").find("void main()") != std::string::npos);
+    CHECK(prog.sources.at("compute_stage_0").find("layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;") != std::string::npos);
 }
 
 // ===== Phase 3.2 Block 2: thread_id / group_id / dispatch_id builtins =====
@@ -390,7 +385,7 @@ TEST_CASE(compile_compute_uses_thread_id_builtin) {
         }
     )");
     CHECK(prog.success || !prog.sources.empty());
-    const auto& cs = prog.sources.at("cs_0.sc");
+    const auto& cs = prog.sources.at("compute_stage_0");
     CHECK(cs.find("gl_GlobalInvocationID") != std::string::npos);
     CHECK(cs.find("gl_GlobalInvocationID.x") != std::string::npos);
     CHECK(cs.find("thread_id") == std::string::npos);
@@ -404,7 +399,7 @@ TEST_CASE(compile_compute_uses_group_id_builtin) {
         }
     )");
     CHECK(prog.success || !prog.sources.empty());
-    const auto& cs = prog.sources.at("cs_0.sc");
+    const auto& cs = prog.sources.at("compute_stage_0");
     CHECK(cs.find("gl_WorkGroupID.x") != std::string::npos);
     CHECK(cs.find("group_id") == std::string::npos);
 }
@@ -417,7 +412,7 @@ TEST_CASE(compile_compute_uses_dispatch_id_builtin) {
         }
     )");
     CHECK(prog.success || !prog.sources.empty());
-    const auto& cs = prog.sources.at("cs_0.sc");
+    const auto& cs = prog.sources.at("compute_stage_0");
     CHECK(cs.find("(gl_NumWorkGroups * gl_WorkGroupID).x") != std::string::npos);
     CHECK(cs.find("dispatch_id") == std::string::npos);
 }
@@ -433,7 +428,7 @@ TEST_CASE(compile_compute_with_storage_buffer) {
         }
     )");
     CHECK(prog.success || !prog.sources.empty());
-    const auto& cs = prog.sources.at("cs_0.sc");
+    const auto& cs = prog.sources.at("compute_stage_0");
     CHECK(cs.find("buffer counters") != std::string::npos);
     CHECK(cs.find("int data[]") != std::string::npos);
     CHECK(cs.find("} counters;") != std::string::npos);
@@ -450,7 +445,7 @@ TEST_CASE(compile_compute_with_structured_buffer_read) {
         }
     )");
     CHECK(prog.success || !prog.sources.empty());
-    const auto& cs = prog.sources.at("cs_0.sc");
+    const auto& cs = prog.sources.at("compute_stage_0");
     CHECK(cs.find("buffer particles") != std::string::npos);
     CHECK(cs.find("vec3 data[]") != std::string::npos);
     CHECK(cs.find("structuredbuffer") == std::string::npos);
@@ -467,7 +462,7 @@ TEST_CASE(compile_compute_with_uint_storage_buffer) {
         }
     )");
     CHECK(prog.success || !prog.sources.empty());
-    const auto& cs = prog.sources.at("cs_0.sc");
+    const auto& cs = prog.sources.at("compute_stage_0");
     CHECK(cs.find("buffer counters") != std::string::npos);
     CHECK(cs.find("uint data[]") != std::string::npos);
     CHECK(cs.find("} counters;") != std::string::npos);
@@ -491,7 +486,7 @@ TEST_CASE(compile_compute_with_numthreads_attribute) {
         }
     )");
     CHECK(prog.success || !prog.sources.empty());
-    const auto& cs = prog.sources.at("cs_0.sc");
+    const auto& cs = prog.sources.at("compute_stage_0");
     CHECK(cs.find("layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;") != std::string::npos);
     CHECK(cs.find("numthreads") == std::string::npos);
 }
@@ -504,7 +499,7 @@ TEST_CASE(compile_compute_without_numthreads_uses_default) {
         }
     )");
     CHECK(prog.success || !prog.sources.empty());
-    CHECK(prog.sources.at("cs_0.sc").find("layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;") != std::string::npos);
+    CHECK(prog.sources.at("compute_stage_0").find("layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;") != std::string::npos);
 }
 
 // ===== Phase 3.3 Block 3: uvec3 strict typing =====
@@ -546,7 +541,7 @@ TEST_CASE(compile_thread_id_x_emits_gl_global_invocation_id_x) {
         }
     )");
     CHECK(prog.success || !prog.sources.empty());
-    const auto& cs = prog.sources.at("cs_0.sc");
+    const auto& cs = prog.sources.at("compute_stage_0");
     CHECK(cs.find("gl_GlobalInvocationID") != std::string::npos);
     CHECK(cs.find("gl_GlobalInvocationID.x") != std::string::npos);
 }
@@ -560,7 +555,7 @@ TEST_CASE(compile_let_uint_idx_emits_with_uint_type) {
         }
     )");
     CHECK(prog.success || !prog.sources.empty());
-    const auto& cs = prog.sources.at("cs_0.sc");
+    const auto& cs = prog.sources.at("compute_stage_0");
     CHECK(cs.find("float idx = ") == std::string::npos);
     CHECK(cs.find("vec3 idx = ") == std::string::npos);
 }
@@ -574,7 +569,7 @@ TEST_CASE(compile_uvec3_constructor_emits_uvec3_call) {
         }
     )");
     CHECK(prog.success || !prog.sources.empty());
-    CHECK(prog.sources.at("cs_0.sc").find("uvec3(") != std::string::npos);
+    CHECK(prog.sources.at("compute_stage_0").find("uvec3(") != std::string::npos);
 }
 
 // ===== Phase 3.3 Block 4: workgroup-shared local memory =====
@@ -589,7 +584,7 @@ TEST_CASE(compile_compute_with_shared_array) {
         }
     )");
     CHECK(prog.success || !prog.sources.empty());
-    const auto& cs = prog.sources.at("cs_0.sc");
+    const auto& cs = prog.sources.at("compute_stage_0");
     CHECK(cs.find("shared float tile[64];") != std::string::npos);
     CHECK(cs.find("rwstructuredbuffer") == std::string::npos);
     auto posShared = cs.find("shared float tile[64];");
@@ -609,7 +604,7 @@ TEST_CASE(compile_compute_with_uint_shared_array) {
         }
     )");
     CHECK(prog.success || !prog.sources.empty());
-    CHECK(prog.sources.at("cs_0.sc").find("shared uint bins[256];") != std::string::npos);
+    CHECK(prog.sources.at("compute_stage_0").find("shared uint bins[256];") != std::string::npos);
 }
 
 TEST_CASE(compile_compute_shared_and_storage_coexist) {
@@ -623,7 +618,7 @@ TEST_CASE(compile_compute_shared_and_storage_coexist) {
         }
     )");
     CHECK(prog.success || !prog.sources.empty());
-    const auto& cs = prog.sources.at("cs_0.sc");
+    const auto& cs = prog.sources.at("compute_stage_0");
     CHECK(cs.find("shared float tile[64];") != std::string::npos);
     CHECK(cs.find("buffer inBuf") != std::string::npos);
     CHECK(cs.find("float data[]") != std::string::npos);
@@ -647,8 +642,8 @@ TEST_CASE(compile_uniformblock_emits_layout_std140) {
     )");
     CHECK(prog.success || !prog.sources.empty());
     // The UBO decl appears in both vs and fs (UBO is global).
-    const auto& vs = prog.sources.at("vs_0.sc");
-    const auto& fs = prog.sources.at("fs_0.sc");
+    const auto& vs = prog.sources.at("vertex_stage_0");
+    const auto& fs = prog.sources.at("fragment_stage_0");
     CHECK(vs.find("layout(std140, binding = 0) uniform Camera {") != std::string::npos);
     CHECK(fs.find("layout(std140, binding = 0) uniform Camera {") != std::string::npos);
     CHECK(vs.find("vec3 position;") != std::string::npos);
@@ -670,7 +665,7 @@ TEST_CASE(compile_two_uniformblocks_have_distinct_bindings) {
         }
     )");
     CHECK(prog.success || !prog.sources.empty());
-    const auto& vs = prog.sources.at("vs_0.sc");
+    const auto& vs = prog.sources.at("vertex_stage_0");
     CHECK(vs.find("layout(std140, binding = 0) uniform Camera {") != std::string::npos);
     CHECK(vs.find("layout(std140, binding = 1) uniform Lighting {") != std::string::npos);
 }
@@ -690,7 +685,7 @@ TEST_CASE(compile_uniformblock_field_access_emits_dot) {
     )");
     CHECK(prog.success || !prog.sources.empty());
     // The dot access reaches the emitted source verbatim in vs.
-    CHECK(prog.sources.at("vs_0.sc").find("Camera.position") != std::string::npos);
+    CHECK(prog.sources.at("vertex_stage_0").find("Camera.position") != std::string::npos);
 }
 
 TEST_CASE(compile_uniformblock_in_compute_body) {
@@ -704,7 +699,7 @@ TEST_CASE(compile_uniformblock_in_compute_body) {
         }
     )");
     CHECK(prog.success || !prog.sources.empty());
-    const auto& cs = prog.sources.at("cs_0.sc");
+    const auto& cs = prog.sources.at("compute_stage_0");
     CHECK(cs.find("layout(std140, binding = 0) uniform Config {") != std::string::npos);
     CHECK(cs.find("uint iterations;") != std::string::npos);
 }
@@ -719,7 +714,7 @@ TEST_CASE(compile_storage_with_binding_emits_layout_std430) {
         }
     )");
     CHECK(prog.success || !prog.sources.empty());
-    const auto& cs = prog.sources.at("cs_0.sc");
+    const auto& cs = prog.sources.at("compute_stage_0");
     CHECK(cs.find("layout(std430, binding = 1) buffer counters {") != std::string::npos);
     CHECK(cs.find("int data[]") != std::string::npos);
     CHECK(cs.find("} counters;") != std::string::npos);
@@ -734,7 +729,7 @@ TEST_CASE(compile_storage_without_binding_uses_auto_slot) {
         }
     )");
     CHECK(prog.success || !prog.sources.empty());
-    CHECK(prog.sources.at("cs_0.sc").find("layout(std430, binding = 0) buffer counters {") != std::string::npos);
+    CHECK(prog.sources.at("compute_stage_0").find("layout(std430, binding = 0) buffer counters {") != std::string::npos);
 }
 
 TEST_CASE(compile_two_storages_auto_assign_distinct_slots) {
@@ -748,7 +743,7 @@ TEST_CASE(compile_two_storages_auto_assign_distinct_slots) {
         }
     )");
     CHECK(prog.success || !prog.sources.empty());
-    const auto& cs = prog.sources.at("cs_0.sc");
+    const auto& cs = prog.sources.at("compute_stage_0");
     CHECK(cs.find("layout(std430, binding = 0) buffer counters") != std::string::npos);
     CHECK(cs.find("layout(std430, binding = 1) buffer outputs") != std::string::npos);
 }
@@ -764,7 +759,7 @@ TEST_CASE(compile_storage_mixed_explicit_and_auto) {
         }
     )");
     CHECK(prog.success || !prog.sources.empty());
-    const auto& cs = prog.sources.at("cs_0.sc");
+    const auto& cs = prog.sources.at("compute_stage_0");
     CHECK(cs.find("layout(std430, binding = 1) buffer explicit") != std::string::npos);
     CHECK(cs.find("layout(std430, binding = 2) buffer auto") != std::string::npos);
 }
@@ -798,7 +793,7 @@ TEST_CASE(compile_uniformblock_with_binding_emits_layout_std140) {
         material P { vertex { return vec4(Camera.position, 1.0) } fragment { return vec4(0,0,0,1) } }
     )");
     CHECK(prog.success || !prog.sources.empty());
-    CHECK(prog.sources.at("vs_0.sc").find("layout(std140, binding = 1) uniform Camera {") != std::string::npos);
+    CHECK(prog.sources.at("vertex_stage_0").find("layout(std140, binding = 1) uniform Camera {") != std::string::npos);
 }
 
 TEST_CASE(compile_uniformblock_without_binding_uses_auto_slot) {
@@ -809,7 +804,7 @@ TEST_CASE(compile_uniformblock_without_binding_uses_auto_slot) {
         material P { vertex { return vec4(Camera.position, 1.0) } fragment { return vec4(0,0,0,1) } }
     )");
     CHECK(prog.success || !prog.sources.empty());
-    CHECK(prog.sources.at("vs_0.sc").find("layout(std140, binding = 0) uniform Camera {") != std::string::npos);
+    CHECK(prog.sources.at("vertex_stage_0").find("layout(std140, binding = 0) uniform Camera {") != std::string::npos);
 }
 
 TEST_CASE(compile_uniformblock_mixed_explicit_and_auto) {
@@ -823,7 +818,7 @@ TEST_CASE(compile_uniformblock_mixed_explicit_and_auto) {
         material P { vertex { return vec4(Explicit.a + Auto.b, 1.0) } fragment { return vec4(0,0,0,1) } }
     )");
     CHECK(prog.success || !prog.sources.empty());
-    const auto& vs = prog.sources.at("vs_0.sc");
+    const auto& vs = prog.sources.at("vertex_stage_0");
     CHECK(vs.find("layout(std140, binding = 1) uniform Explicit {") != std::string::npos);
     CHECK(vs.find("layout(std140, binding = 2) uniform Auto {") != std::string::npos);
 }

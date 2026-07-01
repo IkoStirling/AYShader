@@ -10,6 +10,7 @@
 // fs_) to produce the binary shader programs bgfx::createProgram consumes.
 
 #include "AYBGFXConverter.h"
+#include "detail/AYShaderSourceKeys.h"
 #include "detail/AYStd140Layout.h"
 #include "AYAst.h"
 #include "AYType.h"
@@ -660,7 +661,7 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
 
     try {
         for (const auto& mat : program.materials) {
-            if (mat) out.materialFiles.push_back(convertMaterial(*mat));
+            if (mat) out.materialStages.push_back(convertMaterial(*mat));
         }
         for (const auto& cmp : program.computes) {
             if (!cmp) continue;
@@ -672,7 +673,7 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
             // The earlier "BGFX .sc does not support compute" diagnostic
             // was Phase 2.5-era speculation, never empirically verified,
             // and is incorrect. Compute declarations are now first-class.
-            out.computeFiles.push_back(convertComputeDecl(*cmp));
+            out.computeStages.push_back(convertComputeDecl(*cmp));
         }
     } catch (const std::exception& e) {
         out.errors.push_back(e.what());
@@ -693,7 +694,7 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
 
 // Phase 3.6 productization entry point. See AYBGFXConverter.h for the
 // full contract. Implementation flow:
-//   1. Run convertBGFX() to populate out.materialFiles / .computeFiles
+//   1. Run convertBGFX() to populate out.materialStages / .computeStages
 //      and the binding metadata. Bail with success=false on any
 //      convertBGFX error (duplicate bindings, unknown exceptions).
 //   2. Lazy-init the cached AYShadercDriver (first call only). If
@@ -711,7 +712,7 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
 //      opts.dumpDir/<key>.sc. Failures here are non-fatal — logged
 //      to out.errors but success stays true if shaderc succeeded.
 //
-// We do NOT re-run emit() to recover the .sc text — out.materialFiles
+// We do NOT re-run emit() to recover the .sc text — out.materialStages
 // already carries the exact strings convertBGFX emitted (the same
 // strings the legacy BGFXShaderFiles.vs/fs/varyingDef fields used to
 // expose). Reading them is cheaper than a second convertBGFX pass and
@@ -771,20 +772,17 @@ void AYBGFXConverter::compileToBinary(const phoskia::ir::IRProgram& program,
     //     tests must NOT depend on shaderc being installed to inspect
     //     the emit shape.
     if (opts.keepSources) {
-        for (size_t i = 0; i < conv.materialFiles.size(); ++i) {
-            const auto& mf = conv.materialFiles[i];
-            out.sources["vs_" + std::to_string(i) + ".sc"] = mf.vs;
-            out.sources["fs_" + std::to_string(i) + ".sc"] = mf.fs;
+        for (size_t i = 0; i < conv.materialStages.size(); ++i) {
+            const auto& mf = conv.materialStages[i];
+            out.sources[detail::vertexStageKey(i)] = mf.vertex;
+            out.sources[detail::fragmentStageKey(i)] = mf.fragment;
         }
-        if (!conv.materialFiles.empty()) {
-            // Last material's varyingdef wins — bgfx varyingdef is
-            // per-program, single-key shape locked in design.md §8.4.
-            out.sources["varying.def.sc"] =
-                conv.materialFiles.back().varyingDef;
+        if (!conv.materialStages.empty()) {
+            out.sources[detail::kVaryingDefinitionsKey] =
+                conv.materialStages.back().varyingDefinitions;
         }
-        for (size_t i = 0; i < conv.computeFiles.size(); ++i) {
-            out.sources["cs_" + std::to_string(i) + ".sc"] =
-                conv.computeFiles[i].cs;
+        for (size_t i = 0; i < conv.computeStages.size(); ++i) {
+            out.sources[detail::computeStageKey(i)] = conv.computeStages[i].compute;
         }
     }
 
@@ -852,14 +850,14 @@ void AYBGFXConverter::compileToBinary(const phoskia::ir::IRProgram& program,
     // materials' binaries to bgfx; the likely move is a
     // vector<vector<uint8_t>> shape. For Commit 2 / 3.6 the single
     // shape is locked.
-    for (size_t i = 0; i < conv.materialFiles.size(); ++i) {
-        const auto& mf = conv.materialFiles[i];
-        const std::string vsKey = "vs_" + std::to_string(i) + ".sc";
-        const std::string fsKey = "fs_" + std::to_string(i) + ".sc";
-        const std::string vdKey = "varying.def.sc";
+    for (size_t i = 0; i < conv.materialStages.size(); ++i) {
+        const auto& mf = conv.materialStages[i];
+        const std::string vsKey = detail::vertexStageKey(i);
+        const std::string fsKey = detail::fragmentStageKey(i);
+        const std::string vdKey = detail::kVaryingDefinitionsKey;
 
         // vs (no varyingdef)
-        if (!compileStage("vertex", mf.vs, "",
+        if (!compileStage("vertex", mf.vertex, "",
                           "material_" + std::to_string(i) + "_vs",
                           out.vsBin)) {
             allOk = false;
@@ -867,7 +865,7 @@ void AYBGFXConverter::compileToBinary(const phoskia::ir::IRProgram& program,
         }
 
         // fs (with varyingdef — bgfx shaderc wants it for fragment stage)
-        if (!compileStage("fragment", mf.fs, mf.varyingDef,
+        if (!compileStage("fragment", mf.fragment, mf.varyingDefinitions,
                           "material_" + std::to_string(i) + "_fs",
                           out.fsBin)) {
             allOk = false;
@@ -884,20 +882,20 @@ void AYBGFXConverter::compileToBinary(const phoskia::ir::IRProgram& program,
 
         // 6) Disk dump (best-effort).
         if (opts.dumpIntermediate && dirExists(opts.dumpDir)) {
-            dumpScFile(opts.dumpDir, vsKey, mf.vs, out.warnings);
-            dumpScFile(opts.dumpDir, fsKey, mf.fs, out.warnings);
+            dumpScFile(opts.dumpDir, vsKey, mf.vertex, out.warnings);
+            dumpScFile(opts.dumpDir, fsKey, mf.fragment, out.warnings);
             if (i == 0) {
-                dumpScFile(opts.dumpDir, vdKey, mf.varyingDef, out.warnings);
+                dumpScFile(opts.dumpDir, vdKey, mf.varyingDefinitions, out.warnings);
             }
         }
     }
 
     // 3b) Compute → cs. Same single-csBin-per-program limitation.
     if (allOk) {
-        for (size_t i = 0; i < conv.computeFiles.size(); ++i) {
-            const auto& cf = conv.computeFiles[i];
-            const std::string csKey = "cs_" + std::to_string(i) + ".sc";
-            if (!compileStage("compute", cf.cs, "",
+        for (size_t i = 0; i < conv.computeStages.size(); ++i) {
+            const auto& cf = conv.computeStages[i];
+            const std::string csKey = detail::computeStageKey(i);
+            if (!compileStage("compute", cf.compute, "",
                               "compute_" + std::to_string(i),
                               out.csBin)) {
                 allOk = false;
@@ -908,7 +906,7 @@ void AYBGFXConverter::compileToBinary(const phoskia::ir::IRProgram& program,
             // frontend tests can inspect .sc strings without a real
             // shaderc install. Dump-only branch follows.
             if (opts.dumpIntermediate && dirExists(opts.dumpDir)) {
-                dumpScFile(opts.dumpDir, csKey, cf.cs, out.warnings);
+                dumpScFile(opts.dumpDir, csKey, cf.compute, out.warnings);
             }
         }
     }
@@ -926,24 +924,6 @@ ConvertResult AYBGFXConverter::convert(const phoskia::ir::IRProgram& program) {
     convertBGFX(program, bgfx);
     result.success = bgfx.success;
     result.errors = bgfx.errors;
-    std::ostringstream oss;
-    for (size_t i = 0; i < bgfx.materialFiles.size(); ++i) {
-        const auto& f = bgfx.materialFiles[i];
-        oss << "// === material " << i << " varying.def.sc ===\n"
-            << f.varyingDef
-            << "\n// === material " << i << " vs ===\n"
-            << f.vs
-            << "\n// === material " << i << " fs ===\n"
-            << f.fs
-            << "\n";
-    }
-    for (size_t i = 0; i < bgfx.computeFiles.size(); ++i) {
-        const auto& f = bgfx.computeFiles[i];
-        oss << "// === compute " << i << " cs ===\n"
-            << f.cs
-            << "\n";
-    }
-    result.output = oss.str();
     result.uniforms.reserve(bgfx.uniforms.size());
     for (const auto& u : bgfx.uniforms) {
         result.uniforms.emplace_back(u.name, u.type);
@@ -962,7 +942,7 @@ ConvertResult AYBGFXConverter::convert(const phoskia::ir::IRProgram& program) {
 // Per-material conversion
 // --------------------------------------------------------------------------
 
-BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::ir::IRMaterialDecl& mat) {
+detail::BGFXMaterialStages AYBGFXConverter::convertMaterial(const phoskia::ir::IRMaterialDecl& mat) {
     _uniformDecls.clear();
     _textureDecls.clear();
     _propertyUniforms.clear();
@@ -1263,7 +1243,7 @@ BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::ir::IRMaterialDe
     }
     fs << "}\n";
 
-    BGFXShaderFiles out{vs.str(), fs.str(), vdef.str()};
+    detail::BGFXMaterialStages out{vs.str(), fs.str(), vdef.str()};
 
     _uniforms.insert(_uniforms.begin(), uniformSave.begin(), uniformSave.end());
     _textures.insert(_textures.begin(), textureSave.begin(), textureSave.end());
@@ -1305,7 +1285,7 @@ BGFXShaderFiles AYBGFXConverter::convertMaterial(const phoskia::ir::IRMaterialDe
 // machinery as material bodies. The storage-buffer and thread-id
 // extensions land in Blocks 2 and 3.
 
-BGFXComputeFile AYBGFXConverter::convertComputeDecl(const phoskia::ir::IRComputeDecl& compute) {
+detail::BGFXComputeStage AYBGFXConverter::convertComputeDecl(const phoskia::ir::IRComputeDecl& compute) {
     // Compute uses its own per-call type env for let-stmt type
     // inference (mirrors material's vsEnv/fsEnv pattern). Compute
     // bodies are flat: no vs/fs split, no in/out param renames, no
@@ -1468,8 +1448,8 @@ BGFXComputeFile AYBGFXConverter::convertComputeDecl(const phoskia::ir::IRCompute
     }
     cs << "}\n";
 
-    BGFXComputeFile out;
-    out.cs = cs.str();
+    detail::BGFXComputeStage out;
+    out.compute = cs.str();
     return out;
 }
 

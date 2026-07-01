@@ -1,4 +1,4 @@
-// Test_ShaderHotReload.cpp — Phase 4-J hot-reload watch + debounce
+// Test_ShaderHotReload.cpp �?Phase 4-J hot-reload watch + debounce
 
 #include "AYPhoskia.h"
 #include "AYShaderResourcePool.h"
@@ -49,12 +49,12 @@ namespace {
 const std::string kShaderV1 = R"(material Unlit {
     property baseColor = vec4(1.0, 0.0, 0.0, 1.0);
     vertex {
-        in position : POSITION;
-        out position : POSITION;
+        in position : position;
+        out position : position;
         return vec4(position, 1.0);
     }
     fragment {
-        in position : POSITION;
+        in position : position;
         return baseColor;
     }
 }
@@ -63,12 +63,12 @@ const std::string kShaderV1 = R"(material Unlit {
 const std::string kShaderV2 = R"(material Unlit {
     property baseColor = vec4(0.0, 1.0, 0.0, 1.0);
     vertex {
-        in position : POSITION;
-        out position : POSITION;
+        in position : position;
+        out position : position;
         return vec4(position, 1.0);
     }
     fragment {
-        in position : POSITION;
+        in position : position;
         return baseColor;
     }
 }

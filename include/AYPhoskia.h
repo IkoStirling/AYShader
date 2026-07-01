@@ -55,11 +55,6 @@ namespace ayt::shader::phoskia
 // Removal target: Phase 3.7.
 struct CompileResult {
     bool success = false;
-    /// @deprecated Read `CompiledShaderProgram::sources["vs_0.sc"]`
-    ///             (etc.) from `Compiler::compileToProgram` instead.
-    ///             `Compiler::compile()` still populates this for
-    ///             legacy callers; Commit 5 stops relying on it.
-    std::string output;
     std::vector<CompilerError> errors;
     std::vector<std::string> warnings;
     std::shared_ptr<Program> ast;       // Pipeline keeps; future backends may want
@@ -67,43 +62,12 @@ struct CompileResult {
     // Phase 3.2: removed `ir` (was dropped in d6b7d2b to dodge SSO; still internal to runPipeline).
 };
 
-// Compilation options
+// Compilation options (Phase 4-R: frontend-facing only).
 struct CompileOptions {
-    bool enableTypeInference = false;    // Phase 2 Step 2: opt-in. Off by default
-                                         // because not every Phoskia snippet
-                                         // currently type-checks (mixed vector
-                                         // / scalar arithmetic, etc.).
-    bool enableSemanticAnalysis = false; // Phase 2 Step 2: opt-in. The
-                                         // analyzer enforces strict checks
-                                         // (vec4 returns, bool if-conds,
-                                         // swizzle validity) that some
-                                         // existing Phase 1 snippets bypass.
-    bool strictMode = false;
-    std::string targetBackend = "bgfx";
-
-    // ------------------------------------------------------------------
-    // Phase 3.6 productization toggles (frontend-facing). These control
-    // what `Compiler::compileToProgram(src, opts)` does with the .sc
-    // intermediates that the backend converter produces.
-    //
-    // Env-var precedence: each of `keepSources` / `dumpIntermediate`
-    // is OR'd with the corresponding env var (true-wins):
-    //   * AY_PHOSKIA_KEEP_SOURCES=1   forces keepSources=true
-    //   * AY_PHOSKIA_DUMP_SC=1        forces dumpIntermediate=true
-    // Rationale: env is a "global debug switch" (debugger wants every
-    // shader's .sc), opts is per-call. Per-call can't downgrade a
-    // global. This matches the precedence rule locked in design.md
-    // §8.4.
-    // ------------------------------------------------------------------
-    bool         keepSources      = false;
-    bool         dumpIntermediate = false;
-    std::string  dumpDir;                 // empty = no dump (or use opts override)
-
-    // Optional include-dir override for shaderc. When empty,
-    // compileToProgram relies on the backend converter's own
-    // discovery (env vars AY_SHADER_BGFX_COMMON_DIR /
-    // AY_SHADER_BGFX_SRC_DIR + CMake-injected hint).
-    std::vector<std::string> includeDirs;
+    std::vector<std::string> defines;
+    bool keepSources = false;
+    bool dumpIntermediate = false;
+    std::string dumpDir;
 };
 
 // Factory function type for backend converters
@@ -180,7 +144,16 @@ public:
     std::unique_ptr<Program> parse(const std::vector<Token>& tokens);
     std::shared_ptr<TypeEnvironment> analyzeSemantics(Program& program);
 
+    bool generateIr(const std::string& source,
+                  const CompileOptions& opts,
+                  ir::IRProgram& out,
+                  std::vector<std::string>& errors);
+
 private:
+    static constexpr const char* kDefaultBackend = "bgfx";
+    static constexpr bool kEnableTypeInference = true;
+    static constexpr bool kEnableSemanticAnalysis = true;
+
     void runPipeline(const std::string& source,
                      const std::string& backendName,
                      CompileResult& out);

@@ -33,6 +33,7 @@ private:
     void analyzePropertyDecl(const PropertyDecl& decl);
     void analyzeUniformDecl(const UniformDecl& decl);
     void analyzeTextureDecl(const TextureDecl& decl);
+    void analyzeUniformBlockDecl(const UniformBlockDecl& decl);
     void analyzeVertexFunc(const VertexFunc& func);
     void analyzeFragmentFunc(const FragmentFunc& func);
     void analyzeShaderParam(const ShaderParam& param);

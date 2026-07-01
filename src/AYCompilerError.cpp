@@ -6,6 +6,22 @@
 namespace ayt::shader::phoskia
 {
 
+std::string PhoskiaDiagnostic::toHumanString() const
+{
+    std::ostringstream oss;
+    if (!location.file.empty()) {
+        oss << location.file << ':';
+    }
+    if (location.line > 0) {
+        oss << location.line << ':' << location.column << ": ";
+    }
+    oss << message;
+    if (!hint.empty()) {
+        oss << " (" << hint << ')';
+    }
+    return oss.str();
+}
+
 std::string CompilerError::toString() const {
     std::ostringstream oss;
     oss << "Error [" << static_cast<int>(code) << "] at line " << line

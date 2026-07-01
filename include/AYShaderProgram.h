@@ -1,8 +1,7 @@
 #pragma once
 // AYShaderProgram.h - Compiled shader program (frontend-safe, no bgfx)
-//
-// Phase 4-E: bgfx types and legacy ShaderProgram moved to
-// detail/AYShaderProgramLegacy.h. This header is safe for frontend TUs.
+
+#include "AYCompilerError.h"
 
 #include <cstdint>
 #include <map>
@@ -51,6 +50,8 @@ struct CompiledShaderProgram {
     bool                       success = false;
     std::vector<std::string>   errors;
     std::vector<std::string>   warnings;
+    std::vector<phoskia::PhoskiaDiagnostic> diagnostics;
+    std::vector<phoskia::PhoskiaDiagnostic> diagnosticWarnings;
 
     std::vector<uint8_t>       vsBin;
     std::vector<uint8_t>       fsBin;

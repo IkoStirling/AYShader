@@ -1,4 +1,4 @@
-// Test_ShaderCacheIntegration.cpp â€” Phase 4-K (frontend header contract)
+// Test_ShaderCacheIntegration.cpp â€?Phase 4-K (frontend header contract)
 //
 // This TU intentionally does NOT #include <bgfx/bgfx.h>.
 // If any frontend header pulls bgfx into this compilation unit, the

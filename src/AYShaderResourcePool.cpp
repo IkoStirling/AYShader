@@ -7,15 +7,22 @@
 #include "detail/AYShaderDigest.h"
 #include "detail/AYShaderDiskCache.h"
 #include "detail/AYShaderFileWatch.h"
+#include "detail/AYShaderHandleEncoding.h"
+#include "detail/AYShaderHandleTable.h"
+#include "AYIr.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include <bgfx/bgfx.h>
 
 namespace ayt::shader
 {
@@ -30,8 +37,36 @@ struct HotReloadWatch {
     bool debouncing = false;
     int64_t debounceStartMs = 0;
     std::vector<std::string> cacheKeys;
-    std::vector<std::weak_ptr<ShaderResourceImpl>> liveResources;
+    std::vector<uint64_t> liveHandles;
 };
+
+} // namespace
+
+namespace {
+
+void mapRendererTypeToPlatformProfile(bgfx::RendererType::Enum type,
+                                      std::string& platform,
+                                      std::string& profile)
+{
+    switch (type) {
+    case bgfx::RendererType::Direct3D11:
+    case bgfx::RendererType::Direct3D12:
+        platform = "windows";
+        profile = "430";
+        break;
+    case bgfx::RendererType::Metal:
+        platform = "osx";
+        profile = "metal";
+        break;
+    case bgfx::RendererType::Vulkan:
+    case bgfx::RendererType::OpenGL:
+    case bgfx::RendererType::OpenGLES:
+    default:
+        platform = "linux";
+        profile = "430";
+        break;
+    }
+}
 
 } // namespace
 
@@ -248,6 +283,30 @@ void ShaderResourceImpl::destroyGpuResources()
 }
 
 struct ShaderResourcePool::Impl {
+    static std::atomic<uint32_t> s_nextPoolSerial;
+    static std::unordered_map<uint32_t, Impl*> s_poolRegistry;
+    static std::mutex s_poolRegistryMutex;
+
+    static void registerPool(uint32_t serial, Impl* impl)
+    {
+        std::lock_guard<std::mutex> lock(s_poolRegistryMutex);
+        s_poolRegistry[serial] = impl;
+    }
+
+    static void unregisterPool(uint32_t serial)
+    {
+        std::lock_guard<std::mutex> lock(s_poolRegistryMutex);
+        s_poolRegistry.erase(serial);
+    }
+
+    static Impl* findPool(uint32_t serial)
+    {
+        std::lock_guard<std::mutex> lock(s_poolRegistryMutex);
+        const auto it = s_poolRegistry.find(serial);
+        return it != s_poolRegistry.end() ? it->second : nullptr;
+    }
+
+    uint32_t poolSerial = 0;
     std::string shadercPath;
     std::string platform =
 #if defined(_WIN32)
@@ -259,13 +318,78 @@ struct ShaderResourcePool::Impl {
 #endif
         ;
     std::string profile = "430";
+    bool platformExplicit = false;
+    bool profileExplicit = false;
+    bool autoProbe = true;
+    bool testRendererBound = false;
+    uint8_t testRendererType = 0;
+    std::string testPlatform;
+    std::string testProfile;
     std::vector<std::string> bgfxIncludeDirs;
     std::string cacheDirectory;
     bool hotReloadEnabled = false;
+    ShaderCapability requiredCaps =
+        ShaderCapability::VertexFragment | ShaderCapability::Ubo
+        | ShaderCapability::Ssbo | ShaderCapability::Compute;
 
-    std::vector<std::shared_ptr<ShaderResourceImpl>> resources;
-    std::unordered_map<std::string, std::weak_ptr<ShaderResourceImpl>> cache;
+    detail::ShaderHandleTable handles;
+    std::unordered_map<std::string, uint64_t> cache;
+    std::unordered_map<std::string, std::shared_ptr<const phoskia::ir::IRProgram>> sourceCache;
     std::unordered_map<std::string, HotReloadWatch> hotReloadWatches;
+    CacheStats stats;
+
+    Impl()
+    {
+        poolSerial = s_nextPoolSerial.fetch_add(1);
+        registerPool(poolSerial, this);
+    }
+
+    ~Impl()
+    {
+        unregisterPool(poolSerial);
+    }
+
+    void ensurePlatformProfileResolved()
+    {
+        if (testRendererBound) {
+            platform = testPlatform;
+            profile = testProfile;
+            return;
+        }
+        if (platformExplicit && profileExplicit) {
+            return;
+        }
+        if (!autoProbe) {
+            return;
+        }
+        const bgfx::Caps* caps = bgfx::getCaps();
+        if (caps == nullptr) {
+            return;
+        }
+        std::string probedPlatform = platform;
+        std::string probedProfile = profile;
+        mapRendererTypeToPlatformProfile(caps->rendererType, probedPlatform, probedProfile);
+        if (!platformExplicit) {
+            platform = probedPlatform;
+        }
+        if (!profileExplicit) {
+            profile = probedProfile;
+        }
+    }
+
+    uint64_t makeHandle(std::unique_ptr<ShaderResourceImpl> impl)
+    {
+        const uint32_t localId = handles.insert(std::move(impl));
+        if (localId == 0) {
+            return 0;
+        }
+        return detail::makeShaderHandle(poolSerial, localId);
+    }
+
+    ShaderResourceImpl* resolveLocal(uint32_t localId) const
+    {
+        return handles.resolve(localId);
+    }
 
     void eraseCacheKey(const std::string& key)
     {
@@ -276,11 +400,22 @@ struct ShaderResourcePool::Impl {
         }
     }
 
+    void removeHandleFromCache(uint64_t handle)
+    {
+        for (auto it = cache.begin(); it != cache.end(); ) {
+            if (it->second == handle) {
+                it = cache.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
     void registerHotReloadWatch(const std::string& path,
                                 const std::string& cacheKey,
-                                const std::shared_ptr<ShaderResourceImpl>& impl)
+                                uint64_t handle)
     {
-        if (!hotReloadEnabled || !impl) {
+        if (!hotReloadEnabled || handle == 0) {
             return;
         }
 
@@ -296,7 +431,7 @@ struct ShaderResourcePool::Impl {
             == watch.cacheKeys.end()) {
             watch.cacheKeys.push_back(cacheKey);
         }
-        watch.liveResources.push_back(impl);
+        watch.liveHandles.push_back(handle);
     }
 
     void invalidateHotReloadWatch(HotReloadWatch& watch)
@@ -304,14 +439,12 @@ struct ShaderResourcePool::Impl {
         for (const std::string& key : watch.cacheKeys) {
             eraseCacheKey(key);
         }
-        for (std::weak_ptr<ShaderResourceImpl>& weak : watch.liveResources) {
-            if (std::shared_ptr<ShaderResourceImpl> impl = weak.lock()) {
-                impl->destroyGpuResources();
-                untrack(impl.get());
-                removeFromCache(impl.get());
-            }
+        for (const uint64_t handle : watch.liveHandles) {
+            const uint32_t localId = detail::shaderHandleLocalId(handle);
+            handles.invalidate(localId);
+            removeHandleFromCache(handle);
         }
-        watch.liveResources.clear();
+        watch.liveHandles.clear();
         watch.cacheKeys.clear();
         watch.debouncing = false;
         if (const std::optional<int64_t> mtime = detail::fileMtimeMs(watch.sourcePath)) {
@@ -347,14 +480,23 @@ struct ShaderResourcePool::Impl {
         }
     }
 
-    BGFXCompileOptions engineBgfxOpts() const
+    BGFXCompileOptions engineBgfxOpts(const phoskia::CompileOptions& opts) const
     {
-        BGFXCompileOptions opts;
-        opts.shadercPath = shadercPath;
-        opts.platform = platform;
-        opts.profile = profile;
-        opts.includeDirs = bgfxIncludeDirs;
-        return opts;
+        BGFXCompileOptions bgfxOpts;
+        bgfxOpts.shadercPath = shadercPath;
+        bgfxOpts.platform = platform;
+        bgfxOpts.profile = profile;
+        bgfxOpts.includeDirs = bgfxIncludeDirs;
+        bgfxOpts.defines = opts.defines;
+        bgfxOpts.keepSources = opts.keepSources;
+        bgfxOpts.dumpIntermediate = opts.dumpIntermediate;
+        bgfxOpts.dumpDir = opts.dumpDir;
+        return bgfxOpts;
+    }
+
+    std::string makeSourceCacheKey(const std::string& src) const
+    {
+        return detail::sha256Hex(src);
     }
 
     std::string makeCacheKeyMaterial(const std::string& keyOverride,
@@ -369,9 +511,11 @@ struct ShaderResourcePool::Impl {
         for (const std::string& dir : bgfxIncludeDirs) {
             oss << dir << ';';
         }
-        oss << '|' << opts.enableTypeInference
-            << opts.enableSemanticAnalysis
-            << opts.keepSources
+        oss << '|' << static_cast<uint32_t>(requiredCaps) << '|';
+        for (const std::string& define : opts.defines) {
+            oss << define << ';';
+        }
+        oss << '|' << opts.keepSources
             << opts.dumpIntermediate
             << '|' << src;
         return oss.str();
@@ -387,34 +531,9 @@ struct ShaderResourcePool::Impl {
     void evictStaleCacheEntries()
     {
         for (auto it = cache.begin(); it != cache.end(); ) {
-            if (it->second.expired()) {
-                it = cache.erase(it);
-            } else {
-                ++it;
-            }
-        }
-    }
-
-    void track(std::shared_ptr<ShaderResourceImpl> impl)
-    {
-        resources.push_back(std::move(impl));
-    }
-
-    void untrack(const ShaderResourceImpl* ptr)
-    {
-        resources.erase(
-            std::remove_if(resources.begin(), resources.end(),
-                           [ptr](const std::shared_ptr<ShaderResourceImpl>& p) {
-                               return p.get() == ptr;
-                           }),
-            resources.end());
-    }
-
-    void removeFromCache(const ShaderResourceImpl* ptr)
-    {
-        for (auto it = cache.begin(); it != cache.end(); ) {
-            const std::shared_ptr<ShaderResourceImpl> locked = it->second.lock();
-            if (!locked || locked.get() == ptr) {
+            ShaderResourceImpl* impl =
+                resolveLocal(detail::shaderHandleLocalId(it->second));
+            if (impl == nullptr || !bgfx::isValid(impl->programHandle)) {
                 it = cache.erase(it);
             } else {
                 ++it;
@@ -424,13 +543,9 @@ struct ShaderResourcePool::Impl {
 
     void shutdownAll()
     {
-        for (const std::shared_ptr<ShaderResourceImpl>& impl : resources) {
-            if (impl) {
-                impl->destroyGpuResources();
-            }
-        }
-        resources.clear();
+        handles.clear();
         cache.clear();
+        sourceCache.clear();
         hotReloadWatches.clear();
     }
 };
@@ -468,6 +583,7 @@ void ShaderResourcePool::setPlatform(const std::string& platform)
         _impl = std::make_unique<Impl>();
     }
     _impl->platform = platform;
+    _impl->platformExplicit = true;
 }
 
 void ShaderResourcePool::setGLSLProfile(const std::string& profile)
@@ -476,6 +592,7 @@ void ShaderResourcePool::setGLSLProfile(const std::string& profile)
         _impl = std::make_unique<Impl>();
     }
     _impl->profile = profile;
+    _impl->profileExplicit = true;
 }
 
 void ShaderResourcePool::setCacheDirectory(const std::string& path)
@@ -492,6 +609,55 @@ void ShaderResourcePool::setHotReloadEnabled(bool enabled)
         _impl = std::make_unique<Impl>();
     }
     _impl->hotReloadEnabled = enabled;
+}
+
+void ShaderResourcePool::require(ShaderCapability capability)
+{
+    if (!_impl) {
+        _impl = std::make_unique<Impl>();
+    }
+    _impl->requiredCaps = capability;
+}
+
+void ShaderResourcePool::setAutoProbeFromRendererType(bool enabled)
+{
+    if (!_impl) {
+        _impl = std::make_unique<Impl>();
+    }
+    _impl->autoProbe = enabled;
+}
+
+void ShaderResourcePool::bindRendererTypeForTests(uint8_t bgfxRendererType,
+                                                  const std::string& platform,
+                                                  const std::string& profile)
+{
+    if (!_impl) {
+        _impl = std::make_unique<Impl>();
+    }
+    _impl->testRendererBound = true;
+    _impl->testRendererType = bgfxRendererType;
+    _impl->testPlatform = platform;
+    _impl->testProfile = profile;
+}
+
+CacheStats ShaderResourcePool::cacheStats() const
+{
+    if (!_impl) {
+        return CacheStats{};
+    }
+    return _impl->stats;
+}
+
+ShaderResourceImpl* ShaderResourcePool::resolveHandle(uint64_t handle)
+{
+    if (handle == 0) {
+        return nullptr;
+    }
+    Impl* pool = Impl::findPool(detail::shaderHandlePoolSerial(handle));
+    if (pool == nullptr) {
+        return nullptr;
+    }
+    return pool->resolveLocal(detail::shaderHandleLocalId(handle));
 }
 
 ShaderResource ShaderResourcePool::compile(const std::string& src)
@@ -525,7 +691,7 @@ ShaderResource ShaderResourcePool::compileFromFile(const std::string& path,
     ShaderResource res = acquire(src, opts, "");
     if (res.isValid() && _impl->hotReloadEnabled) {
         const std::string key = _impl->makeCacheKey("", src, opts);
-        _impl->registerHotReloadWatch(path, key, res._impl);
+        _impl->registerHotReloadWatch(path, key, res.id());
     }
     return res;
 }
@@ -551,16 +717,22 @@ ShaderResource ShaderResourcePool::acquire(const std::string& src,
         _impl = std::make_unique<Impl>();
     }
 
+    _impl->ensurePlatformProfileResolved();
     _impl->evictStaleCacheEntries();
     const std::string key = _impl->makeCacheKey(cacheKey, src, opts);
+    const std::string sourceKey = _impl->makeSourceCacheKey(src);
 
     if (const auto it = _impl->cache.find(key); it != _impl->cache.end()) {
-        if (std::shared_ptr<ShaderResourceImpl> cached = it->second.lock()) {
-            if (bgfx::isValid(cached->programHandle)) {
-                return ShaderResource(cached);
+        ShaderResource cached(it->second);
+        if (cached.isValid()) {
+            ++_impl->stats.binaryHits;
+            if (_impl->sourceCache.count(sourceKey) != 0) {
+                ++_impl->stats.sourceHits;
             }
+            return cached;
         }
     }
+    ++_impl->stats.binaryMisses;
 
     CompiledShaderProgram prog;
     if (!_impl->cacheDirectory.empty()) {
@@ -569,14 +741,32 @@ ShaderResource ShaderResourcePool::acquire(const std::string& src,
         if (detail::loadCompiledProgramFromDisk(diskPath, prog) && prog.success) {
             ShaderResource res = acquire(prog);
             if (res.isValid()) {
-                _impl->cache[key] = res._impl;
+                _impl->cache[key] = res.id();
             }
             return res;
         }
     }
 
     phoskia::Compiler compiler;
-    compiler.compileToProgram(src, opts, _impl->engineBgfxOpts(), prog);
+    std::shared_ptr<const phoskia::ir::IRProgram> cachedIr;
+    if (const auto irIt = _impl->sourceCache.find(sourceKey); irIt != _impl->sourceCache.end()) {
+        cachedIr = irIt->second;
+        ++_impl->stats.sourceHits;
+    } else {
+        ++_impl->stats.sourceMisses;
+        phoskia::ir::IRProgram generated;
+        std::vector<std::string> irErrors;
+        if (!compiler.generateIr(src, opts, generated, irErrors)) {
+            prog.success = false;
+            prog.errors = std::move(irErrors);
+            return ShaderResource{};
+        }
+        cachedIr = std::make_shared<const phoskia::ir::IRProgram>(std::move(generated));
+        _impl->sourceCache[sourceKey] = cachedIr;
+    }
+
+    shader::AYBGFXConverter converter;
+    converter.compileToBinary(*cachedIr, _impl->engineBgfxOpts(opts), prog);
 
     if (prog.success && !_impl->cacheDirectory.empty()) {
         const std::string diskPath =
@@ -586,22 +776,21 @@ ShaderResource ShaderResourcePool::acquire(const std::string& src,
 
     ShaderResource res = acquire(prog);
     if (res.isValid()) {
-        _impl->cache[key] = res._impl;
+        _impl->cache[key] = res.id();
     }
     return res;
 }
 
 void ShaderResourcePool::release(ShaderResource& res)
 {
-    if (!res.isValid() || !_impl) {
+    if (res.id() == 0 || !_impl) {
         res.reset();
         return;
     }
 
-    std::shared_ptr<ShaderResourceImpl> impl = res._impl;
-    impl->destroyGpuResources();
-    _impl->untrack(impl.get());
-    _impl->removeFromCache(impl.get());
+    const uint32_t localId = detail::shaderHandleLocalId(res.id());
+    _impl->handles.invalidate(localId);
+    _impl->removeHandleFromCache(res.id());
     res.reset();
 }
 
@@ -615,15 +804,15 @@ ShaderResource ShaderResourcePool::acquire(const CompiledShaderProgram& prog)
         return ShaderResource{};
     }
 
-    auto impl = std::make_shared<ShaderResourceImpl>();
+    auto impl = std::make_unique<ShaderResourceImpl>();
     std::vector<std::string> errors;
     if (!detail::wireUpProgram(*impl, prog, errors)) {
         impl->destroyGpuResources();
         return ShaderResource{};
     }
 
-    _impl->track(impl);
-    return ShaderResource(std::move(impl));
+    const uint64_t handle = _impl->makeHandle(std::move(impl));
+    return ShaderResource(handle);
 }
 
 void ShaderResourcePool::shutdown()
@@ -632,5 +821,10 @@ void ShaderResourcePool::shutdown()
         _impl->shutdownAll();
     }
 }
+
+std::atomic<uint32_t> ShaderResourcePool::Impl::s_nextPoolSerial{1};
+std::unordered_map<uint32_t, ShaderResourcePool::Impl*>
+    ShaderResourcePool::Impl::s_poolRegistry{};
+std::mutex ShaderResourcePool::Impl::s_poolRegistryMutex{};
 
 } // namespace ayt::shader

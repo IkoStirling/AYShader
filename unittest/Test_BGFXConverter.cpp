@@ -4,10 +4,11 @@
 //
 // Tests AYBGFXConverter::convertMaterial(), which emits the three-piece
 // output a frontend feeds to bgfx shaderc: vs_*.sc, fs_*.sc, and the
-// shared varying.def.sc.
+// shared varying_definitions.
 
 #include "AYPhoskia.h"
 #include "AYBGFXConverter.h"
+#include "detail/AYBGFXStageSources.h"
 #include "AYLexer.h"
 #include "AYParser.h"
 #include "AYAst.h"
@@ -23,8 +24,8 @@ TEST_SUITE(BGFXConverterTests)
 
 // ===== Helpers =====
 
-// End-to-end: source → AST → IR → first material's three-piece set.
-static BGFXShaderFiles compileFirstMaterial(const std::string& src) {
+// End-to-end: source ?AST ?IR ?first material's three-piece set.
+static detail::BGFXMaterialStages compileFirstMaterial(const std::string& src) {
     Lexer lexer(src);
     std::vector<Token> tokens;
     lexer.tokenize(tokens);
@@ -40,10 +41,10 @@ static BGFXShaderFiles compileFirstMaterial(const std::string& src) {
         throw std::runtime_error("convertBGFX failed: " +
             (res.errors.empty() ? std::string("?") : res.errors.front()));
     }
-    if (res.materialFiles.empty()) {
+    if (res.materialStages.empty()) {
         throw std::runtime_error("convertBGFX produced no materials");
     }
-    return res.materialFiles.front();
+    return res.materialStages.front();
 }
 
 static std::unique_ptr<Program> parseProgram(const std::string& src) {
@@ -72,12 +73,12 @@ TEST_CASE(empty_material_produces_three_pieces) {
         }
     )";
     auto files = compileFirstMaterial(src);
-    // No in/out declarations on either block → no attributes or varyings
-    // need to be registered in varying.def.sc. The file is still emitted
+    // No in/out declarations on either block ?no attributes or varyings
+    // need to be registered in varying_definitions. The file is still emitted
     // (empty string) so downstream shaderc invocations are deterministic.
-    CHECK(!files.vs.empty());
-    CHECK(!files.fs.empty());
-    CHECK(files.varyingDef.empty());
+    CHECK(!files.vertex.empty());
+    CHECK(!files.fragment.empty());
+    CHECK(files.varyingDefinitions.empty());
 }
 
 // ===== vs content: $input / $output / uniforms / body =====
@@ -95,10 +96,10 @@ TEST_CASE(vertex_emits_input_output) {
         }
     )";
     auto files = compileFirstMaterial(src);
-    CHECK(files.vs.find("$input a_position, a_normal") != std::string::npos);
-    CHECK(files.vs.find("$output v_color0") != std::string::npos);
-    CHECK(files.vs.find("#include \"common.sh\"") != std::string::npos);
-    CHECK(files.vs.find("gl_Position = vec4(a_position, 1.0)") != std::string::npos);
+    CHECK(files.vertex.find("$input a_position, a_normal") != std::string::npos);
+    CHECK(files.vertex.find("$output v_color0") != std::string::npos);
+    CHECK(files.vertex.find("#include \"common.sh\"") != std::string::npos);
+    CHECK(files.vertex.find("gl_Position = vec4(a_position, 1.0)") != std::string::npos);
 }
 
 // ===== fs content: $input / uniforms / textures / body =====
@@ -119,12 +120,12 @@ TEST_CASE(fragment_emits_input_textures) {
         }
     )";
     auto files = compileFirstMaterial(src);
-    CHECK(files.fs.find("$input v_texcoord0") != std::string::npos);
-    CHECK(files.fs.find("SAMPLER2D(albedoMap, 0)") != std::string::npos);
-    CHECK(files.fs.find("texture2D(albedoMap, v_texcoord0)") != std::string::npos);
+    CHECK(files.fragment.find("$input v_texcoord0") != std::string::npos);
+    CHECK(files.fragment.find("SAMPLER2D(albedoMap, 0)") != std::string::npos);
+    CHECK(files.fragment.find("texture2D(albedoMap, v_texcoord0)") != std::string::npos);
 }
 
-// ===== varying.def.sc content =====
+// ===== varying_definitions content =====
 
 TEST_CASE(varying_def_emits_all_bindings) {
     const char* src = R"(
@@ -146,12 +147,12 @@ TEST_CASE(varying_def_emits_all_bindings) {
     )";
     auto files = compileFirstMaterial(src);
     // Attributes
-    CHECK(files.varyingDef.find("a_position  : POSITION") != std::string::npos);
-    CHECK(files.varyingDef.find("a_normal    : NORMAL") != std::string::npos);
-    CHECK(files.varyingDef.find("a_texcoord0 : TEXCOORD0") != std::string::npos);
+    CHECK(files.varyingDefinitions.find("a_position  : POSITION") != std::string::npos);
+    CHECK(files.varyingDefinitions.find("a_normal    : NORMAL") != std::string::npos);
+    CHECK(files.varyingDefinitions.find("a_texcoord0 : TEXCOORD0") != std::string::npos);
     // Varyings (with default values from the table).
-    CHECK(files.varyingDef.find("v_color0    : COLOR0    = vec4(1.0, 0.0, 0.0, 1.0)") != std::string::npos);
-    CHECK(files.varyingDef.find("v_texcoord0 : TEXCOORD0 = vec2(0.0, 0.0)") != std::string::npos);
+    CHECK(files.varyingDefinitions.find("v_color0    : COLOR0    = vec4(1.0, 0.0, 0.0, 1.0)") != std::string::npos);
+    CHECK(files.varyingDefinitions.find("v_texcoord0 : TEXCOORD0 = vec2(0.0, 0.0)") != std::string::npos);
 }
 
 // ===== Uniforms =====
@@ -170,9 +171,9 @@ TEST_CASE(uniforms_emitted_in_both_vs_and_fs) {
         }
     )";
     auto files = compileFirstMaterial(src);
-    CHECK(files.vs.find("uniform vec4 u_time") != std::string::npos);
-    CHECK(files.vs.find("uniform mat4 u_modelViewProj") != std::string::npos);
-    CHECK(files.fs.find("uniform vec4 u_time") != std::string::npos);
+    CHECK(files.vertex.find("uniform vec4 u_time") != std::string::npos);
+    CHECK(files.vertex.find("uniform mat4 u_modelViewProj") != std::string::npos);
+    CHECK(files.fragment.find("uniform vec4 u_time") != std::string::npos);
 }
 
 // ===== Properties become uniforms =====
@@ -186,10 +187,10 @@ TEST_CASE(properties_become_uniforms) {
         }
     )";
     auto files = compileFirstMaterial(src);
-    CHECK(files.fs.find("uniform vec4 tint = vec4(1.0, 0.5, 0.25, 1.0)") != std::string::npos);
+    CHECK(files.fragment.find("uniform vec4 tint = vec4(1.0, 0.5, 0.25, 1.0)") != std::string::npos);
 }
 
-// ===== builtin: sample() → texture2D() =====
+// ===== builtin: sample() ?texture2D() =====
 
 TEST_CASE(sample_builtin_maps_to_texture2D) {
     const char* src = R"(
@@ -203,15 +204,15 @@ TEST_CASE(sample_builtin_maps_to_texture2D) {
         }
     )";
     auto files = compileFirstMaterial(src);
-    CHECK(files.fs.find("texture2D(tex, v_texcoord0)") != std::string::npos);
-    CHECK(files.fs.find("sample(") == std::string::npos);
+    CHECK(files.fragment.find("texture2D(tex, v_texcoord0)") != std::string::npos);
+    CHECK(files.fragment.find("sample(") == std::string::npos);
 }
 
 // ===== Structural validation: missing vertex/fragment surfaces as error =====
 //
 // In Phase 1 closure the parser rejects a material missing vertex or
 // fragment at parse time (parseMaterialDecl records an error). The
-// converter therefore never sees an incomplete material — but we keep
+// converter therefore never sees an incomplete material ?but we keep
 // a converter-level guard for direct AST injection paths (Phase 2
 // compute-only materials). Replaced by parser-level error checks above.
 
@@ -227,7 +228,7 @@ TEST_CASE(compute_throws_not_implemented) {
     auto ast = parser.parse();
     CHECK(parser.hasErrors());
     // Even if the AST is partial, the converter must still refuse to
-    // emit silently — a malformed material cannot yield valid bgfx code.
+    // emit silently ?a malformed material cannot yield valid bgfx code.
     ir::IRGenerator gen;
     AYBGFXConverter conv;
     BGFXConvertResult res;
@@ -259,12 +260,12 @@ TEST_CASE(multiple_materials_each_get_three_pieces) {
     BGFXConvertResult res;
     conv.convertBGFX(gen.generate(*ast), res);
     CHECK(res.success);
-    CHECK(res.materialFiles.size() == 2);
-    CHECK(!res.materialFiles[0].vs.empty());
-    CHECK(!res.materialFiles[1].vs.empty());
+    CHECK(res.materialStages.size() == 2);
+    CHECK(!res.materialStages[0].vertex.empty());
+    CHECK(!res.materialStages[1].vertex.empty());
     // First material's fs should reflect its color (red), second (green).
-    CHECK(res.materialFiles[0].fs.find("1.0, 0.0, 0.0, 1.0") != std::string::npos);
-    CHECK(res.materialFiles[1].fs.find("0.0, 1.0, 0.0, 1.0") != std::string::npos);
+    CHECK(res.materialStages[0].fragment.find("1.0, 0.0, 0.0, 1.0") != std::string::npos);
+    CHECK(res.materialStages[1].fragment.find("0.0, 1.0, 0.0, 1.0") != std::string::npos);
 }
 
 // ===== End-to-end via Compiler =====
@@ -284,7 +285,7 @@ TEST_CASE(compiler_emits_three_pieces) {
             fragment { return vec4(1.0, 0.0, 0.0, 1.0) }
         }
     )";
-    // Isolate env-var influence — these tests run before env tests
+    // Isolate env-var influence ?these tests run before env tests
     // that intentionally flip AY_PHOSKIA_KEEP_SOURCES/DUMP_SC.
 #ifdef _WIN32
     _putenv("AY_PHOSKIA_KEEP_SOURCES=");
@@ -300,10 +301,10 @@ TEST_CASE(compiler_emits_three_pieces) {
     // string emitted by the backend. Reading `program.sources[k]`
     // is the new canonical alternative to the legacy
     // `CompileResult::output.find(...)` pattern.
-    CHECK(program.sources.count("varying.def.sc") == 1);
-    CHECK(program.sources.count("vs_0.sc") == 1);
-    CHECK(program.sources.count("fs_0.sc") == 1);
-    CHECK(program.sources.at("vs_0.sc").find("$input") != std::string::npos);
+    CHECK(program.sources.count("varying_definitions") == 1);
+    CHECK(program.sources.count("vertex_stage_0") == 1);
+    CHECK(program.sources.count("fragment_stage_0") == 1);
+    CHECK(program.sources.at("vertex_stage_0").find("$input") != std::string::npos);
 }
 
 // ===== Phase 2 Step 1: [variant] expands to opt-in #ifndef =====
@@ -326,18 +327,18 @@ TEST_CASE(variant_expands_to_ifndef_in_fragment) {
     // The opt-in shape: #ifndef / #else / #endif. Without --define the
     // emission code is skipped; with `--define BGFX_VARIANT_USE_EMISSION`
     // shaderc selects the #else branch.
-    CHECK(files.fs.find("#ifndef BGFX_VARIANT_USE_EMISSION") != std::string::npos);
-    CHECK(files.fs.find("#else") != std::string::npos);
-    CHECK(files.fs.find("#endif") != std::string::npos);
+    CHECK(files.fragment.find("#ifndef BGFX_VARIANT_USE_EMISSION") != std::string::npos);
+    CHECK(files.fragment.find("#else") != std::string::npos);
+    CHECK(files.fragment.find("#endif") != std::string::npos);
     // The Phoskia [variant name] itself is NOT emitted as text.
-    CHECK(files.fs.find("[variant") == std::string::npos);
-    CHECK(files.fs.find("useEmission") == std::string::npos);
+    CHECK(files.fragment.find("[variant") == std::string::npos);
+    CHECK(files.fragment.find("useEmission") == std::string::npos);
     // Statements after [variant] are still present in the #else branch.
     // The let emission = ... line should appear inside the #else block
     // (between #else and #endif).
-    auto elsePos = files.fs.find("#else");
-    auto endifPos = files.fs.find("#endif");
-    auto letPos = files.fs.find("emission = vec3(1.0, 0.0, 0.0)");
+    auto elsePos = files.fragment.find("#else");
+    auto endifPos = files.fragment.find("#endif");
+    auto letPos = files.fragment.find("emission = vec3(1.0, 0.0, 0.0)");
     CHECK(letPos != std::string::npos);
     CHECK(elsePos < letPos);
     CHECK(letPos < endifPos);
@@ -356,9 +357,9 @@ TEST_CASE(variant_expands_to_ifndef_in_vertex) {
         }
     )";
     auto files = compileFirstMaterial(src);
-    CHECK(files.vs.find("#ifndef BGFX_VARIANT_SKINNING") != std::string::npos);
-    CHECK(files.vs.find("#else") != std::string::npos);
-    CHECK(files.vs.find("#endif") != std::string::npos);
+    CHECK(files.vertex.find("#ifndef BGFX_VARIANT_SKINNING") != std::string::npos);
+    CHECK(files.vertex.find("#else") != std::string::npos);
+    CHECK(files.vertex.find("#endif") != std::string::npos);
 }
 
 TEST_CASE(multiple_variants_each_get_their_own_ifndef) {
@@ -379,12 +380,12 @@ TEST_CASE(multiple_variants_each_get_their_own_ifndef) {
         }
     )";
     auto files = compileFirstMaterial(src);
-    CHECK(files.fs.find("#ifndef BGFX_VARIANT_USE_EMISSION") != std::string::npos);
-    CHECK(files.fs.find("#ifndef BGFX_VARIANT_USE_FRESNEL") != std::string::npos);
-    CHECK(files.fs.find("#else") != std::string::npos);
-    // Two distinct #ifndef blocks → two #endif blocks at least.
+    CHECK(files.fragment.find("#ifndef BGFX_VARIANT_USE_EMISSION") != std::string::npos);
+    CHECK(files.fragment.find("#ifndef BGFX_VARIANT_USE_FRESNEL") != std::string::npos);
+    CHECK(files.fragment.find("#else") != std::string::npos);
+    // Two distinct #ifndef blocks ?two #endif blocks at least.
     size_t endifCount = 0, pos = 0;
-    while ((pos = files.fs.find("#endif", pos)) != std::string::npos) {
+    while ((pos = files.fragment.find("#endif", pos)) != std::string::npos) {
         ++endifCount;
         ++pos;
     }
@@ -406,7 +407,7 @@ TEST_CASE(variant_macro_name_uppercases_and_replaces_special_chars) {
         }
     )";
     auto files = compileFirstMaterial(src);
-    CHECK(files.fs.find("#ifndef BGFX_VARIANT_HDR2PASS") != std::string::npos);
+    CHECK(files.fragment.find("#ifndef BGFX_VARIANT_HDR2PASS") != std::string::npos);
 }
 
 // ===== Phase 2 closing: PBR builtin inlining =====
@@ -435,9 +436,9 @@ TEST_CASE(pbr_fresnel_schlick_inlined_in_fs) {
         }
     )";
     auto files = compileFirstMaterial(src);
-    CHECK(files.fs.find("fresnelSchlick") == std::string::npos);
+    CHECK(files.fragment.find("fresnelSchlick") == std::string::npos);
     // pow(1.0 - 0.5, vec3(5.0)) inline expansion
-    CHECK(files.fs.find("pow(") != std::string::npos);
+    CHECK(files.fragment.find("pow(") != std::string::npos);
 }
 
 TEST_CASE(pbr_distribution_ggx_inlined_in_fs) {
@@ -453,8 +454,8 @@ TEST_CASE(pbr_distribution_ggx_inlined_in_fs) {
         }
     )";
     auto files = compileFirstMaterial(src);
-    CHECK(files.fs.find("distributionGGX") == std::string::npos);
-    CHECK(files.fs.find("3.14159265") != std::string::npos);
+    CHECK(files.fragment.find("distributionGGX") == std::string::npos);
+    CHECK(files.fragment.find("3.14159265") != std::string::npos);
 }
 
 TEST_CASE(pbr_geometry_schlick_ggx_inlined_in_fs) {
@@ -470,7 +471,7 @@ TEST_CASE(pbr_geometry_schlick_ggx_inlined_in_fs) {
         }
     )";
     auto files = compileFirstMaterial(src);
-    CHECK(files.fs.find("geometrySchlickGGX") == std::string::npos);
+    CHECK(files.fragment.find("geometrySchlickGGX") == std::string::npos);
 }
 
 TEST_CASE(pbr_geometry_smith_inlined_in_fs) {
@@ -487,10 +488,10 @@ TEST_CASE(pbr_geometry_smith_inlined_in_fs) {
         }
     )";
     auto files = compileFirstMaterial(src);
-    CHECK(files.fs.find("geometrySmith") == std::string::npos);
+    CHECK(files.fragment.find("geometrySmith") == std::string::npos);
 }
 
-// ===== Scalar×vector broadcasting emission =====
+// ===== Scalar�vector broadcasting emission =====
 //
 // GLSL accepts component-wise arithmetic in either operand order
 // (`vec3 * float` and `float * vec3` both yield vec3). The BGFX
@@ -513,9 +514,9 @@ TEST_CASE(scalar_times_vec3_emits_scalar_first) {
     )";
     auto files = compileFirstMaterial(src);
     // The let initializer is the user's expression verbatim. We just
-    // want to see (s * v) or ((s) * (v)) in the output — the
+    // want to see (s * v) or ((s) * (v)) in the output ?the
     // ordering of operands within the `*` should match the source.
-    CHECK(files.fs.find("r = (s * v);") != std::string::npos);
+    CHECK(files.fragment.find("r = (s * v);") != std::string::npos);
 }
 
 TEST_CASE(vec3_times_scalar_emits_vec3_first) {
@@ -531,7 +532,7 @@ TEST_CASE(vec3_times_scalar_emits_vec3_first) {
         }
     )";
     auto files = compileFirstMaterial(src);
-    CHECK(files.fs.find("r = (v * s);") != std::string::npos);
+    CHECK(files.fragment.find("r = (v * s);") != std::string::npos);
 }
 
 TEST_CASE(vec3_plus_scalar_emits_in_source_order) {
@@ -547,13 +548,13 @@ TEST_CASE(vec3_plus_scalar_emits_in_source_order) {
         }
     )";
     auto files = compileFirstMaterial(src);
-    CHECK(files.fs.find("r = (v + s);") != std::string::npos);
+    CHECK(files.fragment.find("r = (v + s);") != std::string::npos);
 }
 
-// ===== Phase 3.2: compute declaration → BGFX .sc =====
+// ===== Phase 3.2: compute declaration ?BGFX .sc =====
 //
 // Earlier (Phase 2.5) the converter refused compute with a "HLSL /
-// WGSL required" error. That conclusion was wrong — bgfx 1.18 +
+// WGSL required" error. That conclusion was wrong ?bgfx 1.18 +
 // shaderc 1.18 fully support compute via:
 //   - shaderc --type compute
 //   - bgfx::createProgram(ShaderHandle _csh)
@@ -561,7 +562,7 @@ TEST_CASE(vec3_plus_scalar_emits_in_source_order) {
 //
 // The new contract is:
 //   - `result.success == true`
-//   - `result.computeFiles.size() == 1` per compute declaration
+//   - `result.computeStages.size() == 1` per compute declaration
 //   - `computeFiles[0].cs` is a valid bgfx .sc source with:
 //       * `$input` / `$output` (both empty)
 //       * `#include "common.sh"`
@@ -588,13 +589,13 @@ TEST_CASE(compute_declaration_produces_valid_bgfx_cs) {
     conv.convertBGFX(gen.generate(*ast), res);
     CHECK(res.success);
     CHECK(res.errors.empty());
-    CHECK(res.computeFiles.size() == 1);
-    const auto& cs = res.computeFiles[0].cs;
+    CHECK(res.computeStages.size() == 1);
+    const auto& cs = res.computeStages[0].compute;
     // Standard bgfx .sc prologue: $input / $output empty, common.sh include.
     CHECK(cs.find("$input") != std::string::npos);
     CHECK(cs.find("$output") != std::string::npos);
     CHECK(cs.find("#include \"common.sh\"") != std::string::npos);
-    // Workgroup layout — Phase 3.3 Block 2 default is (64, 1, 1) when
+    // Workgroup layout ?Phase 3.3 Block 2 default is (64, 1, 1) when
     // no `[numthreads(...)]` attribute is present. Phase 3.3 also
     // writes all three layout dimensions explicitly (GLSL would
     // default y and z to 1 anyway). Pin the literal so a refactor that
@@ -625,11 +626,11 @@ TEST_CASE(compute_alongside_material_converts_both) {
     BGFXConvertResult res;
     conv.convertBGFX(gen.generate(*ast), res);
     CHECK(res.success);
-    CHECK(res.materialFiles.size() == 1);
-    CHECK(!res.materialFiles[0].vs.empty());
-    CHECK(!res.materialFiles[0].fs.empty());
-    CHECK(res.computeFiles.size() == 1);
-    CHECK(!res.computeFiles[0].cs.empty());
+    CHECK(res.materialStages.size() == 1);
+    CHECK(!res.materialStages[0].vertex.empty());
+    CHECK(!res.materialStages[0].fragment.empty());
+    CHECK(res.computeStages.size() == 1);
+    CHECK(!res.computeStages[0].compute.empty());
 }
 
 TEST_SUITE_END

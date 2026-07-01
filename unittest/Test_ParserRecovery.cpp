@@ -63,7 +63,7 @@ TEST_CASE(valid_program_no_errors) {
     CHECK(r.declarationCount == 1);
 }
 
-// ===== Bad material followed by a good one â€” second must survive =====
+// ===== Bad material followed by a good one â€?second must survive =====
 
 TEST_CASE(bad_material_then_good_material_survives) {
     // First material is missing the closing brace and never declares a
@@ -75,7 +75,7 @@ TEST_CASE(bad_material_then_good_material_survives) {
     )";
     auto r = parseSrc(src);
     CHECK(r.hasErrors);
-    // The parser should at least see the second material â€” but the
+    // The parser should at least see the second material â€?but the
     // current parseMaterialDecl loop tries to consume up to a '}', and
     // when it doesn't find one before the next 'material' keyword, it
     // will consume past it. Accept either: (a) both materials parsed
@@ -142,13 +142,12 @@ TEST_CASE(broken_declaration_inside_material_then_valid_inner) {
 }
 
 TEST_CASE(broken_vertex_block_then_fragment_survives) {
-    // The vertex block has a stray '@' token at statement position â€”
-    // garbage the parser must skip via synchronize(). The fragment
+    // The vertex block has a stray '@' token at statement position â€?    // garbage the parser must skip via synchronize(). The fragment
     // block that follows must still parse cleanly.
     //
     // (Earlier draft used a missing ';' or missing ')' which the
     // parser silently tolerates due to Phoskia's Python-like optional
-    // semicolons and forgiving expression recovery â€” both did NOT
+    // semicolons and forgiving expression recovery â€?both did NOT
     // trigger hasErrors.)
     const char* src = R"(
         material X {

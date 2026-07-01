@@ -1,4 +1,4 @@
-// Test_Std140Layout.cpp â€” Phase 4-D std140 layout calculator
+// Test_Std140Layout.cpp â€?Phase 4-D std140 layout calculator
 
 #include "detail/AYStd140Layout.h"
 #include "AYTest.h"

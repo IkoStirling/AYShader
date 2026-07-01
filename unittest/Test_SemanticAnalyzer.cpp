@@ -27,7 +27,7 @@ namespace {
 // Helper: parse + analyze. Returns analyzer + env so tests can query
 // either the analyzer's permanent `_symbols` table (via getType) or
 // the env directly. Note: TypeEnvironment's getVariable only walks
-// currently-active scopes â€” after analyze() returns the inner shader
+// currently-active scopes â€?after analyze() returns the inner shader
 // scopes have already been popped, so shader params are NOT visible
 // through env->getVariable. Use analyzer.getType() instead.
 struct AnalyzeResult {
@@ -295,7 +295,7 @@ TEST_CASE(swizzle_rgb_on_vec4_ok) {
 TEST_CASE(uniform_with_non_builtin_type_is_error) {
     // After Step 5 token-demotion, "vec3" / "float" / etc. are plain
     // Identifier tokens. The SemanticAnalyzer now validates them via
-    // AYBuiltinTypes::isBuiltinType â€” a typo like "vec33" surfaces a
+    // AYBuiltinTypes::isBuiltinType â€?a typo like "vec33" surfaces a
     // Go-style diagnostic here rather than failing inside the BGFX
     // backend later.
     const char* src = R"(
@@ -312,7 +312,7 @@ TEST_CASE(uniform_with_non_builtin_type_is_error) {
 
 TEST_CASE(uniform_with_builtin_type_passes_type_check) {
     // Sanity: vec3 / float / mat4 etc. must NOT trip the
-    // isBuiltinType gate â€” only genuinely unknown lexemes should.
+    // isBuiltinType gate â€?only genuinely unknown lexemes should.
     const char* src = R"(
         material X {
             uniform vec3 cameraPos
