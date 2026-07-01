@@ -41,6 +41,12 @@ public:
     ShaderResource compile(const std::string& src);
     ShaderResource compile(const std::string& src,
                            const phoskia::CompileOptions& opts);
+    ShaderResource compileFromFile(const std::string& path);
+    ShaderResource compileFromFile(const std::string& path,
+                                   const phoskia::CompileOptions& opts);
+
+    // Dev-only hot-reload poll (no-op when setHotReloadEnabled(false)).
+    void pollHotReload();
 
     // Lower-level: wire an already-compiled program (Phase 4-A API).
     ShaderResource acquire(const CompiledShaderProgram& prog);

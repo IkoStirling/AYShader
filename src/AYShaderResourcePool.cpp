@@ -6,8 +6,10 @@
 #include "ShaderResourceImpl.h"
 #include "detail/AYShaderDigest.h"
 #include "detail/AYShaderDiskCache.h"
+#include "detail/AYShaderFileWatch.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <optional>
 #include <sstream>
@@ -17,6 +19,21 @@
 
 namespace ayt::shader
 {
+
+namespace {
+
+constexpr int64_t kHotReloadDebounceMs = 100;
+
+struct HotReloadWatch {
+    std::string sourcePath;
+    int64_t lastMtimeMs = 0;
+    bool debouncing = false;
+    int64_t debounceStartMs = 0;
+    std::vector<std::string> cacheKeys;
+    std::vector<std::weak_ptr<ShaderResourceImpl>> liveResources;
+};
+
+} // namespace
 
 namespace detail {
 
@@ -248,6 +265,87 @@ struct ShaderResourcePool::Impl {
 
     std::vector<std::shared_ptr<ShaderResourceImpl>> resources;
     std::unordered_map<std::string, std::weak_ptr<ShaderResourceImpl>> cache;
+    std::unordered_map<std::string, HotReloadWatch> hotReloadWatches;
+
+    void eraseCacheKey(const std::string& key)
+    {
+        cache.erase(key);
+        if (!cacheDirectory.empty()) {
+            const std::string diskPath = detail::diskCacheFilePath(cacheDirectory, key);
+            std::remove(diskPath.c_str());
+        }
+    }
+
+    void registerHotReloadWatch(const std::string& path,
+                                const std::string& cacheKey,
+                                const std::shared_ptr<ShaderResourceImpl>& impl)
+    {
+        if (!hotReloadEnabled || !impl) {
+            return;
+        }
+
+        const std::string normalized = detail::normalizeSourcePath(path);
+        HotReloadWatch& watch = hotReloadWatches[normalized];
+        watch.sourcePath = path;
+        if (const std::optional<int64_t> mtime = detail::fileMtimeMs(path)) {
+            watch.lastMtimeMs = *mtime;
+        }
+        watch.debouncing = false;
+
+        if (std::find(watch.cacheKeys.begin(), watch.cacheKeys.end(), cacheKey)
+            == watch.cacheKeys.end()) {
+            watch.cacheKeys.push_back(cacheKey);
+        }
+        watch.liveResources.push_back(impl);
+    }
+
+    void invalidateHotReloadWatch(HotReloadWatch& watch)
+    {
+        for (const std::string& key : watch.cacheKeys) {
+            eraseCacheKey(key);
+        }
+        for (std::weak_ptr<ShaderResourceImpl>& weak : watch.liveResources) {
+            if (std::shared_ptr<ShaderResourceImpl> impl = weak.lock()) {
+                impl->destroyGpuResources();
+                untrack(impl.get());
+                removeFromCache(impl.get());
+            }
+        }
+        watch.liveResources.clear();
+        watch.cacheKeys.clear();
+        watch.debouncing = false;
+        if (const std::optional<int64_t> mtime = detail::fileMtimeMs(watch.sourcePath)) {
+            watch.lastMtimeMs = *mtime;
+        }
+    }
+
+    void pollHotReloadWatches()
+    {
+        if (!hotReloadEnabled) {
+            return;
+        }
+
+        const int64_t nowMs = detail::steadyClockMs();
+        for (auto& [normalizedPath, watch] : hotReloadWatches) {
+            (void)normalizedPath;
+            const std::optional<int64_t> mtime = detail::fileMtimeMs(watch.sourcePath);
+            if (!mtime.has_value()) {
+                continue;
+            }
+            if (*mtime == watch.lastMtimeMs) {
+                watch.debouncing = false;
+                continue;
+            }
+            if (!watch.debouncing) {
+                watch.debouncing = true;
+                watch.debounceStartMs = nowMs;
+                continue;
+            }
+            if (nowMs - watch.debounceStartMs >= kHotReloadDebounceMs) {
+                invalidateHotReloadWatch(watch);
+            }
+        }
+    }
 
     BGFXCompileOptions engineBgfxOpts() const
     {
@@ -333,6 +431,7 @@ struct ShaderResourcePool::Impl {
         }
         resources.clear();
         cache.clear();
+        hotReloadWatches.clear();
     }
 };
 
@@ -404,6 +503,38 @@ ShaderResource ShaderResourcePool::compile(const std::string& src,
                                            const phoskia::CompileOptions& opts)
 {
     return acquire(src, opts, "");
+}
+
+ShaderResource ShaderResourcePool::compileFromFile(const std::string& path)
+{
+    return compileFromFile(path, phoskia::CompileOptions{});
+}
+
+ShaderResource ShaderResourcePool::compileFromFile(const std::string& path,
+                                                   const phoskia::CompileOptions& opts)
+{
+    if (!_impl) {
+        _impl = std::make_unique<Impl>();
+    }
+
+    std::string src;
+    if (!detail::readTextFile(path, src)) {
+        return ShaderResource{};
+    }
+
+    ShaderResource res = acquire(src, opts, "");
+    if (res.isValid() && _impl->hotReloadEnabled) {
+        const std::string key = _impl->makeCacheKey("", src, opts);
+        _impl->registerHotReloadWatch(path, key, res._impl);
+    }
+    return res;
+}
+
+void ShaderResourcePool::pollHotReload()
+{
+    if (_impl) {
+        _impl->pollHotReloadWatches();
+    }
 }
 
 ShaderResource ShaderResourcePool::acquire(const std::string& src,
