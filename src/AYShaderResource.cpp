@@ -202,6 +202,10 @@ void ShaderResource::submit(const DrawCallContext& ctx) const
         bgfx::setTexture(pending.stage, entry->uniformHandle, pending.texture);
     }
 
+    if (ctx.state != 0) {
+        bgfx::setState(ctx.state);
+    }
+
     bgfx::submit(ctx.viewId, _impl->programHandle);
 
     _impl->pendingUniforms.clear();

@@ -27,6 +27,8 @@ struct TextureHandle {
 // this for full AYRenderer integration.
 struct DrawCallContext {
     uint8_t viewId = 0;
+    // Opaque bgfx render state (BGFX_STATE_*). Zero means default pipeline state.
+    uint64_t state = 0;
 };
 
 class ShaderResourcePool;

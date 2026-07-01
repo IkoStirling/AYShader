@@ -1,5 +1,9 @@
 #pragma once
-// AYShaderCache.h - Shader compilation cache
+// AYShaderCache.h - Legacy shader compilation cache (deprecated)
+//
+// Phase 4-I: disk + memory cache is owned by ShaderResourcePool via
+// setCacheDirectory(...). Prefer ShaderResourcePool::compile/acquire for
+// new code; this header remains for legacy ShaderProgram consumers only.
 
 #include "AYShaderProgram.h"
 #include "detail/AYShaderProgramLegacy.h"

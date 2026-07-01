@@ -4,6 +4,8 @@
 #include "AYBGFXConverter.h"
 #include "AYPhoskia.h"
 #include "ShaderResourceImpl.h"
+#include "detail/AYShaderDigest.h"
+#include "detail/AYShaderDiskCache.h"
 
 #include <algorithm>
 #include <cstring>
@@ -257,9 +259,9 @@ struct ShaderResourcePool::Impl {
         return opts;
     }
 
-    std::string makeCacheKey(const std::string& keyOverride,
-                             const std::string& src,
-                             const phoskia::CompileOptions& opts) const
+    std::string makeCacheKeyMaterial(const std::string& keyOverride,
+                                     const std::string& src,
+                                     const phoskia::CompileOptions& opts) const
     {
         if (!keyOverride.empty()) {
             return keyOverride;
@@ -275,6 +277,13 @@ struct ShaderResourcePool::Impl {
             << opts.dumpIntermediate
             << '|' << src;
         return oss.str();
+    }
+
+    std::string makeCacheKey(const std::string& keyOverride,
+                             const std::string& src,
+                             const phoskia::CompileOptions& opts) const
+    {
+        return detail::sha256Hex(makeCacheKeyMaterial(keyOverride, src, opts));
     }
 
     void evictStaleCacheEntries()
@@ -422,9 +431,27 @@ ShaderResource ShaderResourcePool::acquire(const std::string& src,
         }
     }
 
-    phoskia::Compiler compiler;
     CompiledShaderProgram prog;
+    if (!_impl->cacheDirectory.empty()) {
+        const std::string diskPath =
+            detail::diskCacheFilePath(_impl->cacheDirectory, key);
+        if (detail::loadCompiledProgramFromDisk(diskPath, prog) && prog.success) {
+            ShaderResource res = acquire(prog);
+            if (res.isValid()) {
+                _impl->cache[key] = res._impl;
+            }
+            return res;
+        }
+    }
+
+    phoskia::Compiler compiler;
     compiler.compileToProgram(src, opts, _impl->engineBgfxOpts(), prog);
+
+    if (prog.success && !_impl->cacheDirectory.empty()) {
+        const std::string diskPath =
+            detail::diskCacheFilePath(_impl->cacheDirectory, key);
+        detail::saveCompiledProgramToDisk(diskPath, prog);
+    }
 
     ShaderResource res = acquire(prog);
     if (res.isValid()) {

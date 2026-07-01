@@ -460,4 +460,39 @@ TEST_CASE(set_uniform_and_submit_no_crash)
     pool.shutdown();
 }
 
+TEST_CASE(submit_with_render_state_no_crash)
+{
+    if (!wireUpEnvironmentAvailable()) {
+        std::cerr << "[ShaderResource test] SKIP: shaderc/bgfx common not available.\n";
+        return;
+    }
+
+    clearPhase36Env();
+    AYShadercDriver::clearDefaultExecutable();
+    if (!shadercAvailable()) {
+        return;
+    }
+
+    BgfxNoopScope bgfxScope;
+    if (!bgfxScope.active) {
+        return;
+    }
+
+    CompiledShaderProgram prog = compileMinimalUnlit();
+    if (!prog.success) {
+        return;
+    }
+
+    ShaderResourcePool pool;
+    ShaderResource res = pool.acquire(prog);
+    CHECK(res.isValid());
+
+    DrawCallContext ctx;
+    ctx.viewId = 0;
+    ctx.state = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A;
+    res.submit(ctx);
+
+    pool.shutdown();
+}
+
 TEST_SUITE_END
