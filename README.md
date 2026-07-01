@@ -10,7 +10,7 @@ AYShader 是 AY Engine 的着色器子系统：接受 **Phoskia** DSL 源码，�
 
 ## 状态
 
-**Phase 2 已关闭**（6 个增量全部完成并通过 golden + e2e 测试）。
+**Phase 4 进行中**（Phase 3.6 已关闭；944 测试基线 + Phase 4-A ShaderResource API）。
 
 | Phase | 范围 | 状态 |
 |---|---|---|
@@ -29,6 +29,9 @@ AYShader 是 AY Engine 的着色器子系统：接受 **Phoskia** DSL 源码，�
 | Phase 3.4 | UBO 表面语法（`uniformblock` + `layout(std140, binding = N)` + 全平台 `-p 430`） | ✅ |
 | Phase 3.5-A | Storage binding 表面语法（`storage X : rwstructuredbuffer<T> binding N;` → `layout(std430, binding = N)`） | ✅ |
 | Phase 3.5-B | UBO binding 表面语法（`uniformblock X { ... } binding N;` → `layout(std140, binding = N)`） | ✅ |
+| Phase 3.6 | 产品化：`compileToProgram()` + `.sc` 内化 + `AYShadercDriver` | ✅ |
+| Phase 4-A | `ShaderResource` opaque handle + 最小 `ShaderResourcePool` wire-up | ✅ |
+| Phase 4-B+ | Pool cache/config、`compileToShaderResource`、header 隔离 | 🔴 待做 |
 | Phase 5+ | HLSL 后端（按需 — DXC 一手质量 / 减体积） | 🅿 暂缓 |
 | Phase 5+ | WGSL 后端（按需 — WebGPU 目标） | 🅿 暂缓 |
 
@@ -65,6 +68,7 @@ AY_SHADER_REGEN_GOLDEN=1 <build-dir>/AYShader_Test.exe
 | `Test_BuiltinTypes.cpp` | `AYBuiltinTypes::isBuiltinType` 全覆盖 |
 | `Test_GoldenFiles.cpp` | 5 个 Phoskia fixture 输出 byte-equal 比对 baseline |
 | `Test_IrGenerator.cpp` | Phase 3.1 IR 层：AST→IR 降级 + resolvedType + 完整 BGFX retarget |
+| `Test_ShaderResource.cpp` | Phase 4-A `ShaderResource` / `ShaderResourcePool` wire-up + binding API |
 
 ### Golden fixture
 
@@ -206,6 +210,8 @@ AYShader/
 │   ├── IAYBackendConverter.h
 │   ├── AYBGFXConverter.h
 │   ├── AYShaderProgram.h
+│   ├── AYShaderResource.h
+│   ├── AYShaderResourcePool.h
 │   └── AYShaderCache.h
 ├── src/                # 一一对应实现
 ├── unittest/

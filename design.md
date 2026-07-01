@@ -2,6 +2,48 @@
 
 > **命名来源**：Phoskia — φῶς (光) + σκιά (影)，光与影的交织，shader 的本质。
 
+## 0. API Stability Promise
+
+> **承诺范围**：`include/AYShader.h` / `include/AYShaderProgram.h` / `include/AYPhoskia.h` / `include/IAYBackendConverter.h` 这 4 个公开头文件的 C++ 符号。
+> **承诺生效日**：Phase 4 封顶后（即 §8.5 全部 Block 4-A..4-M 完成；2026-07-01 sign-off 起算）。
+> **承诺延展**：Phase 5/6/7 仅扩展 `CompileOptions` 字段，不重排已有字段，不删字段；Phase 8+ 后端替换零 frontend 改动（详见 §14.5）。
+
+### 0.1 ABI 兼容性保证
+
+| 规则 | 适用 | 例外 |
+|---|---|---|
+| 不删已有 public 字段 | 永远 | 标 `[[deprecated]]` 后保 ≥ 1 个 minor version 才删 |
+| 不重排 struct 字段顺序 | 永远 | 同上 |
+| 不改字段类型 | 永远 | 同上；扩字段用嵌套 struct + opaque handle |
+| 不改函数签名（参数类型 / 返回类型）| 永远 | 加 overload 是允许的（additive）|
+| 不改 enum 已有值 | 永远 | 新增 enum 值允许；删除/重命名不允许 |
+| 不改 `constexpr` 常量值 | 永远 | 新增 `constexpr` 允许 |
+
+### 0.2 API 演进策略
+
+| 动作 | 标记 | 删除窗口 |
+|---|---|---|
+| 标 `[[deprecated("reason → new API")]]` | minor version N | minor version N+2 起可删 |
+| 加 overload | additive | 无 |
+| 加新字段（默认构造）| additive | 无 |
+| 加新 enum 值 | additive | 无 |
+| 加新 namespace `ayt::shader::v2::*` | additive | 无 |
+
+### 0.3 测试守门
+
+- `Test_HeaderStability`：include 所有公开头，验证 `<bgfx/bgfx.h>` 不出现在 `#include` 树里（grep `clang -M` 输出）
+- `Test_ABI_SizeOf`：sizeof(`ShaderResource`) / sizeof(`CompiledShaderProgram`) / sizeof(`CompileOptions`) 在每次 release 锁定值
+- `Test_DeprecationWarnings`：deprecated 字段编译期应出 `[[deprecated]]` warning，测试用 `Werror` 检验
+
+### 0.4 升级路径
+
+每次 minor version bump，CHANGELOG 必须列：
+- 新增字段 / 函数 / enum 值
+- 标 deprecated 的字段 / 函数
+- 删除的字段 / 函数（如果有；major version 才允许）
+
+**这与 Rust / TypeScript / Clang 的 API stability policy 同构**（借鉴）。
+
 ## 1. 概述
 
 AYShader 是 AY Engine 的**着色器子系统**。它接受 Phoskia 源码（一种高层次的 shader DSL），通过完整的编译器流水线（词法 → 语法 → AST → 可选语义分析 → 后端转换），生成目标平台的 shader 源码（目前仅 BGFX `.sc` 格式，再交由 shaderc 编译为平台二进制）。
@@ -117,14 +159,19 @@ AYShader 是 AY Engine 的**着色器子系统**。它接受 Phoskia 源码（�
 
 ### 3.2 后端与引擎集成
 
+> **Phase 3.6 末现状 / Phase 4 目标**：当前 `AYShaderProgram.h` 仍持有 Phase 1 形态的 `class ShaderProgram`（内含 `bgfx::ShaderHandle`）。frontend 调用方目前**没**用这把（`ShaderCache` 还在草稿阶段），所以泄漏暂时不可见。**Phase 4 起就要把 bgfx 类型从这个头文件里全部挤出去**（pimpl 隔离）。详见 §8.5。
+
 ```
 ┌────────────────────────────────────────────────────────────┐
 │  ayt::shader                                               │
 │                                                            │
 │  IAYBackendConverter.h    — 后端接口（抽象）               │
 │  AYBGFXConverter.h/.cpp   — BGFX 后端（Phoskia → .sc）     │
-│  AYShaderProgram.h/.cpp   — 编译后的程序                   │
-│  AYShaderCache.h/.cpp     — 编译缓存                       │
+│  AYShadercDriver.h/.cpp   — shaderc driver（Phase 3.6）    │
+│  AYShaderProgram.h        — CompiledShaderProgram（bytes） │
+│                             + ShaderResource (Phase 4, opaque handle)│
+│                             + ShaderResourcePool (Phase 4) │
+│  AYShaderCache.h/.cpp     — 编译缓存（Phase 4 收编入 pool）│
 │                                                            │
 └────────────────────────────────────────────────────────────┘
 ```
@@ -985,6 +1032,1140 @@ auto program = phoskia.compileToProgram(src, opts);
 - Debug 路径 B（落盘）：`opts.dumpIntermediate = true` 或 env `AY_PHOSKIA_DUMP_SC=1` 落盘 `.sc` 到 temp dir
 - 两个 debug 入口正交 — 都开 / 单开 / 都不开 都合法
 
+**Phase 3.6 收尾**：6 个 commit 全部完成（`6c332b0 → c2d128b → 465eec6 → 29db73c → a96b521 → 44e6158`，944/944 测试）。见 §14.2.
+
+#### 8.4.1 CompileOptions Builder Pattern（Phase 6+ 长期目标）
+
+> **借鉴**：[bgfx::ShaderBuilder](https://github.com/bkaradzic/bgfx/blob/master/include/bgfx/bgfx.h) + [Slang Compiler builder](https://github.com/shader-slang/slang/blob/master/docs/user-guide/) + [Bazel rule attribute builder](https://bazel.build/rules/lib/builtins/actions.html)
+
+**当前形态**（Phase 3.6 末）：
+
+```cpp
+struct CompileOptions {
+    std::vector<std::string> defines;
+    bool keepSources = false;
+    bool dumpIntermediate = false;
+    std::string dumpDir;
+};
+
+// 调用方：
+CompileOptions opts;
+opts.defines.push_back("USE_SHADOWS=1");
+opts.keepSources = true;
+opts.dumpIntermediate = true;
+opts.dumpDir = "./debug";
+auto prog = phoskia.compileToProgram(src, opts);
+```
+
+问题：
+- 字段顺序对调用方要求严格（如果 future 加字段 default 改变，调用方默认行为会变）
+- 调用方写 4 行才能完整表达意图
+- "一个字段含义多个"，future 加字段容易破坏兼容性
+
+**Phase 6+ 目标**：
+
+```cpp
+// 保留 CompileOptions struct 作为 ABI 兼容
+// 同时提供 builder helper：
+struct CompileOptions {
+    std::vector<std::string> defines;
+    bool keepSources = false;
+    bool dumpIntermediate = false;
+    std::string dumpDir;
+
+    // Builder API（Phase 6+ 新增）
+    struct Builder;
+    static Builder builder();
+
+    // Direct construction still works（ABI compat）
+    CompileOptions() = default;
+};
+
+struct CompileOptions::Builder {
+    Builder& withDefine(std::string_view key, std::string_view value = "");
+    Builder& withDefines(std::initializer_list<std::string_view> defines);
+    Builder& keepSources();
+    Builder& dumpTo(std::string dir);
+    Builder& dumpToTempdir();
+    CompileOptions build() const;
+};
+
+// 调用方（preferred）：
+auto prog = phoskia.compileToProgram(src,
+    CompileOptions::builder()
+        .withDefine("USE_SHADOWS", "1")
+        .keepSources()
+        .dumpToTempdir()
+        .build());
+
+// 调用方（旧 ABI，仍支持）：
+CompileOptions opts;
+opts.defines.push_back("USE_SHADOWS=1");
+opts.keepSources = true;
+auto prog = phoskia.compileToProgram(src, opts);  // OK
+```
+
+**优势**：
+- 默认值隐藏在 builder，**前向兼容**：加新 option 不破坏旧 call sites（builder 默认值自动生效）
+- 字段名 = 方法名，IDE 自动补全更友好
+- fluent API 可读性高
+
+**§14.6.5 文档同步**：
+- 文档同步更新：所有示例从 struct 写法优先迁到 builder 写法（struct 仍允许，标 "advanced"）
+
+**风险与缓解**：
+
+| 风险 | 缓解 |
+|---|---|
+| Builder 与 struct 双 API 维护成本 | Builder 内部直接构造 struct，无重复 |
+| 调用方混淆 | README / example 优先推 builder；struct 写法仍支持 |
+| ABI 破坏（struct 字段顺序 / 大小） | Builder 仅加方法，不动 struct 字段；按 §0 API stability 锁定 |
+
+**Phase 6+ 实施步骤**：
+- 6-A：加 `CompileOptions::Builder` + 测试
+- 6-B：README + examples 切换示例
+- 7-A：标 `CompileOptions` 字段 `[[deprecated]]`（"prefer builder.withDefine()")
+- 8-A：删 deprecated 字段（major version bump）
+
+---
+
+**问题（暴露给本节）**：当前 `CompiledShaderProgram` 只产出 `.bin` bytes + 元数据。frontend（`AYRenderer` / 任何 host）拿到二进制后**还要自己**再走一遍 bgfx 调用（`createShader → createProgram → createUniform`）才能得到一个可绑定到 draw call 的 program。**这就把 bgfx API 渗到 frontend 了**——`ShaderProgram` 类直接持有 `bgfx::ShaderHandle` / `bgfx::ProgramHandle` 字段（setter/getter 全暴露），frontend 每用一次就要包含 `<bgfx/bgfx.h>` 并面对 bgfx 类型。
+
+```
+        现状（Phase 3.6 末）
+Phoskia ──compileToProgram──> .bin bytes
+                                   │
+        ┌──────────────────────────┘
+        ▼
+AYRenderer (frontend)：byte[] → bgfx::createShader → bgfx::ShaderHandle
+                                  → bgfx::createProgram → bgfx::ProgramHandle
+                                  → bgfx::createUniform → UniformHandle
+                                  ▼
+                          把 handle 给 draw call
+        (frontend 必须包含 <bgfx/bgfx.h>；耦合泄露)
+```
+
+**Phase 4 目标**（本节新设计）：把上述 4 步 bgfx 调用**内化进 AYShader**，frontend 拿到一个 `ShaderResource`（opaque handle），不需要知道背后是 bgfx。整个前端变成：
+
+```
+Phoskia ──compileToShaderResource──> ShaderResource (opaque, 引擎无关)
+                                          │
+                                          ▼
+                                 AYRenderer::draw(material, ShaderResource)
+                                 bgfx 完全藏在 AYShader 内部
+```
+
+详见 §8.5。
+
+### 8.5 Opaque ShaderResource API（Phase 4 设计）
+
+**核心动机**：把 bgfx 调用链从 frontend 收回 AYShader 内部。frontend 一次 `compileToShaderResource(src)` 拿到 opaque handle，自此只跟引擎无关类型打交道。
+
+#### 8.5.1 类型分层
+
+```cpp
+namespace ayt::shader {
+
+// 前端（Phoskia）发出的是"无形"产物的三种形态，frontend 按需选一种：
+//
+//   1) CompiledShaderProgram   — 纯字节（已实现，Phase 3.6）
+//   2) ShaderResource          — 不透明 handle（Phase 4 主交付）
+//   3) ShaderProgram (legacy)  — bgfx-handle 直接暴露类（Phase 1 老接口，Phase 4 后退役）
+//
+// 引擎集成：必须用 ShaderResource。byte 形态只用于 cache IO / debugging。
+// 老 `ShaderProgram` 类保留作为内部实现细节，不进 frontend API。
+
+class ShaderResource {
+public:
+    ShaderResource() = default;          // 空 handle；isValid() == false
+    bool isValid() const noexcept;
+
+    // === 绑定 ===
+    //
+    // 在 Phoskia 源码中声明的 uniform / texture / UBO / storage，frontend
+    // 通过名字查询 handle。handle 是 opaque ID（实现上 bgfx::UniformHandle
+    // 或 AYShaderCache 内部 index），frontend 拿到的值不能解读。
+    //
+    BindingId getUniformBinding(const std::string& name) const;       // 失败返回 InvalidBinding
+    BindingId getTextureBinding(const std::string& name) const;
+    BindingId getUniformBlockBinding(const std::string& name) const;
+    BindingId getStorageBufferBinding(const std::string& name) const;
+
+    // === 帧期操作（每 draw call）===
+    //
+    // 抽象掉 bgfx::setUniform / setTexture / submit。frontend 一次给值，
+    // AYShader 决定怎么排版（bgfx 平台下走 bgfx::setUniform；future WGSL
+    // backend 走 wgpu queue.writeBuffer + setBindGroup）。
+    void setUniform(BindingId id, const void* data, size_t sizeBytes) const;
+    void setTexture(uint8_t stage, BindingId id, const TextureHandle& tex) const;
+
+    // === 提交（与 AYRenderer draw call 配套）===
+    //
+    // 一次性提交本帧所有 uniform / texture 设置；AYShader 把它们攒成
+    // bgfx batch（DX11 下一次性 update，零额外 draw call cost）。
+    void submit(const DrawCallContext& ctx) const;
+
+private:
+    friend class ShaderResourcePool;    // 创建受 pool 管理，不允许外部 new
+    std::shared_ptr<ShaderResourceImpl> _impl;   // pimpl，pimpl 内部含 bgfx handles
+};
+
+using BindingId = uint32_t;             // opaque numeric ID
+constexpr BindingId InvalidBinding = 0; // 0 = 不存在 / 无效
+
+// 用法：frontend 不直接持有 bgfx handle；通过 AYRenderer::submit 时把
+// ShaderResource 当作一个 handle 传给 draw call 即可。
+} // namespace ayt::shader
+```
+
+#### 8.5.2 Compilation entry point
+
+```cpp
+namespace ayt::shader::phoskia {
+
+class Compiler {
+public:
+    // 旧 (Phase 3.6) — 保留；用于 cache IO / 跨后端 binary diff
+    CompiledShaderProgram compileToProgram(const std::string& src);
+    CompiledShaderProgram compileToProgram(const std::string& src,
+                                            const CompileOptions& opts);
+
+    // 新 (Phase 4) — frontend 主路径
+    // CompileToShaderResource 把 4 步 bgfx 调用内化进 AYShader：compile →
+    // shaderc → bgfx::createShader → bgfx::createProgram → 缓存 handle
+    // pool → 返回 opaque ShaderResource。
+    //
+    // 与 compileToProgram 的区别：
+    //   - 必须有活跃的 ShaderResourcePool（详见 §8.5.4）
+    //   - 失败时返回 ShaderResource{} 空 handle（isValid()==false）
+    //   - 自动 hot-reload 失效缓存（详见 §9）
+    ShaderResource compileToShaderResource(const std::string& src);
+    ShaderResource compileToShaderResource(const std::string& src,
+                                            const CompileOptions& opts);
+};
+}
+```
+
+#### 8.5.3 Hide 实际 contract
+
+**frontend 应该永远见不到**：
+
+| 类型 | 原因 |
+|---|---|
+| `bgfx::ShaderHandle` | bgfx 内部 OPAQUE；frontend 必须不感知 |
+| `bgfx::ProgramHandle` | 同上 |
+| `bgfx::UniformHandle` | 同上；frontend 通过 `BindingId` 间接操作 |
+| `bgfx::TextureHandle` | frontend 自己 graphic resource 仍持有，但**通过 `ShaderResource::setTexture` 喂给 shader 不直接调 bgfx** |
+| `BGFXShaderFiles::vs/fs/varyingDef` | Phase 1 老字段，Phase 4-H 顺手删除 |
+| `BGFXConvertResult` | backend 内部形态 |
+
+**frontend 直接见到的**：
+
+| 类型 | 说明 |
+|---|---|
+| `ShaderResource` | opaque handle（pimpl） |
+| `BindingId` | uint32_t，opaque |
+| `TextureHandle` | 由 AYRenderer 提供，**driver 中立**（bgfx backend / 未来 wgpu backend 都用同一类型） |
+| `CompiledShaderProgram` | 调试 / 跨进程传输用 |
+| `CompileOptions` | 已有 |
+| `CompileResult` | 已 deprecated（保留向后兼容） |
+
+#### 8.5.4 Pool 拥有权 + 生命期
+
+```cpp
+namespace ayt::shader {
+
+// Pool 是 ShaderResource 的"工厂 + 所有者"。Phase 4 主交付物之一；
+// engine 启动时构造一个 pool，destroy 时所有 ShaderResource 句柄随之失效。
+//
+// 设计动机：
+//   - ShaderResource 内部含 bgfx handles（pimpl → `bgfx::ShaderHandle`），
+//     bgfx::shutdown() 之后这些 handle 就是悬空的。让 pool 在 shutdown
+//     之前 release 所有 handle，frontend 没法误用。
+//   - pool 也管 cache（同 source 二次 compile 走 byte-cache hit），见 §9
+//   - pool 也管 hot-reload（source 改了 → 旧 ShaderResource 自动 invalidate）
+class ShaderResourcePool {
+public:
+    ShaderResourcePool();
+    ~ShaderResourcePool();
+
+    // 主调用：compile + link + cache + return
+    ShaderResource acquire(const std::string& src,
+                           const CompileOptions& opts = {},
+                           const std::string& cacheKey = "");
+
+    // 显式释放（pool 析构时也会自动）
+    void release(ShaderResource& res);
+
+    // 全局资源回收（bgfx::shutdown 之前 engine 调一次；保证安全退出）
+    void shutdown();
+
+    // Hot-reload（开发模式）：pool 检测到 source 改了，自动让缓存中的
+    // ShaderResource 失效。frontend 调用 path 不需要变 — 反正它只是用
+    // opaque handle。开发期 vs release 期行为不同 — release 期这个 hook
+    // 是 no-op。
+    void setHotReloadEnabled(bool enabled);
+
+private:
+    std::unique_ptr<ShaderResourcePoolImpl> _impl;
+};
+
+}
+```
+
+**frontend 启动 pattern**：
+
+```cpp
+// Engine startup (AYEngine::init 或类似处)
+ayt::shader::ShaderResourcePool shaderPool;
+shaderPool.setHotReloadEnabled(EngineDebugMode());
+// 在 Engine 关闭前调一次（保证在 bgfx::shutdown() 之前）
+shaderPool.shutdown();
+```
+
+##### 8.5.4.1 Opaque handle ABI 收紧（Phase 4-O）
+
+> **借鉴**：[bgfx::ShaderHandle (uint16_t)](https://github.com/bkaradzic/bgfx/blob/master/include/bgfx/bgfx.h#L52) + [Vulkan VkPipeline (opaque handle)](https://www.khronos.org/registry/vulkan/specs/1.3-extensions/man/html/VkPipeline.html) + [Microsoft COM IUnknown*](https://learn.microsoft.com/en-us/windows/win32/com/com-object-interfaces)
+
+**当前 §8.5 状态（Phase 4-A 初版）**：
+
+```cpp
+class ShaderResource {
+    // pimpl：handle 在 Impl 内部
+    std::shared_ptr<const ShaderResourceImpl> _impl;
+    // frontend 仍然能看见一些 metadata 字段（name / variants / bindings）
+    std::string _name;
+    std::vector<Variant> _variants;
+    std::unordered_map<std::string, BindingId> _bindings;
+};
+```
+
+问题：
+- frontend 可以存整个 `ShaderResource` 对象（"res._name" / "res._bindings"），但 ABI 与具体 backend 强相关
+- pool LRU 释放某个 shader 时 frontend 持有的 `ShaderResource` 拷贝里的 `_impl` 还指向旧 Impl
+
+**Phase 4-O 目标**：
+
+```cpp
+// include/AYShaderProgram.h
+namespace ayt::shader {
+
+// 1) ShaderResource 是纯 opaque handle，**单一公开字段**
+class ShaderResource {
+public:
+    ShaderResource() noexcept;                      // 默认构造 = 空
+    explicit ShaderResource(uint64_t id) noexcept;  // pool 内部用
+    
+    bool isValid() const noexcept;
+    void reset() noexcept;
+    
+    // 比较 / hash：可作为 std::unordered_map key
+    bool operator==(const ShaderResource& o) const noexcept;
+    bool operator!=(const ShaderResource& o) const noexcept;
+    
+    // copy/move 都允许（只复制 _id，不复制 backend 状态）
+    ShaderResource(const ShaderResource&) = default;
+    ShaderResource& operator=(const ShaderResource&) = default;
+    
+    // 2) frontend 用 handle 调 ops（不是直接拿 metadata）
+    BindingId getUniformBinding(std::string_view name) const;
+    BindingId getTextureBinding(std::string_view name) const;
+    void setUniform(BindingId id, const void* data, size_t bytes);
+    void setTexture(BindingId id, TextureHandle h);
+    void submit(DrawCallContext& ctx);
+    
+private:
+    uint64_t _id = 0;  // ← **唯一公开字段；pimpl 在 ShaderResourcePool 内部表里**
+};
+
+// 2) Pool 是 ShaderResource 的实际所有者（"handle table"）
+class ShaderResourcePool {
+    std::unordered_map<uint64_t, std::unique_ptr<ShaderResourceImpl>> _table;
+    // LRU / explicit release / shutdown 都更新这张表
+};
+
+} // namespace
+```
+
+**关键 contract**：
+
+```cpp
+// frontend 可以随便拷贝、移动 ShaderResource —— 只复制 _id：
+ShaderResource a = pool.compile(src);
+ShaderResource b = a;   // OK; b._id == a._id
+auto map_key = std::unordered_map<ShaderResource, MyData>{};
+map_key[a] = data;      // OK; ShaderResource 是 hashable
+```
+
+**Pool 内部 LRU 释放（不会让 frontend handle 失效）**：
+
+```cpp
+// pool 内部实现：
+class ShaderResourcePool::Impl {
+    std::unordered_map<uint64_t, std::unique_ptr<ShaderResourceImpl>> _table;
+    std::list<uint64_t> _lru_order;
+    
+    void evictIfNeeded() {
+        if (_table.size() > _max_size) {
+            uint64_t evictId = _lru_order.front();
+            _lru_order.pop_front();
+            _table.erase(evictId);  // ← 释放 Impl
+            // frontend 持有的 ShaderResource{evictId} 仍合法（_id 不变）
+            // 但下次调 .submit() 时 pool 检测到 _id 不在 _table → return null / warn
+        }
+    }
+};
+```
+
+**§14.6.1 测试守门**：
+- `Test_HandleABI`：sizeof(`ShaderResource`) == 8（uint64_t）；copy / move 后 `_id` 不变
+- `Test_LRUEviction`：pool evict 后 frontend 持有的 `ShaderResource{evicted_id}` 仍合法但 `isValid() == false`
+- `Test_HandleAsMapKey`：`std::unordered_map<ShaderResource, T>` 编译通过
+
+**风险与缓解**：
+
+| 风险 | 缓解 |
+|---|---|
+| handle 重用（uint64 用完）| 64-bit 空间够大（2^64 = 1.8e19）；每 evict 不 reuse id（递增）|
+| frontend 误用 evict 后的 handle | `setUniform/submit` 在 handle invalid 时 no-op + warn（不崩）|
+| `BindingId` 也需要类似收紧 | `BindingId = uint32_t` 已 opaque（§8.5.1）；同 design pattern |
+
+#### 8.5.5 与 binding metadata 的对应
+
+**frontend 不需要从 `CompiledShaderProgram` 读 `BGFXUniform{name, type, count}` 然后**自己**映射到 bgfx**：
+
+```cpp
+// 旧 path（Phase 3.6，frontend 手做 bgfx wire）
+auto prog = phoskia.compileToProgram(src);
+for (const auto& u : prog.uniforms) {
+    bgfx::UniformHandle h = bgfx::createUniform(u.name.c_str(),
+                                                toBgfxType(u.type),
+                                                u.count);
+}
+// 还要把 type name (string) → bgfx::UniformType::Enum 映射
+// 还要把 BGFXTexture → bgfx::TextureHandle 映射
+// frontend 必须包含 <bgfx/bgfx.h>，还必须知道 toBgfxType() 在哪里
+```
+
+**新 path**：
+
+```cpp
+// Phase 4：上述全部移到 AYShader 内部；frontend 只拿 name
+ShaderResource res = phoskia.compileToShaderResource(src);
+BindingId modelViewProjId = res.getUniformBinding("modelViewProj");
+// 给值：直接拿内存字节
+res.setUniform(modelViewProjId, &mvpMatrix, sizeof(mvpMatrix));
+res.submit(drawCtx);
+```
+
+| 名称 | Phoskia 源码 | Phase 4 API |
+|---|---|---|
+| 普通 uniform | `uniform vec3 lightDir;` | `res.getUniformBinding("lightDir")` |
+| Property | `property emission = vec3(0);` | 同上（property 内部就是 uniform） |
+| Texture | `texture2d albedoMap;` | `res.getTextureBinding("albedoMap")` |
+| UBO | `uniformblock Camera { vec3 pos; }` | `res.getUniformBlockBinding("Camera")` → 一整块 std140 |
+| Storage buffer | `storage counters : rwstructuredbuffer<int>` | `res.getStorageBufferBinding("counters")` |
+| Builtin uniform（`u_time` 等 system uniform） | — | 预留 `getBuiltinUniform(...)`，Phase 4+ 决定 |
+
+##### 8.5.5.1 Two-tier cache 设计（Phase 4-Q）
+
+> **借鉴**：[Unreal Derived Data Cache (DDC)](https://docs.unrealengine.com/5.0/en-US/derived-data-cache-in-unreal-engine/) + [Unity AssetBundle cache](https://docs.unity3d.com/Manual/AssetBundlesIntro.html) + [bgfx ShaderCache](https://github.com/bkaradzic/bgfx/blob/master/src/shader.cpp)
+
+**当前 §9 / §8.5 状态（Phase 4-I 单层 binary cache）**：
+
+```
+compile(src) → cacheKey = SHA256(src+defines+backend) → binary cache
+```
+
+问题：
+- **source cache 缺失**：frontend 调试时改 `src` 想看 AST 错误，cache 不会失效到 "重新 parse" 这层；如果 cache hit 直接拿 binary，没有 AST 错误信息
+- **defines 改了** → cache miss → 重新跑 lexer + parser + backend + shaderc。**3 层重复劳动**
+- frontend 想做 incremental compile（"只改了一个 material" → "只重编这一个"）缺支撑
+
+**Phase 4-Q 目标**：
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Two-tier cache                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  Tier 1: Source Cache                                           │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ Key:    SHA256(phoskia source)                           │  │
+│  │ Value:  IRProgram (AST + typed IR + reflection)          │  │
+│  │ Invalidation: source 改了 → 重 parse + semantic           │  │
+│  │ Hit rate: 极高（同一 source 多次 compile）                │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                              ↓                                  │
+│  Tier 2: Binary Cache                                           │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ Key:    SHA256(source + defines + capability             │  │
+│  │                   + platform + profile + includeDirs)    │  │
+│  │ Value:  std::vector<uint8_t>  + bgfx::ShaderHandle       │  │
+│  │ Invalidation: defines/capability/platform/profile        │  │
+│  │                /includeDirs 任意改了 → 重 backend+shaderc │  │
+│  │ Hit rate: 高（跨 defines 变化的部分 binary 可 reuse）     │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**API**：
+
+```cpp
+// AYShaderPool 内部：
+class ShaderResourcePool::Impl {
+    // Tier 1
+    std::unordered_map<std::string, std::shared_ptr<phoskia::IRProgram>> _sourceCache;
+    
+    // Tier 2
+    std::unordered_map<std::string, std::shared_ptr<CompiledBinary>> _binaryCache;
+    
+    // 公开统计（frontend 调试用）
+    struct CacheStats {
+        size_t sourceHits = 0, sourceMisses = 0;
+        size_t binaryHits = 0, binaryMisses = 0;
+    };
+    CacheStats stats() const;
+};
+```
+
+**Invalidation 规则**（写进 §14.6.2 design review checklist）：
+
+| 触发 | Tier 1 | Tier 2 |
+|---|---|---|
+| `src` 改 | miss → 重 parse + semantic | miss → 重 backend + shaderc |
+| `defines` 改 | hit（IR 不变）| miss → 重 backend + shaderc |
+| `capability` 改 | hit | miss → 重 backend（pool 选新 backend）|
+| `platform` / `profile` 改 | hit | miss |
+| `includeDirs` 改 | hit | miss |
+| Phase 4-O LRU 释放 binary cache | — | evict；frontend handle 仍合法（§8.5.4.1）|
+
+**Persistence（可选 Phase 5+）**：
+
+- Tier 1 / Tier 2 都可走 `setCacheDirectory(...)` 落盘
+- 落盘 format：`{hash}.ir.bin` / `{hash}.shader.bin`
+- 启动时 lazy-load；命中跳过 compile
+- 设计类比 Unreal DDC：source 改 hash → 自动 miss；engine 升级改 binary format → version stamp
+
+**§14.6.2 测试守门**：
+- `Test_CacheInvalidation`：改 defines → tier 2 miss、tier 1 hit
+- `Test_CacheStats`：跑 N 次相同 src，stats().binaryHits 递增
+- `Test_CachePersist`：写 cache 到 disk，重启后能命中（Phase 5+）
+
+**风险与缓解**：
+
+| 风险 | 缓解 |
+|---|---|
+| 两层 cache 内存占用翻倍 | Tier 1 IR 比 binary 小一个数量级；可调 max_size |
+| source cache key 用 SHA256 太重 | IR cache hot path 用 `std::unordered_map`；只有 miss-to-disk 时算 SHA256 |
+| 落盘 cache 与 backend version 不匹配 | version stamp 在 cache file header；不匹配全清空 |
+
+---
+
+#### 8.5.6 Phase 4 范围 / 不在范围
+
+| 在 Phase 4 | 不在 Phase 4 |
+|---|---|
+| `ShaderResource` opaque handle 类 | WGSL/WebGPU backend（Phase 5+） |
+| `ShaderResourcePool` 拥有权 + 缓存 | HLSL raw 输出 + DXC 替代（Phase 5+ 候选） |
+| `compileToShaderResource(...)` 入口 | 跨 pool 共享（多个 pool 场景） |
+| bgfx 4 步调用全部内化 | shader variant management（仍是 `[variant name]` + 自动选择） |
+| binding 名 → opaque ID 映射（含 type 推断） | shader pre-warm（提前 compile 不等首次用） |
+| `submit(DrawCallContext)` 整合 | GPU pipeline state object 抽象（Phase 5+） |
+| hot-reload（dev only） | — |
+| Phase 4-H 顺手删 `.sc` 公开字段 | — |
+
+#### 8.5.7 验收 contract
+
+```cpp
+// §8.5 acceptance：
+//
+// 1. frontend 不需要 include <bgfx/bgfx.h>：
+//    - AYShader 主头文件 AYShader.h 不出现 bgfx::* 类型
+//    - 任何 *.h in include/ 不能 bring in bgfx 符号（pimpl 隔离）
+//
+// 2. 关键 API 全部 opaque：
+//    - BindingId is uint32_t
+//    - ShaderResource 是 pimpl
+//    - getXxxBinding("name") 返回 opaque ID
+//
+// 3. compile 链单位一：
+//    - phoskia.compileToShaderResource(src) 等价于
+//      "byte compilation + bgfx wire + cache"，frontend 零额外调用
+//
+// 4. 后端可换：Phase 5+ 切换 WGSL backend 时 frontend 代码不变
+//    （compileToShaderResource 签名不变；PoolImpl 内部切 wgpu）
+//
+// 5. 测试：Test_ShaderCacheIntegration 应验证一个真实 frontend 场景
+//    （取 ShaderResource → setUniform → 模拟 submit）全程零 bgfx header
+//    visible 至 compilation unit。
+```
+
+#### 8.5.8 风险与缓解
+
+| 风险 | 缓解 |
+|---|---|
+| `pimpl` 引入 shared_ptr 开销（每次 ShaderResource 拷贝增加 1 次 atomic refcount） | `ShaderResource` 用 intrusive / SSO 形式（`eastl::intrusive_ptr` 或自制）；Phase 4 后 benchmark |
+| bgfx::createUniform 的 type 字符串 → bgfx::UniformType::Enum 映射表在 AYShader 内部维护，frontend 不知道 | 在 AYShader 内部用 lookup 表（`std::unordered_map<std::string, bgfx::UniformType::Enum>`，named bgfx_TypeNameMap）；不外漏 |
+| hot-reload 误命中（编辑器保存触发误 invalidate） | dev-only feature（release build 编译成空 hook）+ 文件 mtime 检查 + 100ms debounce |
+| pool 顺序析构问题（bgfx 已 shutdown 但 pool 还在） | pool 持有 BGFX 关闭 hook，强制 engine 在 bgfx::shutdown() 之前调 pool->shutdown() |
+| ShaderResource 跨线程使用 | bgfx 本身**不是 thread-safe**；Phase 4 锁 PHOSKIA_CALL_ON_RENDER_THREAD 宏，未来 multi-thread render 再讨论 |
+
+#### 8.5.9 与 Phase 3.6 / Phase 4-H 的关系
+
+| 项 | 关系 |
+|---|---|
+| Phase 3.6 `compileToProgram` | 保留 — cache IO / 调试 / 跨进程传输需要 |
+| Phase 4-H 删 `.sc` 字段 | 不冲突 — backend 内部彻底清理 |
+| 现有 `ShaderProgram` 类（持有 bgfx::ShaderHandle） | **退役**：Phase 4 后只作 ShaderResourceImpl 内部持有，frontend 永不见 |
+| 现有 `AYShaderCache` | 收编进 `ShaderResourcePool::Impl`（cache hit 是 pool 的责任） |
+| Phase 4 内部使用 `CompiledShaderProgram` | **可以** — pool->acquire 内部先 compileToProgram 拿 bytes，再 bgfx::createShader，用完丢弃 — 字节不外漏 |
+
+#### 8.5.10 Engine-driven config consolidation（单一入口设计 — 用户 sign-off 2026-07-01）
+
+**核心论证**：fragment / vertex / compute 是**资源形态**（Phoskia 源码内声明）。但**目标 backend + 目标平台 + shaderc 路径**是**引擎配置**，不是资源属性。当前 `BGFXCompileOptions` 把这两类混在一起 — frontend 想 compile 一段 Phoskia 还要主动选 backend（"bgfx"）和平台（"linux" / "windows"）。这暴露了不该 frontend 见的配置。
+
+**当前痛点**（Phase 3.6 末 / § 8.4 状态）：
+```cpp
+// frontend 现状：compile 时仍要填 backend / platform / include
+phoskia::Compiler compiler;
+phoskia::CompileOptions opts;
+opts.targetBackend = "bgfx";       // ← frontend 选 backend？
+opts.includeDirs  = {bgfxCommon, bgfxSrc};  // ← frontend 知道 bgfx source 在哪？
+opts.platform = "linux";           // ← frontend 知道目标 platform？
+opts.profile = "430";              // ← frontend 选 GLSL profile？
+// 上方 4 个全部是 engine-side config，但散落到每个 call
+```
+
+##### 8.5.10.1 Capability-based backend selection（Phase 4-L）
+
+借鉴 WebGPU `device.adapter.features` / Vulkan `vkPhysicalDeviceFeatures` / bgfx `bgfx::RendererType`——frontend 应该描述**能力需求**，不指定 backend name。
+
+**目标（Phase 4 核心交付）**：
+
+```cpp
+// ===== 引擎 startup：一次性配置（典型是一处） =====
+ayt::shader::ShaderResourcePool shaderPool;
+
+// Phase 4-L 核心：frontend 不再选 "bgfx" 这个字符串，而是描述 capability
+shaderPool.require(ShaderCapability::COMPUTE     // 需要 compute shader
+                 | ShaderCapability::SSBO       // 需要 storage buffer
+                 | ShaderCapability::UBO);      // 需要 uniform buffer
+
+// pool 内部从已注册的 backend 选："bgfx on Vulkan" / "wgpu-native" / 等
+// frontend 永不见 backend name
+
+shaderPool.setShadercExecutable("/path/to/shaderc.exe");
+shaderPool.setBgfxIncludeDirs({"/path/to/common", "/path/to/src"});
+shaderPool.setCacheDirectory("~/.cache/ay/shaders/");
+shaderPool.setHotReloadEnabled(EngineDebugMode());
+
+// ===== frontend per-shader 调用（典型是 N 处） =====
+ayt::shader::ShaderResource r = shaderPool.compile(src);
+// frontend 一行即可；不需要知道 backend / platform / capability 的存在
+// `src` 是 Phoskia 源码字符串
+```
+
+**Capability enum 定义**：
+
+```cpp
+enum class ShaderCapability : uint32_t {
+    NONE             = 0,
+    VERTEX_FRAGMENT  = 1u << 0,   // vs + fs pipeline
+    COMPUTE          = 1u << 1,   // cs pipeline
+    UBO              = 1u << 2,   // std140 binding
+    SSBO             = 1u << 3,   // std430 binding
+    STORAGE_IMAGE    = 1u << 4,   // Phase 5+：rwimage
+    MULTI_TEXTURE    = 1u << 5,   // Phase 5+：texturecube/3d/array
+    ATOMIC           = 1u << 6,   // Phase 5+：atomicAdd/Min/Max
+    INDIRECT_DISPATCH= 1u << 7,   // Phase 6+：dispatchIndirect
+    INTEGER_SAMPLER  = 1u << 8,   // Phase 6+：texture2di/u
+    SHADOW_SAMPLER   = 1u << 9,   // Phase 6+：texture2dshadow
+};
+inline ShaderCapability operator|(ShaderCapability a, ShaderCapability b) { ... }
+```
+
+**Backend 注册**（pool 内部，user 不见）：
+
+```cpp
+// ayt::shader::detail::registerBuiltinBackends(pool):
+//   pool._registerBackend("bgfx-vulkan",  {capability: VF|UBO|SSBO|COMPUTE|...}, factory);
+//   pool._registerBackend("bgfx-d3d11",   {capability: ...}, factory);
+//   pool._registerBackend("wgpu-native",  {capability: ...}, factory);  // Phase 8+
+//
+// 当 pool.require(COMPUTE | SSBO) 被调：
+//   - 遍历注册表 → 找 capability 覆盖的 → 按优先级（"render path 优先" / "mobile 优先"）选
+//   - 缓存选择结果；之后 compile 用同一个 backend
+```
+
+**为什么是 capability-based**：
+- frontend 不该关心 "我用 bgfx 还是 wgpu"——这是实现细节
+- Phase 8+ 加 WGSL backend 时 frontend 代码零改动（capability 接口不变）
+- 与 Unity `GraphicsDeviceType` 抽象 + Vulkan feature query 同构
+
+**§14.6.1 测试守门**：
+- `Test_CapabilityDispatch`：同一个 frontend compile call 在 pool require 不同 capability 时走不同 backend path
+- frontend TU 不出现字符串 "bgfx" / "wgpu" / "hlsl" / "vulkan"（编译期 grep 验证）
+
+**frontend-side `phoskia::CompileOptions` 重设计**——只保留真正 per-call 的字段：
+
+```cpp
+// include/AYPhoskia.h::CompileOptions（Phase 4 后）
+struct CompileOptions {
+    // Variant definitions（per-shader，唯一真正属于 frontend 的字段）
+    // 例：用户对某个材质定义了 [variant useEmission]，
+    // engine 想强制开启 → 通过 defines 喂给编译
+    std::vector<std::string> defines;
+
+    // Debug toggles
+    bool keepSources = false;
+    bool dumpIntermediate = false;
+    std::string dumpDir;
+
+    // ❌ 全部下移到 ShaderResourcePool——Phase 4 删:
+    // - targetBackend（默认由 pool 决定）
+    // - includeDirs（默认从 bgfx source tree 自动定位）
+    // - platform / profile（默认从 pool / bgfx::getCaps 探测）
+    // - enableTypeInference（frontend 真不关心）
+    // - enableSemanticAnalysis（同上）
+};
+
+// pool 入口只接收 per-call 形式：
+class ShaderResourcePool {
+    ShaderResource compile(const std::string& src);                  // 默认 opts
+    ShaderResource compile(const std::string& src, const CompileOptions& opts);
+    ShaderResource compile(const CompileResult& frontedResult);      // 已 parse 复用
+};
+```
+
+**自动 platform 探测合约**：
+
+```cpp
+// ShaderResourcePool 构造时若没显式 setPlatform，
+// 调 bgfx::getCaps() 读当前 runtime 的 renderer type：
+//
+//   bgfx::RendererType::Direct3D11    → platform="windows"   profile="430"
+//   bgfx::RendererType::Direct3D12    → platform="windows"   profile="430"
+//   bgfx::RendererType::OpenGL        → platform="linux"     profile="430"
+//   bgfx::RendererType::Vulkan        → platform="linux"     profile="430"
+//   bgfx::RendererType::Metal         → platform="osx"       profile="metal"
+//   bgfx::RendererType::WebGPU        → platform="wasm"      profile="wgsl"
+//
+// 这把 "platform 选择" 的责任完全从 frontend 拿开。
+// Engine 启动顺序自然保证：
+//   1. bgfx::init(...)
+//   2. ShaderResourcePool pool; ← 此时 bgfx caps 已就绪
+//   3. pool.setDefaultBackend(...)  / setShadercExecutable(...)
+//   4. 之后任意 frontend 调用都不再关心 backend / platform
+```
+
+**frontend 完全见不到了**：
+
+| 旧 public field | 旧可见位置 | Phase 4 后位置 | frontend 还见？ |
+|---|---|---|---|
+| `targetBackend` | `phoskia::CompileOptions` | pool 构造 / `setDefaultBackend` | ❌ |
+| `platform` / `profile` | `BGFXCompileOptions` | pool `setPlatform` 或 auto from bgfx caps | ❌ |
+| `includeDirs` | `BGFXCompileOptions` | pool `setBgfxIncludeDirs` 或 auto from bgfx source tree | ❌ |
+| `shadercPath` | `BGFXCompileOptions` + `AYShadercDriver::setDefaultExecutable` | 收到 pool 内部 | ❌ |
+| `enableTypeInference` / `enableSemanticAnalysis` | `phoskia::CompileOptions` | pool 内部 (Phase 4 默认 on；frontend 不该关) | ❌ |
+| `defines` | `phoskia::CompileOptions` | **保留** — 这才是真正 per-shader 的字段 | ✅ |
+| `keepSources` / `dumpIntermediate` / `dumpDir` | `phoskia::CompileOptions` | **保留** — debug toggle per-shader 合理 | ✅ |
+
+**cache key 设计**：
+cache hit 必须依赖全部 backend 配置都相同——否则一份"linux profile=430" 的 cache 给"windows profile=440" 用就错了。
+
+```cpp
+struct CacheKey {
+    std::string           sourceHash;      // SHA256 of phoskia source
+    std::string           definesHash;     // SHA256 of defines[]
+    std::string           backendName;     // "bgfx"
+    std::string           platform;        // "linux" / "windows" / ...
+    std::string           profile;         // "430" / "440" / "metal" / "wgsl"
+    std::vector<std::string> includeDirs; // bgfx source dirs (cache 失效时重 hash 一次)
+};
+// 任意字段变了 → cache miss → 重新 compile
+```
+
+**配置层级命名（统一命名空间）**：
+
+| 概念 | 命名 | 例子 |
+|---|---|---|
+| 引擎的图形 API 选择 | `backend` | `"bgfx"` / `"hlsl"`（Phase 8） |
+| 引擎的 OS / runtime 平台 | `platform` | `"linux"` / `"windows"` / `"metal"` |
+| 引擎的 shader 兼容 profile | `profile` | `"430"` / `"metal"` / `"wgsl"` |
+| include 路径 | `includeDirs` | bgfx common.sh + src |
+| compile 调用方差异（variant / debug） | `defines` / `keepSources` / `dumpIntermediate` | per-call |
+
+**phase 4 完整 frontend 单一入口 contract**：
+
+```cpp
+// 唯一允许的 frontend 调用：
+ShaderResource r = pool.compile(src);
+// 唯一允许的 frontend 配置（per-call）：
+pool.compile(src, {.defines={"BGFX_VARIANT_USE_EMISSION"},
+                   .keepSources=true});
+// 唯一不允许的 frontend 行为：知道 backend / platform / include 任何一词
+```
+
+**对测试的连锁影响**：
+
+| 测试类型 | 影响 |
+|---|---|
+| `Test_ShaderCacheIntegration`（Phase 4 新增） | 验证：compile 调用不需要 frontend 关心 backend——整个 TU 不带 bgfx header |
+| `Test_Phoskia` / `Test_BGFXConverter` | 当前每个测试都带 `BGFXCompileOptions`；Phase 4-A 后迁到 pool-based，frontend 测试 fixture 用 `ShaderResourcePool` setup |
+| `Test_ShaderCompile`（e2e） | 改用 pool；与现有 shaderc 设置复用（pool 内部仍调 `setDefaultExecutable`） |
+| 现有 engineless 测试 | 单元测试可保持 direct `BGFXCompileOptions` 路径（pool 是 wrapper，不需要强制替换） |
+
+**风险与缓解**：
+
+| 风险 | 缓解 |
+|---|---|
+| Pool 配置错误（忘了 setShadercExecutable）→ 第一次 compile 才报错 | `pool.compile()` 立即 fail-fast：构造期不强制，但第一次 compile 检查必需字段齐；返回 `ShaderResource{}` 空 handle（isValid()==false） |
+| bgfx::getCaps() 在 pool 构造时还没 init bgfx → 探测失败 | pool 暴露 `lazyProbePlatform()`：首次 compile 时才探；或要求 `pool.bindRendererType(rendererType)` 显式注入（避免隐式顺序依赖） |
+| shaderc.exe / bgfx source tree 路径在用户机器变化 | pool startup 配置失败 → 友好错误（带"在哪设置这个 config" 提示） |
+| cache key hash 漏算某个字段 → cache false hit | 测试覆盖：改 pool config 后 cache miss（用 ingest rate 检测） |
+| Pool 接口破坏性变化（Phase 4 中途） | 设计上 Pool API 一次定下，**之后只追加**——frontend 编写时即按 Phase 4 末形态写 |
+
+**与 Phase 4-K e2e 测试的 contract**：
+
+```cpp
+// Test_ShaderCacheIntegration.cpp（Phase 4-K 新增文件）：
+TEST_CASE(phase4_no_bgfx_header_in_frontend_tu) {
+    // grep / static_assert:
+    // - AYShader.h 不含 bgfx::* 类型
+    // - AYShaderProgram.h 不含 bgfx::* 类型
+    // - 任何调用 ShaderResource API 的 TU 不含 #include <bgfx/bgfx.h>
+}
+
+TEST_CASE(phase4_pool_drives_everything) {
+    ayt::shader::ShaderResourcePool pool;
+    pool.setDefaultBackend("bgfx");
+    pool.setShadercExecutable(...);
+    pool.setBgfxIncludeDirs({...});
+    pool.setPlatform("linux");        // 显式（无 bgfx runtime 时）
+    pool.setGLSLProfile("430");
+
+    // 唯一允许 frontend 做的：
+    auto r = pool.compile("material X { vertex { ... } fragment { ... } }");
+    CHECK(r.isValid());
+    // frontend 不需要知道 backend 是 bgfx、platform 是 linux、profile 是 430
+}
+
+TEST_CASE(phase4_compile_thread_id_compute) {
+    // 验证：compute shader 与 vertex/fragment 同样走 pool 单入口；
+    // backend 选 compute 路径（pool 内部基于 IR 形状）
+    pool.compile("compute Foo { let idx = thread_id.x; storage counters...; }");
+}
+```
+
+**Phase 4-A / 4-B 调整**：原 §8.5.4 的 `ShaderResourcePool` 需要扩展为持有以下字段：
+
+```cpp
+class ShaderResourcePool {
+public:
+    // === Engine startup config ===
+    void setDefaultBackend(const std::string& name);   // "bgfx"
+    void setShadercExecutable(const std::string& path);
+    void setBgfxIncludeDirs(std::vector<std::string> dirs);
+    void setPlatform(const std::string& p);            // "linux" 等
+    void setGLSLProfile(const std::string& p);         // "430" 等
+    void setAutoProbeFromRendererType(bool enable);   // 默认 true
+    void bindRendererType(bgfx::RendererType::Enum);  // 显式注入（可选）
+    void setCacheDirectory(const std::string& dir);    // ~/.cache/ay/shaders/
+    void setHotReloadEnabled(bool enable);
+    void setThreadingModel(ThreadingModel m);          // Phase 4 暂 single
+
+    // === Frontend per-call ===
+    ShaderResource compile(const std::string& src);
+    ShaderResource compile(const std::string& src, const CompileOptions& opts);
+
+    // === Pool lifetime ===
+    void shutdown();  // 在 bgfx::shutdown() 之前调
+
+private:
+    std::unique_ptr<ShaderResourcePoolImpl> _impl;
+};
+```
+
+**Backend 注册**也并入 pool：
+
+```cpp
+// 多 backend 支持——pool 同时持有多个 backend factory
+class ShaderResourcePool {
+    void registerBackend(const std::string& name, BackendFactory factory);
+};
+
+// setDefaultBackend("bgfx") 实际是从已注册 backend 选默认
+// Phase 8+ setDefaultBackend("hlsl") 时只切 backend name，pool 自身不动
+```
+
+**`phoskia::CompileOptions` 重设计后真正 frontend 见到**（Phase 4 后）：
+
+```cpp
+// frontend 唯一 per-call 配置：
+struct CompileOptions {
+    std::vector<std::string> defines;       // [variant] 编译期强制
+    bool keepSources = false;
+    bool dumpIntermediate = false;
+    std::string dumpDir;
+    // ❌ 全部 backend / 平台 / 路径 config 已下移到 pool
+};
+
+// 注：整个 `targetBackend` 字段被删——单 backend 模式下不必要，
+// 多 backend 时由 pool.setDefaultBackend() 决定
+```
+
+**总结 — 用户提出的"单一入口"设计的 contract 三连**：
+
+1. **Engine 启动**：一次调 `ShaderResourcePool::set*()` 把所有"引擎配置"配齐（backend / shaderc / platform / include / cache / hot-reload）。frontend 不再拥有这些知识。
+2. **Frontend per-shader**：一次调 `pool.compile(src[, opts])`，opts 只含 frontend 该管的（defines / debug）。
+3. **验证**：`Test_ShaderCacheIntegration` 测试——frontend 调用方 TU 不带 bgfx header；pool 内含 bgfx header（pimpl 隔离）。
+
+**fronted vs backend 职责拆分（Phase 4 末）**：
+
+| 阶段 | 谁负责 | 例子 |
+|---|---|---|
+| Engine startup | engine / engine-init code | `pool.setDefaultBackend("bgfx")`, `pool.setPlatform()`, `pool.setBgfxIncludeDirs()` |
+| Engine runtime (per shader) | engine / game code | `pool.compile(src)` / `pool.compile(src, opts)` |
+| Backend 内部 | AYShader 库 | shaderc 调用 + bgfx createShader/createProgram + cache lookup |
+| Frontend-API 内部 | AYShader 库 | opaque handle / submit / 帧期 batch upload |
+
+---
+
+### 8.6 Structured Diagnostic API（Phase 4-N）
+
+> **借鉴**：[rustc Diagnostic](https://rustc-dev-guide.rust-lang.org/diagnostics.html) + [Clang SourceLocation](https://clang.llvm.org/doxygen/classclang_1_1SourceLocation.html) + [TypeScript DiagnosticWithLocation](https://github.com/microsoft/TypeScript-wiki/blob/main/Architectural-Overview--Diagnostics.md)
+
+**当前痛点**（Phase 3.6 末 / §8.4 状态）：
+
+```cpp
+struct CompilerError {
+    std::string message;   // ← only a string; frontend must parse "line N:" to locate
+};
+```
+
+Frontend 拿到 error 想做 "跳到编辑器第 N 行第 M 列高亮" — **必须 regex 解析 message 字符串**。这是 1970s 设计。
+
+**Phase 4-N 目标**：
+
+```cpp
+// include/AYShaderProgram.h
+namespace ayt::shader {
+
+enum class DiagnosticSeverity : uint8_t {
+    NOTE,
+    WARNING,
+    ERROR,
+    FATAL,
+};
+
+struct SourceLocation {
+    std::string sourceFile;   // 相对路径 / "<input>" / "<pool cache>"
+    uint32_t    line   = 0;   // 1-based
+    uint32_t    column = 0;   // 1-based（UTF-8 code unit；byte offset 也可）
+    uint32_t    offset = 0;   // 0-based byte offset（备选）
+};
+
+struct PhoskiaDiagnostic {
+    DiagnosticSeverity severity = DiagnosticSeverity::ERROR;
+    std::string        message;
+    SourceLocation     location;
+    std::vector<SourceLocation> notes;     // related location (e.g. "first declared here")
+    std::vector<std::string>     hints;    // 修复建议 (e.g. "did you mean 'vec3'?")
+    std::string        errorCode;          // e.g. "E0301" - machine-readable
+};
+
+struct CompiledShaderProgram {
+    // ... 已有字段
+    std::vector<PhoskiaDiagnostic> errors;     // 替代 CompilerError
+    std::vector<PhoskiaDiagnostic> warnings;   // 替代 std::string warnings
+};
+
+} // namespace
+```
+
+**前端消费**：
+
+```cpp
+// IDE 集成（直接消费结构体）：
+for (const auto& diag : prog.errors) {
+    editor.highlightRange(diag.location.sourceFile,
+                         diag.location.line,
+                         diag.location.column,
+                         diag.severity);
+    if (!diag.hints.empty()) {
+        editor.showQuickFix(diag.hints.front());
+    }
+}
+
+// CLI 输出（CLI 内部走 toHumanString() helper）：
+// error[E0301]: 'hello' is not a builtin type
+//   --> assets/unlit.phoskia:12:5
+//    |
+// 12 |     uniform hello x;
+//    |            ^^^^^ expected: float, vec2, vec3, vec4, ...
+//    |
+//    = help: did you mean 'vec3'?
+```
+
+**与现有 `CompilerError` 的兼容**：
+
+| 阶段 | 动作 |
+|---|---|
+| Phase 4-N | 加 `PhoskiaDiagnostic`，`CompiledShaderProgram` 同时有 `errors` (新) + `errors_legacy_` (旧 string) |
+| Phase 5 | `errors_legacy` 标 `[[deprecated]]` |
+| Phase 6 | 删 `errors_legacy`（按 §0 API stability，需 minor version bump） |
+
+**§14.6.3 测试守门**：
+- `Test_DiagnosticStructure`：每个错误类型至少 1 个 test case 验证 `location.line/column/sourceFile` 正确
+- `Test_DiagnosticHumanFormat`：snapshot 测试 human-readable 输出
+- `Test_DiagnosticJSONFormat`：可选 Phase 5+ 加 `setDiagnosticFormat(JSON)`
+
+**风险与缓解**：
+
+| 风险 | 缓解 |
+|---|---|
+| 错误信息质量下降（结构化比字符串啰嗦） | 保持 `toHumanString()` helper 默认模仿 rustc 格式 |
+| 升级期 frontend 仍在用 `errors[i].message` | 双字段共存期至少 1 个 minor version |
+| Location 在 parser 阶段没收集全 | 强制每条 error 都有 location（没 location 用 `SourceLocation{"<input>", 0, 0}` 兜底） |
+
+---
+
+### 8.7 Reflection from Phoskia AST（Phase 5+）
+
+> **借鉴**：[SPIR-V reflection](https://github.com/google/spirv-reflect) + [DXIL reflection](https://github.com/microsoft/DirectXShaderCompiler/wiki/DXIL-Programming-Guide) + [Unreal Material Function](https://docs.unrealengine.com/5.0/en-US/material-functions-in-unreal-engine/)
+
+**当前痛点**（Phase 3.6 末 / §8.4 状态）：
+
+```cpp
+struct CompiledShaderProgram {
+    std::vector<BGFXUniformBlock> uniformBlocks;   // ← bgfx 解析的
+    std::vector<BGFXStorageBuffer> storageBuffers; // ← bgfx 解析的
+    std::vector<BGFXUniform>      uniforms;
+    std::vector<BGFXTexture>      textures;
+};
+```
+
+这 4 个 reflection 字段是 **从 shaderc 输出的 binary parse 出来的**。问题：
+- 跟 Phoskia source 不一致时 frontend 不知道哪个对（"我说声明了 Lighting 但 reflection 没看到 → bug 在哪？"）
+- bgfx parser 表达力有限（不会告诉我们 "这个 UBO 是 std140 layout")
+- Phase 8+ 换 backend 时 reflection 要重写
+
+**Phase 5+ 目标**：
+
+```cpp
+namespace ayt::shader::phoskia {
+
+// 1) Reflection 结构由 Phoskia AST 直接生成（不是 binary parse）
+struct ReflectionMember {
+    std::string name;
+    std::string type;            // "vec4" / "mat4" / "float"
+    uint32_t    offset = 0;      // byte offset in block
+    uint32_t    size   = 0;      // byte size
+    uint32_t    arraySize = 1;   // 1 = scalar/vector/matrix; >1 = array
+};
+
+struct ReflectionBlock {
+    std::string name;
+    std::string layout;          // "std140" / "std430"
+    uint32_t    binding = UINT32_MAX;  // explicit binding; UINT32_MAX = auto
+    uint32_t    size    = 0;      // total block size
+    std::vector<ReflectionMember> members;
+};
+
+struct ReflectionTexture {
+    std::string name;
+    std::string samplerType;     // "sampler2D" / "samplerCube" / "sampler3D" / ...
+    uint32_t    binding = UINT32_MAX;
+};
+
+struct ReflectionStorageBuffer {
+    std::string name;
+    std::string layout;          // "std430"
+    uint32_t    binding = UINT32_MAX;
+};
+
+struct Reflection {
+    std::vector<ReflectionBlock>        uniformBlocks;
+    std::vector<ReflectionStorageBuffer> storageBuffers;
+    std::vector<ReflectionTexture>      textures;
+    std::vector<ReflectionMember>       uniforms;       // non-block uniforms
+};
+
+} // namespace
+
+// 2) CompiledShaderProgram 加 reflection 字段：
+struct CompiledShaderProgram {
+    // ...
+    phoskia::Reflection reflection;   // ← 来自 Phoskia AST，frontend 可信
+};
+```
+
+**关键 contract**：
+
+```cpp
+// Phase 5 测试：reflection 跟 shaderc binary parse 出来的 metadata 必须一致
+// 不一致 → program.errors[] 加 diagnostic，frontend 知道 backend 出了问题
+TEST_CASE(reflection_matches_shaderc_binary_parse) {
+    // 编译同一段 source
+    //   reflection_a = 来自 Phoskia AST
+    //   reflection_b = 来自 shaderc 二进制 parse
+    // CHECK(reflection_a.uniformBlocks == reflection_b.uniformBlocks)
+}
+```
+
+**优势**：
+- frontend 信任 reflection（不再需要在 binary parse 上 hack）
+- Phase 8+ 换 backend 时 reflection 形态不变（来自 Phoskia AST）
+- "你声明了什么" vs "shader binary 实际有什么" 不一致是 backend 的 bug，由 `AYBGFXConverter` self-check 负责
+
+**Phase 5+ 落地路径**：
+- 5-A：Reflection 数据结构 + Phoskia AST generator（替换 `BGFXUniformBlock` 等 4 个字段）
+- 5-B：reflection vs shaderc binary parse 一致性 self-check（test + production 双重）
+- 5-C：标 `BGFXUniformBlock` 等 4 个字段 `[[deprecated]]`
+- 6-A：删 deprecated 字段
+
+---
+
+### 8.8 Result<T, E> API 长期目标（Phase 6+）
+
+> **借鉴**：[Rust Result<T, E>](https://doc.rust-lang.org/std/result/enum.Result.html) + [C++23 std::expected](https://en.cppreference.com/w/cpp/utility/expected) + [Go (value, err) tuple](https://go.dev/blog/error-handling-and-go)
+
+**Phase 4-N 的 `bool success + vector<errors>` 是过渡形态**。Phase 6+ 目标：
+
+```cpp
+// C++23：
+#include <expected>
+template<typename T, typename E>
+using Result = std::expected<T, E>;
+
+using CompileResult_ = Result<ShaderResource, CompileDiagnostics>;
+
+// 调用方：
+auto r = pool.compile(src);
+if (!r) {
+    for (const auto& d : r.error().diagnostics) {
+        // IDE highlight
+    }
+    return;
+}
+auto& shader = *r;  // ShaderResource
+```
+
+**兼容路径**（Phase 6 入口）：
+- 加 overload `Result<ShaderResource, CompileDiagnostics> compileResult(...)`，保留旧的 `ShaderResource compile(...)`（其内部抛 `ShaderCompileException` on error）
+- Phase 7 删 overload
+
+**风险与缓解**：
+
+| 风险 | 缓解 |
+|---|---|
+| MSVC C++23 `std::expected` 未完全支持 | 用 `tl::expected` (backport) 或自己实现 lightweight `Result<T, E>` |
+| Result API 改变 ABI | 走 §0 minor version bump |
+| Frontend 代码 if-else 改 try-catch 改 expected 链 | 提供 migration helper（`AY_EXPECTED_VALUE` macro）|
+
+---
 
 ### 新增后端步骤
 
@@ -1246,11 +2427,52 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 - [ ] 跨后端优化（dead code、constant folding）— 在 SSA IR 上做
 - [ ] **Ray shader 架构**（独立于 compute 的路径）
 
-### Phase 4: ShaderGraph 与工具链
-- [ ] 节点图数据结构
-- [ ] 节点 → AST 转换
-- [ ] 节点序列化
-- [ ] 资源打包与缓存
+### Phase 3.6 — 产品化收尾：`.sc` 作为 backend 内部细节 ✅ 完成（2026-07-01）
+
+- [x] **`AYShadercDriver` 抽象**（commit `6c332b0`）— 从 `Test_ShaderCompile` plumbing 提到 production；封装 path 发现 + temp file + spawn
+- [x] **`CompiledShaderProgram` + `compileToBinary()`**（commit `c2d128b`）— `.bin` bytes 走出 frontend；`.sc` 字段标 `[[deprecated]]`
+- [x] **`Compiler::compileToProgram()` + env precedence**（commit `465eec6`）— 三个 overload（default / opts / out-param SSO-safe）；`AY_PHOSKIA_KEEP_SOURCES` / `AY_PHOSKIA_DUMP_SC` 双 env with true-wins OR
+- [x] **shaderc 路径重设计**（commit `29db73c`，sign-off 2026-07-01）— **删除** env var / CMake hint / PATH 自动发现；改 static setter `setDefaultExecutable()` + 默认 ctor lookup。引擎一启动调一次即可。
+- [x] **e2e 测试 plumbing 重写**（commit `29db73c`）— `Test_ShaderCompile.cpp` 1024 → 454 行；8 个 e2e 直接调 `compileToProgram()`
+- [x] **unit-test `.output.find` 重映射 + golden joiner**（commit `a96b521`）— `Test_Phoskia` 47 个 + `Test_BGFXConverter` 1 个 + `Test_GoldenFiles` joiner 全切到 `program.sources`；`out.sources` populate 提到 shaderc 初始化之前；9 个 `.sc` baseline 不动
+- [x] **env precedence + dump_dir 测试**（commit `44e6158`）— 4× `AY_PHOSKIA_DUMP_SC` precedence + `compileToProgram_respects_dump_dir`；`unsetenv` 纪律
+- [x] Phase 3.6 step list 完整闭合 — 总测试 917 → **944/944 PASS**
+
+详见 §8.4（旧版本，本文末）+ §8.5（Phase 4 衔接）。
+
+### Phase 4: Opaque ShaderResource API + bgfx wire-up（**当前最高优先**，设计见 §8.5）
+
+> **2026-07-01 sign-off**：shader 之后用 bgfx 接口，但**隐藏具体 API**。frontend 不再见到 `bgfx::ShaderHandle` / `bgfx::ProgramHandle` / `bgfx::UniformHandle`。
+
+| Block | 范围 | 估算 | 依赖 |
+|---|---|---|---|
+| 4-A | **`ShaderResource` opaque handle class**（pimpl 隔离 bgfx types；公开 API：`getUniformBinding(name)` / `getTextureBinding(name)` / `getUniformBlockBinding(name)` / `getStorageBufferBinding(name)` / `setUniform(id, data, size)` / `setTexture(stage, id, tex)` / `submit(DrawCallContext)`） | 1.5 天 | — |
+| 4-B | **`ShaderResourcePool` 工厂 + 拥有权 + 引擎配置中心**（friend 限定 ShaderResource 构造；shutdown 释放所有 handle；hot-reload dev-only hook；cache 收编；**新增**：`setDefaultBackend` / `setShadercExecutable` / `setBgfxIncludeDirs` / `setPlatform` / `setGLSLProfile` / `setAutoProbeFromRendererType` / `bindRendererType` 等 startup 配置；详见 §8.5.10） | 2 天 | — |
+| 4-C | **`Compiler::compileToShaderResource(src[, opts])`**（一次拿 opaque handle；内部 compileToProgram + bgfx::createShader + bgfx::createProgram + cache lookup） | 1 天 | 4-A, 4-B |
+| 4-D | **binding name → opaque ID 映射**（含 type 推断 + std140 layout 计算，把 Phase 3 的 `BGFXUniform` / `BGFXTexture` 等"前端元数据"完全收入 AYShader 内部） | 1.5 天 | 4-A |
+| 4-E | **header 隔离**（确认 `include/AYShader.h` / `AYShaderProgram.h` 不再包含 `<bgfx/bgfx.h>`；改 pimpl 后只剩 `AYShaderImpl.cpp` 引用 bgfx） | 0.5 天 | 4-A |
+| 4-F | **`ShaderResource::submit(DrawCallContext)` 帧期整合**（与 AYRenderer draw call 配套；包含 batch uniform upload） | 1 天 | 4-C |
+| 4-G | **退役 `class ShaderProgram`**（Phase 1 老接口，Phase 4 后只作 `ShaderResourceImpl` 内部使用；frontend 不见） | 0.25 天 | 4-E |
+| 4-H | **删 `.sc` 公开字段**（`BGFXShaderFiles.{vs,fs,varyingDef}` + `BGFXComputeFile::cs` + `CompileResult::output` + `ConvertResult::output`）— 原本是 Phase 3.7 的待办，并入 Phase 4 | 0.5-1 天 | 4-E |
+| 4-I | **cache 重新设计**（把 `AYShaderCache` 收编进 `ShaderResourcePool::Impl`；cache key = source hash + defines hash + backend + platform + profile + includeDirs，详见 §8.5.10） | 0.75 天 | 4-B |
+| 4-J | **hot-reload 实现**（dev-only，文件 mtime watch + 100ms debounce） | 0.5 天 | 4-B, 4-I |
+| 4-K | **Phase 4 e2e 测试**（`Test_ShaderCacheIntegration`——real frontend 场景，取 ShaderResource → setUniform → 模拟 submit，验证全程零 bgfx header visible） | 1 天 | 4-F |
+| 4-L | **🆕 `phoskia::CompileOptions` 字段精简**（删 `targetBackend` / `enableTypeInference` / `enableSemanticAnalysis`；保留 `defines` / `keepSources` / `dumpIntermediate` / `dumpDir`）；frontend-side type-checking 改由 pool 永久开启（不再 per-call 关闭） | 0.5 天 | 4-B |
+| 4-M | **🆕 自动 platform / profile 探测**（首次 `pool.compile()` 时若未显式 `setPlatform`/`setGLSLProfile`，从 `bgfx::getCaps()` 读 renderer type 推 platform，再由 platform 推 profile；详见 §8.5.10） | 1 天 | 4-B |
+| **总计** | — | **10-11 天** | — |
+
+**验收 contract**（见 §8.5.7 + §8.5.10）：
+1. `AYShader.h` / `AYShaderProgram.h` 不出现 bgfx::* 类型
+2. `BindingId` = `uint32_t`，opaque
+3. frontend 一次 `pool.compile(src)` 完成 byte-compile + bgfx wire + cache
+4. frontend 调用代码不出现 backend / platform / profile / include 任何一词（编译期 grep 验证）
+4. 换 WGSL backend 时 frontend 代码零改动（Phase 5+ 验证）
+5. `Test_ShaderCacheIntegration` 全程零 `<bgfx/bgfx.h>` in compilation unit
+
+**已知限制**：
+- `ShaderResource::getXxxBinding(name)` 是**懒查表**（O(log n) per call），Phase 4 后 benchmark；如果 hot path 暴露就给 `compileToShaderResource` 增加预解析能力，缓存 binding ID
+- 多线程 render：bgfx 本身不是 thread-safe；Phase 4 单线程 render thread 用，先不加锁；多线程后再讨论
+- shader variant management（`[variant name]` 多版本预编译）Phase 4 范围内仅做"懒编译"；预编译 / pre-warm 是 Phase 5+
 
 ---
 
@@ -1297,13 +2519,19 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 
 **Backend**：
 - ✅ BGFX `.sc`（唯一 backend，走 shaderc 跨 8 平台）
-- ❌ HLSL backend（Phase 5+ 按需）
-- ❌ WGSL backend（Phase 5+ 按需）
+- ❌ HLSL backend（Phase 8+ 按需）
+- ❌ WGSL backend（Phase 8+ 按需）
+
+**Frontend API 形态**：
+- ✅ Phase 3.6：`.sc` 从 frontend API 完全消失；`compileToProgram(src[, opts])` 返回 `CompiledShaderProgram`（raw bytes + binding metadata + debug sources）
+- ✅ **Phase 4-A**：`ShaderResource` + 最小 `ShaderResourcePool::acquire(CompiledShaderProgram)` — bgfx wire-up 内化；公开头 `AYShaderResource.h` 不含 bgfx
+- ❌ **Phase 4-B+（当前）**：`compileToShaderResource`、cache 收编、header 从 `AYShaderProgram.h` 剥离 bgfx（详见 §8.5）
+- ❌ 退役 `class ShaderProgram`（Phase 1 老接口，含 `bgfx::ShaderHandle` 字段）— Phase 4-G
 
 **测试**：
-- 897 / 897 PASS
-- ~12 测试套件覆盖 lexer / parser / IR / type inference / semantic / BGFX converter / shaderc e2e / golden file / PBR math
-- 8 个 golden fixture（6 material + 2 compute）
+- **944 / 944 PASS**（Phase 3.6 末状态，2026-07-01）
+- ~13 测试套件覆盖 lexer / parser / IR / type inference / semantic / BGFX converter / shaderc e2e / golden file / PBR math / ShadercDriver / CompileToBinary / CompileToProgram
+- 9 个 golden fixture（6 material + 2 compute + 1 with UBO binding）
 
 ---
 
@@ -1326,25 +2554,76 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 | 3.4 | UBO 表面语法 + std140 binding | 5a49e8c | +50 |
 | 3.5-A | Storage binding 语法 + std430 binding | 57e9c63 / 31e2f6c / 7d93814 / 4058f03 | +60 |
 | 3.5-B | UBO binding 语法 + std140 binding（与 3.5-A 对称）| 063664f | +20 |
-| 总计 | — | — | **278 → 917** |
+| 3.6 | **产品化**：`.sc` 内化 + `compileToProgram` + shaderc 路径 static setter | `c41ed89` + `6c332b0` + `c2d128b` + `465eec6` + `29db73c` + `a96b521` + `44e6158` | +27 |
+| 总计 | — | — | **278 → 944** |
+
+---
+
+### 14.2.1 Phase 3.6 commit 索引（2026-06-30 → 2026-07-01）
+
+| Commit | 范围 | 测试增量 |
+|---|---|---|
+| `c41ed89` | design.md §8.4 初始设计文档 | 0 |
+| `6c332b0` | Commit 1：extract `AYShadercDriver` from test plumbing | +0（旧 plumbing 保留并存） |
+| `c2d128b` | Commit 2：`CompiledShaderProgram` + `compileToBinary()` | +0 |
+| `465eec6` | Commit 3：`Compiler::compileToProgram()` + env-var merge | +0 |
+| `29db73c` | Commit 4：shaderc 路径 static setter + `Test_ShaderCompile` plumbing rewrite | +0 |
+| `a96b521` | Commit 5：`Test_Phoskia` / `Test_BGFXConverter` / `Test_GoldenFiles` 切到 `program.sources` | +21 |
+| `44e6158` | Commit 6：env-var precedence tests + dump_dir test | +6 |
+| **总计** | — | **917 → 944** |
 
 ---
 
 ### 14.3 待办清单（按优先级排序）
 
-#### 🔴 Phase 3.6 — 产品化收尾：`.sc` 作为 backend 内部细节（**最高优先**，用户已 sign-off 2026-06-30）
+#### ✅ Phase 3.6 — 产品化收尾：`.sc` 作为 backend 内部细节（**完成**，2026-07-01，6 commits）
 
-把 `.sc` 字符串从 frontend API 移走；shaderc 调用内化进 `AYBGFXConverter`；frontend 一次 `compileToProgram(src)` 拿到 `.bin` bytes。详见 §8.4。
+把 `.sc` 字符串从 frontend API 移走；shaderc 调用内化进 `AYBGFXConverter`；frontend 一次 `compileToProgram(src)` 拿到 `.bin` bytes。详见 §8.4（旧）+ §8.5（新，Phase 4 衔接）。
 
-| Block | 范围 | 估算 |
+| Block | 范围 | 状态 |
 |---|---|---|
-| 3.6-A | design.md §8.4（本文） | 0.25 天 ✅ |
-| 3.6-B | `AYShadercDriver` 抽象 + `AYBGFXConverter::compileToBinary()` 内化 shaderc 调用 + `.sc` 字段从公开移到 private + frontend `compileToProgram()` 暴露 binary API | 1.5-2 天 |
-| 3.6-C | Test_ShaderCompile plumbing 重设计（in-memory `.sc` → driver → bin，少写盘层） | 1 天 |
-| 3.6-D | `AY_PHOSKIA_DUMP_SC=1`（落盘）+ `AY_PHOSKIA_KEEP_SOURCES=1`（in-memory）双 env 解析与 opts 互转 + unit tests | 0.25 天 |
-| **总计** | — | **3-3.5 天** |
+| 3.6-A | design.md §8.4（设计文档） | ✅ `c41ed89` |
+| 3.6-B1 | `AYShadercDriver` 抽象 | ✅ `6c332b0` |
+| 3.6-B2 | `CompiledShaderProgram` + `compileToBinary()` | ✅ `c2d128b` |
+| 3.6-B3 | `Compiler::compileToProgram()` + env-var merge | ✅ `465eec6` |
+| 3.6-C1 | Test_ShaderCompile plumbing 重设计 + shaderc 路径 static setter | ✅ `29db73c` |
+| 3.6-C2/3/4 | Test_Phoskia / Test_BGFXConverter / Test_GoldenFiles → `program.sources` | ✅ `a96b521` |
+| 3.6-D | env-var precedence tests + cleanup | ✅ `44e6158` |
+| **总计** | — | **944/944 tests pass** |
 
-#### 🟢 Phase 3.7 — Compute + Texture 补完（**第二优先**，覆盖 90% 真实项目需求）
+#### 🔴 Phase 4 — Opaque ShaderResource API + bgfx wire-up（**当前最高优先**，用户已 sign-off 2026-07-01）
+
+> **设计核心**：shader 后端走 bgfx，但 frontend 永不直接见 `bgfx::*` 句柄。把现有 `Phase 4: ShaderGraph 与工具链`（位于上面 §11）旧条目**废弃并替换为**：opaque `ShaderResource` + `ShaderResourcePool` + `compileToShaderResource` 入口。详见 §8.5（含验收 contract / 风险 / 依赖）。
+
+| Block | 范围 | 估算 | 依赖 |
+|---|---|---|---|
+| 4-A ✅ | **`ShaderResource` opaque handle**（pimpl；frontend API `get*Binding` / `setUniform` / `setTexture` / `submit`） | 1.5 天 | — |
+| 4-B | **`ShaderResourcePool`**（工厂 + 拥有权 + cache 收编） | 1.5 天 | — |
+| 4-C | **`Compiler::compileToShaderResource(src[, opts])`**（一站式 compile + bgfx wire + cache） | 1 天 | 4-A, 4-B |
+| 4-D | **binding name → opaque ID 映射**（含 type 推断 + std140 layout） | 1.5 天 | 4-A |
+| 4-E | **header 隔离**（`AYShader.h` / `AYShaderProgram.h` 不再 include `<bgfx/bgfx.h>`；pimpl 唯一下沉到 `AYShaderImpl.cpp`） | 0.5 天 | 4-A |
+| 4-F | **`ShaderResource::submit(DrawCallContext)` 整合**（与 AYRenderer draw call 配套；batch upload） | 1 天 | 4-C |
+| 4-G | **退役 `class ShaderProgram`**（Phase 1 老接口；frontend 永不见） | 0.25 天 | 4-E |
+| 4-H | **删 `.sc` 公开字段**（`BGFXShaderFiles.{vs,fs,varyingDef}` + `BGFXComputeFile::cs` + `CompileResult::output` + `ConvertResult::output`；原本属 Phase 3.7） | 0.5-1 天 | 4-E |
+| 4-I | **cache 重新设计**（`AYShaderCache` 收编进 `ShaderResourcePool::Impl`；cache key = source hash + opts hash + backend） | 0.75 天 | 4-B |
+| 4-J | **hot-reload 实现**（dev-only，文件 mtime watch + 100ms debounce） | 0.5 天 | 4-B, 4-I |
+| 4-K | **Phase 4 e2e 测试**（`Test_ShaderCacheIntegration`——零 `<bgfx/bgfx.h>` 在 compilation unit） | 1 天 | 4-F |
+| 4-L | **`ShaderResourcePool::require(ShaderCapability)`**——capability-based backend 选择（替代 string-based `setDefaultBackend("bgfx")`；frontend 描述需求而非 backend 名） | 1 天 | 4-B |
+| 4-M | **自动 platform / profile 探测** from `bgfx::getCaps()`（pool 构造时若未显式 `setPlatform`，自动选 renderer-type → (platform, profile)） | 0.75 天 | 4-B |
+| 4-N | **结构化 diagnostic**（`CompilerError` → `PhoskiaDiagnostic { Severity, Message, Line, Column, SourceFile, Hint? }`；IDE 可直接消费） | 1 天 | 4-C |
+| 4-O | **opaque handle ABI 收紧**（`ShaderResource` 唯一公开字段 `uint64_t _id`；frontend 可随便拷贝/移动，pool 内部 LRU 释放不失效） | 0.5 天 | 4-A |
+| 4-P | **source key 改名**（`vs_<i>.sc` → `vertex_stage_<i>`；frontend 命名空间永不见 `.sc` 后缀） | 0.5 天 | 4-H |
+| 4-Q | **two-tier cache**（source cache `SHA256(source)` → `IRProgram`；binary cache `SHA256(src+defines+capability+platform+profile+include)` → bytes；分层 invalidation） | 1 天 | 4-I |
+| 4-R | **`phoskia::CompileOptions` 字段精简**（删 backend-internal 字段；前端选项只剩 `defines / keepSources / dumpIntermediate / dumpDir` + debug toggles；详见 §8.5.10） | 0.5 天 | 4-L, 4-M |
+| **总计** | — | **14-17 天** | — |
+
+> **§14.3 与 §8.5 关联**：4-L / 4-M / 4-N / 4-O / 4-P / 4-Q / 4-R 都是 §8.5 主体设计在 phase 表格里的"实施切片"。其中：
+> - **4-L + 4-M + 4-R** 一并落地才能真正做到 §8.5.10 的 frontend "封顶"（frontend 不出现 backend / platform / profile / include 任何一词，编译期 grep 验证）
+> - **4-O** 是 §8.5.4 的 ABI 收紧；不依赖其他 block，可并行
+> - **4-P** 是 §8.4 的 source key 演进；必须在 4-H 删字段时同步
+> - **4-Q** 是 §8.5 的 cache 重设计；与 4-I 互补（4-I 是 cache 收编，4-Q 是 cache 分层）
+
+#### 🟡 Phase 5 — Compute + Texture 补完（覆盖 90% 真实项目需求）— **原 Phase 3.7，降级**
 
 | # | 能力 | 表面语法 | emit | 估算 | 依赖 |
 |---|---|---|---|---|---|
@@ -1356,7 +2635,7 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 
 合计：~5 天。**打开 PBR 后处理 / 流体模拟 / GPGPU 通用计算 / 法线贴图等关键场景**。
 
-#### 🟡 Phase 3.8 — 高级渲染特性（第三优先，覆盖剩余 10%）
+#### 🟡 Phase 6 — 高级渲染特性（覆盖剩余 10%）— **原 Phase 3.8，降级**
 
 | # | 能力 | 表面语法 | emit | 估算 | 依赖 |
 |---|---|---|---|---|---|
@@ -1368,7 +2647,7 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 
 合计：~4.5 天。**打开 deferred shading / G-buffer / 高级 PBR / GPU-driven culling 等场景**。
 
-#### 🟠 Phase 3.8 — 工程质量（第四优先，跨阶段）
+#### 🟠 Phase 7 — 工程质量（跨阶段）— **原 Phase 3.8 工程质量块，降级**
 
 | # | 能力 | 估算 | 依赖 |
 |---|---|---|---|
@@ -1379,13 +2658,15 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 
 合计：~12-15 天。**让 Phoskia 达到生产级 shader DSL 水平**。
 
-#### 🔵 Phase 5+ — 跨后端（按需启动，仅在项目要求时）
+#### 🔵 Phase 8+ — 跨后端（按需启动，仅在项目要求时）
 
-| # | 能力 | 触发条件 | 估算 |
-|---|---|---|---|
-| 15 | HLSL backend（`AYHLSLConverter`，emit HLSL 6.x） | 项目要求 DXC 一手质量 / 摆脱 shaderc | 5-7 天 |
-| 16 | WGSL backend（`AYWGLSConverter`，emit WGSL） | WebGPU 目标 + 切 runtime 到 wgpu-native / Dawn | 7-10 天 |
-| 17 | Ray tracing shader | DXR / Vulkan RT 需求（需新 backend） | TBD |
+| # | 能力 | 触发条件 | 估算 | 备注 |
+|---|---|---|---|---|
+| 15 | HLSL backend（`AYHLSLConverter`，emit HLSL 6.x） | 项目要求 DXC 一手质量 / 摆脱 shaderc | 5-7 天 | Phase 4 的 `ShaderResourcePool` 已经抽象掉 bgfx，Phase 8 加 HLSL 时**只换** `ShaderResourceImpl` 内部实现 |
+| 16 | WGSL backend（`AYWGLSConverter`，emit WGSL） | WebGPU 目标 + 切 runtime 到 wgpu-native / Dawn | 7-10 天 | 同上—frontend 代码不改 |
+| 17 | Ray tracing shader | DXR / Vulkan RT 需求（需新 backend） | TBD | — |
+
+> **§14.3 与 §8.5 的 design 关联**：Phase 4 完成后，Phase 8+ 的核心工作只是**替换 `ShaderResourceImpl`**——frontend API（`ShaderResource` / `BindingId` / `compileToShaderResource`）已与 backend 解耦。这意味着 Phase 8 不需要碰 frontend，不需要大改 `AYShader.h`。
 
 #### ⚫ 永不做（明确不做）
 
@@ -1419,6 +2700,190 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 - **MSVC SSO/NRVO bug**：所有返回大 struct 的函数必须 out-param 形式
 - **AYTest 全局静态注册**：每个 TEST_CASE 是新 global symbol；CMakeLists 用 `file(GLOB ... CONFIGURE_DEPENDS)`（**两条都改了**：主 lib `CMakeLists.txt` + unittest）
 - **黄金 baseline 重生成**：`AY_SHADER_REGEN_GOLDEN=1 ./AYShader_Test.exe`（写到 build-dir，**记得拷回源 dir**）
+- **bgfx 头文件隔离（Phase 4 起）**：所有 bgfx handles 必须 pimpl 隔离，详见 §8.5。Frontend 头文件（`AYShader.h` / `AYShaderProgram.h`）**禁止**直接 `#include <bgfx/bgfx.h>`——编译单元验证见 `Test_ShaderCacheIntegration`。
+
+### 14.5 Phase 4 起路线图（移交用，一页摘要）
+
+**核心 contract**：frontend 只见 opaque handle；bgfx 永远在 pimpl 里。
+
+```
+                          ┌───────────────────────────┐
+                          │  AYShader (公共 API)      │
+                          │  - ShaderResource         │  ← opaque handle
+                          │  - ShaderResourcePool     │  ← 工厂 + 拥有权
+                          │  - BindingId / TextureHandle│  ← opaque numeric / driver-agnostic
+                          └─────────┬─────────────────┘
+                                    │ pimpl
+                          ┌─────────▼─────────────────┐
+                          │  AYShaderImpl.cpp          │
+                          │  - bgfx::ShaderHandle      │
+                          │  - bgfx::ProgramHandle     │  ← 唯一允许见 bgfx headers
+                          │  - bgfx::UniformHandle     │    的 TU（编译单元隔离）
+                          │  - bgfx::setUniform(...)/ submit
+                          └─────────┬─────────────────┘
+                                    │
+                          ┌─────────▼─────────────────┐
+                          │  AYBGFXConverter           │  ← Phoskia → .sc → bytes
+                          │  AYShadercDriver           │  ← bytes → spawn shaderc
+                          └───────────────────────────┘
+```
+
+**Phoskia 公开 API 表面（Phase 4 后的目标）**：
+
+```cpp
+// === frontend 唯一入口 ===
+ayt::shader::ShaderResourcePool shaderPool;       // engine startup
+ShaderResource res = phoskia.compileToShaderResource(src);  // 一站式
+BindingId mvp = res.getUniformBinding("modelViewProj");
+res.setUniform(mvp, &matrix, sizeof(matrix));
+res.submit(drawCtx);
+
+// frontend 代码不再含 #include <bgfx/bgfx.h>
+```
+
+**Phase 4 → Phase 8+ 替换路径**：
+
+| Phase | 工作 | 改 frontend API 吗？ |
+|---|---|---|
+| **4** | `ShaderResource` + Pool + bgfx wire-up | ❌ 一次性定下 API，Phase 8 之后**不再改 frontend** |
+| 4-H | 删 `.sc` 公开字段 | ❌ 同上 |
+| 5 / 6 / 7 | Phoskia 语法扩展 | ❌ **不**影响 frontend API（只扩展 `CompileOptions` / `compiled.sources` 形态） |
+| **8+（HLSL）** | 写新 `AYHLSLConverter` + 写新 `ShaderResourceImpl`（含 DXC 集成） | ❌ **frontend 零改动**——`ShaderResource` 抽象已与 backend 解耦 |
+| **8+（WGSL）** | 同上（runtime 切到 wgpu-native / Dawn） | ❌ 同上 |
+
+**这意味着**：Phase 4 是 frontend API 的"封顶 commit" — 通过之后，每加 backend / feature 都属于"扩展"而非"破坏"。
+
+**Phase 4 是否成功验收（§8.5.7）复述**：
+1. `AYShader.h` / `AYShaderProgram.h` 不出现 bgfx::* 类型
+2. `BindingId = uint32_t` opaque
+3. frontend 一次 `compileToShaderResource(src)` 完成 byte-compile + bgfx wire + cache
+4. 换 WGSL backend 时 frontend 代码零改动（Phase 8+ 验证）
+5. `Test_ShaderCacheIntegration` 全程零 `<bgfx/bgfx.h>` 在 compilation unit
+
+---
+
+### 14.6 Design Review Checklist（每次 PR 跑一遍）
+
+> **目的**：避免"想起一个改一个"的被动设计。借鉴 [Rust RFC checklist](https://github.com/rust-lang/rfcs) + [LLVM Developer Policy](https://llvm.org/docs/DeveloperPolicy.html) + [TypeScript Design Notes](https://github.com/microsoft/TypeScript/wiki/TypeScript-Design-Notes)。
+
+每次提交 PR 前，**所有 reviewable 项必须勾选**。未勾选项要么 commit 说明里 explain why，要么进 §14.7 RFC 流程。
+
+#### 14.6.1 API surface（lock-in 类）
+
+- [ ] **Frontend header 不出现 bgfx**：`grep -rn 'bgfx/' include/AYShader.h include/AYShaderProgram.h include/AYPhoskia.h` 应为空（4-E 之后永久成立）
+- [ ] **`ShaderResource` 不含 `bgfx::*Handle` 字段**：`grep -rn 'bgfx::' include/AYShaderProgram.h` 应为空（4-O 之后）
+- [ ] **`phoskia::CompileOptions` 不出现 backend / platform / profile / include / targetBackend 等 backend-internal 字段**（4-R 之后）：
+  ```bash
+  grep -E '(targetBackend|targetPlatform|glslProfile|includeDir)' include/AYPhoskia.h
+  ```
+- [ ] **新加字段是 default-constructed 类型**（`std::optional` / `std::vector` / default 值），**不**重排已有字段
+- [ ] **新增函数是 overload**，不改已有签名
+
+#### 14.6.2 Cache 一致性
+
+- [ ] **Cache key 五字段没新加的**：source / defines / capability / platform / profile / includeDirs。**新加字段要更新 cache key + 同步 §8.5**（4-Q 之后）
+- [ ] **Invalidation 规则**没破：source 改 → IR 改 → binary 重编；defines 改 → binary 重编；backend 改 → binary 重编
+
+#### 14.6.3 错误处理
+
+- [ ] **错误走 `program.errors[]`**，不抛异常到 frontend（§15.1 SSO 教训）
+- [ ] **`CompilerError` 字段含 line/column**，IDE 可定位（4-N 之后）
+
+#### 14.6.4 测试覆盖
+
+- [ ] **每个新增 public API 有对应 unit test**
+- [ ] **Frontend 公开 API 全 surface 已覆盖**（`Test_HeaderSurface` 在 Phase 5+ 加）
+- [ ] **ABI sizeof 锁定**（4-K 测试夹具）
+
+#### 14.6.5 文档同步
+
+- [ ] **`design.md` 对应章节同步更新**（§8 / §10 BNF / §11 phase 计划）
+- [ ] **`README.md` status 表 + 当前 phase 状态同步**
+- [ ] **CHANGELOG** 列出新增/标 deprecated/删除项（§0.4）
+
+#### 14.6.6 性能预算（Phase 5+ 强制）
+
+- [ ] **冷启动编译 100-material PBR shader** ≤ Phase 上次 baseline × 1.1
+- [ ] **memory 占用** ≤ Phase 上次 baseline × 1.1
+- [ ] **cache hit ratio** ≥ 95%（CI 测试）
+
+---
+
+### 14.7 RFC-pending 流程（Phase 4+ 每个新 feature 走一遍）
+
+> **目的**：让设计主动前置。借鉴 Rust RFC process（rust-lang/rfcs）、TypeScript Design Notes、Ember RFC（emberjs/rfcs）。
+
+#### 14.7.1 什么时候走 RFC
+
+| 触发 | 是否需要 RFC |
+|---|---|
+| 加新 public API（struct / function / enum 值） | ✅ 必须 |
+| 改 `phoskia::CompileOptions` 字段 | ✅ 必须 |
+| 加新 backend（HLSL / WGSL）| ✅ 必须 |
+| 改 cache key 字段 | ✅ 必须 |
+| 改 ABI / sizeof 已锁定 struct | ❌ 走 §0 major bump |
+| 内部重构（不改 public API） | ❌ 不需要 |
+| 加新 test fixture | ❌ 不需要 |
+| 修 bug | ❌ 但要在 commit message 写 root cause |
+
+#### 14.7.2 RFC 模板（design.md 单节）
+
+```markdown
+### §X.Y RFC-<编号>: <feature 名字>
+
+**Status**: RFC-Pending → RFC-Accepted → RFC-Implemented → RFC-Stabilized
+**Date**: <创建日期>
+**Author**: <作者>
+**Sign-off**: <user sign-off 日期>
+
+## Motivation
+<为什么需要这个 feature / 痛点是什么>
+
+## Design
+<API 表面 / 数据结构 / 行为>
+
+## Alternatives Considered
+<考虑过的替代方案 + 为什么否决>
+
+## Risks
+<风险 + 缓解>
+
+## Test Plan
+<怎么验证>
+
+## Acceptance Contract
+<可机器验证的成功标准>
+
+## Open Questions
+<未决项>
+```
+
+#### 14.7.3 RFC 生命周期
+
+| 阶段 | 动作 | 状态字段 |
+|---|---|---|
+| 1. RFC-Pending | 写 §X.Y 草案 | "RFC-Pending" |
+| 2. Self-review | 自己跑一遍 §14.6 checklist | "RFC-Pending → Reviewing" |
+| 3. User-review | 邀请 user 在 chat / PR review 看 | "RFC-Reviewing → Accepted" |
+| 4. Implementation | 按 RFC 写代码 | "RFC-Accepted → Implemented" |
+| 5. Stabilization | 通过 §14.6 checklist + 测试全 pass | "RFC-Implemented → Stabilized" |
+
+**未 RFC-Accepted 不允许写代码**。这是硬约束——避免"先写再说"的设计腐败。
+
+#### 14.7.4 RFC 索引（持续累积）
+
+| 编号 | 标题 | 状态 | 关联 phase |
+|---|---|---|---|
+| RFC-001 | Opaque ShaderResource API | Stabilized（§8.5） | Phase 4-A..K |
+| RFC-002 | Engine-driven config consolidation | Stabilized（§8.5.10） | Phase 4-L, 4-M, 4-R |
+| RFC-003 | Structured diagnostic | Accepted（§8.6） | Phase 4-N |
+| RFC-004 | Opaque handle ABI 收紧 | Accepted（§8.5.4） | Phase 4-O |
+| RFC-005 | Source key 改名（脱 `.sc`） | Accepted（§8.4） | Phase 4-P |
+| RFC-006 | Two-tier cache | Accepted（§8.5） | Phase 4-Q |
+| RFC-007 | Reflection from Phoskia AST | Accepted（§8.7） | Phase 5 |
+| RFC-008 | Result<T, E> API | Pending（§8.8） | Phase 6+ |
+| RFC-009 | CompileOptions builder pattern | Pending（§8.4） | Phase 6+ |
+| RFC-010 | API Stability Promise | Stabilized（§0） | Phase 4 入口 |
 
 ---
 
@@ -1478,6 +2943,93 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 - `AY_SHADER_BGFX_SRC_DIR` — bgfx `src` 路径（默认从 common 推）
 
 **profile**：当前全部 `-p 430`（UBO `binding = N` 要求 GLSL 4.30+）
+
+### 15.5 shaderc 路径 global state（Phase 3.6 决策记录）
+
+**问题演进**：Phase 1 / Phase 2 把 shaderc 路径硬编码到 `Test_ShaderCompile.cpp` plumbing 里，靠 env var `AY_SHADER_SHADERC` + CMake hint `AY_SHADER_SHADERC_HINT` + PATH 搜 shaderc.exe 三层 fallback 解决。**实测在该机器上全部失败**（`where shaderc` 不返回 vendored binary 路径），用户 sign-off：移除 auto-discovery，强制 frontend 主动配置。
+
+**决策**：process-wide static setter。`AYShadercDriver::setDefaultExecutable(path)` 在引擎启动调一次；之后所有 default-constructed `AYShadercDriver` 都用这个路径。
+
+**为什么是 static**（不是 per-Compiler / per-Pool 字段）：
+1. 一个 engine process 一个 shaderc 路径（无需 per-thread/per-pool override）
+2. 测试隔离用 `clearDefaultExecutable()` per-test setup
+3. Meyers singleton + `std::shared_ptr<const std::string>`：读取无锁，写入 atomic ref-bump（thread-safe 读不撕裂）
+
+**风险与缓解**：
+- 测试 cross-pollution：每个测试开头 `clearDefaultExecutable()` + `shadercReachable()` 重新 probe；这是 §15.2 之外的额外纪律
+- per-call override：仍然支持 `BGFXCompileOptions::shadercPath`（空字符串=用 global），给特殊场景留 escape
+
+### 15.6 frontend API 形态演化（Phase 1 → 3.6 → 4）
+
+| Phase | frontend 见到 | binding 见到 |
+|---|---|---|
+| Phase 1 | `.sc` 字符串 + 自己 spawn shaderc + 自己调 bgfx | 直接持有 bgfx handles |
+| Phase 3.6 | `.bin` bytes + binding metadata；frontend 自己调 bgfx | 持有 `bgfx::*Handle` 但**完整元数据结构体已显化** |
+| **Phase 4（目标）** | opaque `ShaderResource` + `BindingId` | frontend 永不见 bgfx |
+
+设计原则：**frontend API 只追加不破坏**。Phase 4 把 frontend API "封顶"，之后再加 backend / feature 都是扩展。
+
+---
+
+### 15.7 Two-tier cache 的设计教训（Phase 4-Q 决策记录）
+
+**问题演进**：
+- Phase 1 cache 设计：完全没有 cache，每次 compile 都跑 lexer + parser + IR + backend + shaderc
+- Phase 2-3.6 cache 设计：单层 binary cache，key = `SHA256(src+defines+backend)`（详见 §9）
+- Phase 4-I 计划：cache 收编进 `ShaderResourcePool::Impl`
+- **问题暴露**（Phase 4-Q 触发）：单层 binary cache 的几个设计缺陷在 hot-reload 测试里冒出来
+
+**缺陷 1：source cache 缺失**
+
+frontend 调试改 `src` 想看 AST 错误（如 "你没声明 foo"），cache hit 直接拿 binary，**没有 AST 错误信息**——frontend 误以为编译成功了。
+
+**缺陷 2：defines 改了全栈重跑**
+
+defines 改了 → cache miss → 重新跑 lexer + parser + IR + backend + shaderc。前 3 层是浪费——IR 不依赖 defines。
+
+**缺陷 3：incremental compile 不可能**
+
+frontend 想做"只改了一个 material → 只重编这一个"。当前 cache key 是 source 全 hash，没法定位到 fragment。
+
+**决策**：two-tier cache。详见 §8.5.5.1。
+
+| Tier | Key | Value | 失效时机 |
+|---|---|---|---|
+| 1 | `SHA256(source)` | `IRProgram`（AST + 类型化 IR + reflection） | source 改 |
+| 2 | `SHA256(source + defines + capability + platform + profile + includeDirs)` | `.bin` bytes + bgfx handle | defines/capability/platform/profile/includeDirs 改 |
+
+**教训（写入 §14.6.2 checklist）**：
+- **新加字段必须更新 cache key**：每次给 `CompileOptions` / pool config 加字段，**自动检查 cache key 是否包含新字段**
+- **cache 测试覆盖 invalidation 矩阵**：所有字段变体都要有 test（改 defines 后 tier 2 miss 但 tier 1 hit，等等）
+- **frontend 调试永远有 AST 错误信息**：tier 1 cache miss 时，frontend 拿到的不是空 `program`，而是**带 errors 的 program**（即使 binary 没编出来）
+
+**借鉴**：[Unreal DDC 分层](https://docs.unrealengine.com/5.0/en-US/derived-data-cache-in-unreal-engine/) + [V8 code cache 分层](https://v8.dev/blog/code-coverage) + [Rust incremental compilation](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation.html)
+
+---
+
+### 15.8 Reflection from AST vs binary parse 的设计教训（Phase 5+ 决策记录）
+
+**问题演进**：
+- Phase 1-3.5：`CompiledShaderProgram` 不暴露 binding 元数据，frontend 自己从 shader binary parse
+- Phase 3.6：加 `BGFXUniformBlock` / `BGFXStorageBuffer` / `BGFXUniform` / `BGFXTexture` 4 个字段——**从 shaderc 输出 binary parse 出来**（详见 §8.4 / §8.7）
+- **问题暴露**（Phase 4 调研 binding 系统时）：
+  1. Phoskia source 声明 `uniformblock Camera binding 0` + std140 layout，shaderc binary parse 出来**丢失 layout 信息**（parser 只看到 byte layout，不看源码意图）
+  2. 调试时 frontend 改 source，reflection 不一致——"我说声明了 Lighting 但 reflection 没看到 → bug 在哪？"
+  3. Phase 8+ 换 backend（HLSL / WGSL）时这 4 个字段的 parse 逻辑要重写
+
+**决策**：reflection 直接来自 Phoskia AST，不来自 binary parse。详见 §8.7。
+
+**关键 contract**：
+- frontend 信任 reflection（来自 AST = user 写的 = ground truth）
+- backend 仍可以 self-check：AST reflection vs binary parse 不一致 → `program.errors[]` 加 diagnostic
+- Phase 8+ 换 backend 时 reflection 形态不变（始终来自 Phoskia AST）
+
+**教训（写入 §14.6 checklist）**：
+- **reflection source of truth 永远来自 Phoskia AST**，不来自 backend binary
+- **任何"从 binary parse metadata"的设计都要 explicit 标注** + 写明为啥不能从 AST 来
+- **Phase 8+ 加新 backend 时不重写 reflection 生成代码**——AST 一次生成，多 backend 共享
+
+**借鉴**：[SPIR-V reflection](https://github.com/google/spirv-reflect)（"reflection = separate from binary"）+ [DXC DXIL reflection](https://github.com/microsoft/DirectXShaderCompiler/wiki/DXIL-Programming-Guide) + [Unreal Material reflection](https://docs.unrealengine.com/5.0/en-US/material-editor-how-to-reflect-specular-and-roughness.html)（从 material graph AST 来，不从 HLSL parse）
 
 ---
 

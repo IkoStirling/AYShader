@@ -10,6 +10,8 @@
 //   ayt::shader::phoskia    - Phoskia compiler core (Lexer, Parser, AST, ...)
 
 #include "AYShaderProgram.h"
+#include "AYShaderResource.h"
+#include "AYShaderResourcePool.h"
 #include "AYShaderCache.h"
 #include "IAYBackendConverter.h"
 #include "AYBGFXConverter.h"
