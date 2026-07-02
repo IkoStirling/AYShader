@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <optional>
@@ -357,6 +358,7 @@ struct ShaderResourcePool::Impl {
     std::unordered_map<std::string, HotReloadWatch> hotReloadWatches;
     CacheStats stats;
     std::vector<std::string> lastCompileErrors;
+    phoskia::CompileOptions defaultCompileOpts;
 
     Impl()
     {
@@ -633,6 +635,16 @@ void ShaderResourcePool::setHotReloadEnabled(bool enabled)
     _impl->hotReloadEnabled = enabled;
 }
 
+void ShaderResourcePool::setIntermediateDumpDirectory(const std::string& path)
+{
+    if (!_impl) {
+        _impl = std::make_unique<Impl>();
+    }
+    _impl->defaultCompileOpts.dumpDir = path;
+    _impl->defaultCompileOpts.dumpIntermediate = !path.empty();
+    _impl->defaultCompileOpts.keepSources = !path.empty();
+}
+
 void ShaderResourcePool::require(ShaderCapability capability)
 {
     if (!_impl) {
@@ -737,7 +749,10 @@ void ShaderResourcePool::pollHotReload()
 ShaderResource ShaderResourcePool::acquire(const std::string& src,
                                            const std::string& cacheKey)
 {
-    return acquire(src, phoskia::CompileOptions{}, cacheKey);
+    if (!_impl) {
+        _impl = std::make_unique<Impl>();
+    }
+    return acquire(src, _impl->defaultCompileOpts, cacheKey);
 }
 
 ShaderResource ShaderResourcePool::acquire(const std::string& src,
@@ -799,6 +814,14 @@ ShaderResource ShaderResourcePool::acquire(const std::string& src,
 
     shader::AYBGFXConverter converter;
     converter.compileToBinary(*cachedIr, _impl->engineBgfxOpts(opts), prog);
+
+    for (const std::string& warning : prog.warnings) {
+        std::fprintf(stderr, "[ShaderResourcePool] %s\n", warning.c_str());
+    }
+    if (opts.dumpIntermediate && !opts.dumpDir.empty() && prog.success) {
+        std::fprintf(stderr, "[ShaderResourcePool] dumped intermediate .sc to %s\n",
+                     opts.dumpDir.c_str());
+    }
 
     if (prog.success && !_impl->cacheDirectory.empty()) {
         const std::string diskPath =

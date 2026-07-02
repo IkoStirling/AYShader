@@ -217,7 +217,7 @@ material RotatingCube {
     property baseColor = vec4(0.25, 0.55, 0.95, 1.0)
     vertex {
         in pos : position
-        return u_modelViewProj * vec4(pos, 1.0)
+        return modelViewProjection * vec4(pos, 1.0)
     }
     fragment {
         return baseColor

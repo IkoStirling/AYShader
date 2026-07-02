@@ -14,6 +14,7 @@
 #include "AYIr.h"
 #include "AYTypeInference.h"
 #include "AYBuiltinFunctions.h"
+#include "detail/AYPhoskiaFrameBuiltins.h"
 #include <unordered_map>
 
 namespace ayt::shader::phoskia::ir
@@ -297,7 +298,8 @@ std::unique_ptr<IRDeclaration> IRGenerator::lowerDecl(const phoskia::Stmt& s) {
 // Lowering: shader params
 // --------------------------------------------------------------------------
 
-std::unique_ptr<IRShaderParam> IRGenerator::lowerShaderParam(const phoskia::ShaderParam& p) {
+std::unique_ptr<IRShaderParam> IRGenerator::lowerShaderParam(const phoskia::ShaderParam& p,
+                                                             phoskia::TypeEnvironment* scopeEnv) {
     auto out = std::make_unique<IRShaderParam>();
     out->dir = (p.dir == phoskia::ShaderParam::Direction::In)
                    ? IRShaderParam::Direction::In
@@ -305,7 +307,7 @@ std::unique_ptr<IRShaderParam> IRGenerator::lowerShaderParam(const phoskia::Shad
     out->name = p.name;
     out->semantic = p.semantic;
     if (p.defaultValue) {
-        out->defaultValue = lowerExpr(*p.defaultValue);
+        out->defaultValue = lowerExpr(*p.defaultValue, scopeEnv);
     }
     return out;
 }
@@ -317,10 +319,10 @@ std::unique_ptr<IRShaderParam> IRGenerator::lowerShaderParam(const phoskia::Shad
 std::unique_ptr<IRVertexFunc> IRGenerator::lowerVertexFuncWithEnv(const phoskia::VertexFunc& vf,
                                                                   phoskia::TypeEnvironment& env) {
     auto out = std::make_unique<IRVertexFunc>();
-    env.addVariable("u_modelViewProj", BuiltinTypes::Mat4());
+    detail::registerFrameBuiltins(env);
     for (const auto& s : vf.params) {
         if (auto p = dynamic_cast<const phoskia::ShaderParam*>(s.get())) {
-            auto sp = lowerShaderParam(*p);
+            auto sp = lowerShaderParam(*p, &env);
             if (sp) {
                 // Register in/out param names so subsequent body lets
                 // can resolve `let nrm = normalize(nrm)` correctly.
@@ -350,9 +352,10 @@ std::unique_ptr<IRVertexFunc> IRGenerator::lowerVertexFuncWithEnv(const phoskia:
 std::unique_ptr<IRFragmentFunc> IRGenerator::lowerFragmentFuncWithEnv(const phoskia::FragmentFunc& ff,
                                                                       phoskia::TypeEnvironment& env) {
     auto out = std::make_unique<IRFragmentFunc>();
+    detail::registerFrameBuiltins(env);
     for (const auto& s : ff.inputs) {
         if (auto p = dynamic_cast<const phoskia::ShaderParam*>(s.get())) {
-            auto sp = lowerShaderParam(*p);
+            auto sp = lowerShaderParam(*p, &env);
             if (sp) {
                 static const std::unordered_map<phoskia::PhoskiaSemantic, std::shared_ptr<Type>> semType = {
                     {phoskia::PhoskiaSemantic::Position,  BuiltinTypes::Vec3()},

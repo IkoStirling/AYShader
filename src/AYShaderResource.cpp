@@ -173,7 +173,7 @@ void ShaderResource::setTexture(uint8_t stage, BindingId id, const TextureHandle
     PendingTexture pending;
     pending.stage = stage;
     pending.id = id;
-    pending.texture.idx = static_cast<uint16_t>(tex.id & 0xFFFFu);
+    pending.texture.idx = static_cast<uint16_t>((tex.id - 1u) & 0xFFFFu);
     impl->pendingTextures.push_back(pending);
 }
 

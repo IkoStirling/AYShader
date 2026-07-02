@@ -15,6 +15,8 @@ uniform vec3 cameraPos;
 
 void main()
 {
+    v_normal = vec3(0.0, 0.0, 1.0);
+    v_texcoord0 = vec2(0.0, 0.0);
     gl_Position = vec4(a_position, 1.0);
 }
 

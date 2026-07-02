@@ -380,7 +380,8 @@ private:
 
     // Helpers for shader-param + vertex/fragment decl lowering. These
     // extract pre-sorted IR fields directly into the IRMaterialDecl.
-    std::unique_ptr<IRShaderParam> lowerShaderParam(const phoskia::ShaderParam& p);
+    std::unique_ptr<IRShaderParam> lowerShaderParam(const phoskia::ShaderParam& p,
+                                                  phoskia::TypeEnvironment* scopeEnv = nullptr);
     std::unique_ptr<IRVertexFunc> lowerVertexFuncWithEnv(const phoskia::VertexFunc& vf,
                                                          phoskia::TypeEnvironment& env);
     std::unique_ptr<IRFragmentFunc> lowerFragmentFuncWithEnv(const phoskia::FragmentFunc& ff,

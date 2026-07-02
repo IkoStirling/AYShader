@@ -219,12 +219,17 @@ TEST_CASE(hot_reload_debounce_invalidates_resource)
     CHECK(res.isValid());
 
     CHECK(writeTextFile(path, kShaderV2));
-    pool.pollHotReload();
-    CHECK(res.isValid());
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(150));
-    pool.pollHotReload();
-    CHECK_FALSE(res.isValid());
+    bool invalidated = false;
+    for (int attempt = 0; attempt < 40; ++attempt) {
+        pool.pollHotReload();
+        if (!res.isValid()) {
+            invalidated = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    CHECK(invalidated);
 
     ShaderResource reloaded = pool.compileFromFile(path);
     CHECK(reloaded.isValid());

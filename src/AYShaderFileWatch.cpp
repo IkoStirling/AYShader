@@ -4,12 +4,10 @@
 // (mtime in milliseconds, file existence checks, source text reads) are
 // preserved; only the underlying open/stat/ifstream plumbing moved.
 //
-// Note on mtime precision: pre-migration this returned int64_t milliseconds
-// derived from POSIX st_mtim.tv_nsec / 1e6 (sub-millisecond jitter present).
-// The AYIO `File::lastModifiedTime` API returns whole Unix seconds, so we
-// multiply by 1000. The loss of sub-second precision is acceptable for
-// hot-reload — file modifications are seconds-spaced events. See
-// design.md §16.4 for the full reasoning.
+// Note on mtime precision: hot-reload compares millisecond timestamps.
+// Windows uses GetFileAttributesEx (100-ns FILETIME); POSIX uses st_mtim /
+// st_mtimespec when available. AYIO whole-second fallback is used only when
+// platform stat APIs are unavailable.
 
 #include "detail/AYShaderFileWatch.h"
 
@@ -17,9 +15,33 @@
 
 #include <algorithm>
 #include <chrono>
+#include <sys/stat.h>
+
+#ifdef _WIN32
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <Windows.h>
+#endif
 
 namespace ayt::shader::detail
 {
+
+namespace {
+
+int64_t filetimeToUnixMs(const FILETIME& ft)
+{
+    ULARGE_INTEGER ull;
+    ull.LowPart = ft.dwLowDateTime;
+    ull.HighPart = ft.dwHighDateTime;
+    constexpr uint64_t kWindowsEpochToUnix100Ns = 116444736000000000ULL;
+    if (ull.QuadPart < kWindowsEpochToUnix100Ns) {
+        return 0;
+    }
+    return static_cast<int64_t>((ull.QuadPart - kWindowsEpochToUnix100Ns) / 10000ULL);
+}
+
+} // namespace
 
 std::string normalizeSourcePath(const std::string& path)
 {
@@ -33,7 +55,31 @@ std::optional<int64_t> fileMtimeMs(const std::string& path)
     if (!ayt::io::File::exists(path)) {
         return std::nullopt;
     }
-    // AYIO returns Unix timestamp in seconds; convert to milliseconds.
+
+#ifdef _WIN32
+    WIN32_FILE_ATTRIBUTE_DATA attrs{};
+    if (GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &attrs) != 0) {
+        const int64_t ms = filetimeToUnixMs(attrs.ftLastWriteTime);
+        if (ms > 0) {
+            return ms;
+        }
+    }
+#endif
+
+    struct stat st{};
+    if (::stat(path.c_str(), &st) == 0) {
+#if defined(_WIN32)
+        return static_cast<int64_t>(st.st_mtime) * 1000;
+#elif defined(__APPLE__)
+        return static_cast<int64_t>(st.st_mtimespec.tv_sec) * 1000
+             + static_cast<int64_t>(st.st_mtimespec.tv_nsec / 1000000L);
+#else
+        return static_cast<int64_t>(st.st_mtim.tv_sec) * 1000
+             + static_cast<int64_t>(st.st_mtim.tv_nsec / 1000000L);
+#endif
+    }
+
+    // Fallback: whole-second timestamp from AYIO.
     const uint64_t sec = ayt::io::File::lastModifiedTime(path);
     if (sec == 0) {
         return std::nullopt;

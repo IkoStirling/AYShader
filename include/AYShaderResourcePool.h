@@ -44,6 +44,10 @@ public:
     void setCacheDirectory(const std::string& path);
     void setHotReloadEnabled(bool enabled);
 
+    // When non-empty, enables keepSources + dumpIntermediate and writes
+    // vs/fs/varying.def.sc under this directory on each compile (best-effort).
+    void setIntermediateDumpDirectory(const std::string& path);
+
     void require(ShaderCapability capability);
     void setAutoProbeFromRendererType(bool enabled);
     void bindRendererTypeForTests(uint8_t bgfxRendererType, const std::string& platform,

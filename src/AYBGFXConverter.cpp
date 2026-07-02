@@ -10,6 +10,7 @@
 // fs_) to produce the binary shader programs bgfx::createProgram consumes.
 
 #include "AYBGFXConverter.h"
+#include "detail/AYPhoskiaFrameBuiltins.h"
 #include "detail/AYShaderSourceKeys.h"
 #include "detail/AYStd140Layout.h"
 #include "AYAst.h"
@@ -46,18 +47,103 @@ namespace {
 // invocation into the next — that was the previous bug, where
 // golden-fixture ordering could change let-type resolution.
 
-// PhoskiaSemantic → bgfx semantic binding table. bgfx examples use these
-// exact mappings (POSITION/NORMAL/COLOR0/TEXCOORD0) for the first slot of
-// each kind; the converter writes varying.def.sc from this table.
-//
-// Phase 1: each semantic appears at most once per block. Phase 2 will
-// introduce texcoord0..7 / color0..1 / tangent / binormal.
+// PhoskiaSemantic → bgfx attribute / varying names. Vertex attributes keep
+// the usual POSITION/NORMAL/TEXCOORD0 bindings. Interpolated varyings use
+// bgfx/shaderc dedicated semantics where available (NORMAL, COLOR0) and
+// sequential TEXCOORDn for generic vec outputs — same pattern as
+// thirdparty/bgfx/examples/44-sss and examples/49-hextile/varying.def.sc.
+// shaderc maps these to the correct interpolator registers on D3D11/12, GL,
+// Metal, Vulkan, etc.; the invariant we enforce is unique semantics per
+// varying, not a platform-specific slot hack.
 struct PhoskiaSemanticInfo {
-    const char* bgfxSemantic;   // POSITION / NORMAL / COLOR0 / TEXCOORD0
+    const char* attrSemantic;   // POSITION / NORMAL / TEXCOORD0 (vertex inputs)
     const char* attrName;       // a_position / a_normal / ...
     const char* varyingName;    // v_position / v_normal / ...
     const char* glslType;       // vec3 / vec4 / vec2
     const char* defaultExpr;    // vec3(0.0, 0.0, 0.0) etc.
+};
+
+struct VaryingLayoutPlan {
+    bool hasNormalVarying    = false;
+    bool hasTexcoordVarying  = false;
+    bool hasColorVarying     = false;
+    bool hasPositionVarying  = false;
+};
+
+VaryingLayoutPlan computeVaryingLayout(const phoskia::ir::IRVertexFunc* vf,
+                                       const phoskia::ir::IRFragmentFunc* ff)
+{
+    VaryingLayoutPlan plan;
+    const auto scan = [&](const std::vector<phoskia::ir::IRStmtPtr>& params,
+                          phoskia::ir::IRShaderParam::Direction dir,
+                          phoskia::PhoskiaSemantic sem,
+                          bool& flag) {
+        for (const auto& s : params) {
+            const auto* p = dynamic_cast<const phoskia::ir::IRShaderParam*>(s.get());
+            if (p != nullptr && p->dir == dir && p->semantic == sem) {
+                flag = true;
+            }
+        }
+    };
+
+    if (vf != nullptr) {
+        scan(vf->params, phoskia::ir::IRShaderParam::Direction::Out,
+             phoskia::PhoskiaSemantic::Normal, plan.hasNormalVarying);
+        scan(vf->params, phoskia::ir::IRShaderParam::Direction::Out,
+             phoskia::PhoskiaSemantic::Texcoord, plan.hasTexcoordVarying);
+        scan(vf->params, phoskia::ir::IRShaderParam::Direction::Out,
+             phoskia::PhoskiaSemantic::Color, plan.hasColorVarying);
+        scan(vf->params, phoskia::ir::IRShaderParam::Direction::Out,
+             phoskia::PhoskiaSemantic::Position, plan.hasPositionVarying);
+    }
+    if (ff != nullptr) {
+        scan(ff->inputs, phoskia::ir::IRShaderParam::Direction::In,
+             phoskia::PhoskiaSemantic::Normal, plan.hasNormalVarying);
+        scan(ff->inputs, phoskia::ir::IRShaderParam::Direction::In,
+             phoskia::PhoskiaSemantic::Texcoord, plan.hasTexcoordVarying);
+        scan(ff->inputs, phoskia::ir::IRShaderParam::Direction::In,
+             phoskia::PhoskiaSemantic::Color, plan.hasColorVarying);
+        scan(ff->inputs, phoskia::ir::IRShaderParam::Direction::In,
+             phoskia::PhoskiaSemantic::Position, plan.hasPositionVarying);
+    }
+    return plan;
+}
+
+class VaryingSemanticAssigner {
+public:
+    explicit VaryingSemanticAssigner(const VaryingLayoutPlan& plan)
+    {
+        if (plan.hasColorVarying) {
+            _map[phoskia::PhoskiaSemantic::Color] = "COLOR0";
+        }
+        if (plan.hasTexcoordVarying) {
+            _map[phoskia::PhoskiaSemantic::Texcoord] = "TEXCOORD0";
+            if (_nextTexCoord == 0) {
+                _nextTexCoord = 1;
+            }
+        }
+        if (plan.hasNormalVarying) {
+            _map[phoskia::PhoskiaSemantic::Normal] = "NORMAL";
+        }
+        if (plan.hasPositionVarying) {
+            assignNextTexCoord(phoskia::PhoskiaSemantic::Position);
+        }
+    }
+
+    const char* lookup(phoskia::PhoskiaSemantic sem) const
+    {
+        const auto it = _map.find(sem);
+        return it != _map.end() ? it->second.c_str() : "TEXCOORD0";
+    }
+
+private:
+    std::unordered_map<phoskia::PhoskiaSemantic, std::string> _map;
+    uint8_t _nextTexCoord = 0;
+
+    void assignNextTexCoord(phoskia::PhoskiaSemantic sem)
+    {
+        _map[sem] = std::string("TEXCOORD") + std::to_string(_nextTexCoord++);
+    }
 };
 
 const std::unordered_map<phoskia::PhoskiaSemantic, PhoskiaSemanticInfo>&
@@ -70,9 +156,6 @@ semanticTable() {
     };
     return table;
 }
-
-// Forward decl of helper used by emit* functions.
-void emitExpr(std::ostringstream& out, const phoskia::ir::IRExpr& e);
 
 // RenameContext maps a Phoskia identifier to its bgfx-side counterpart.
 // Built per-shader-block from the in/out ShaderParam declarations: the
@@ -118,14 +201,26 @@ bool exprIsMatrix(const std::shared_ptr<phoskia::Type>& type)
     return type && std::dynamic_pointer_cast<phoskia::MatrixType>(type) != nullptr;
 }
 
-// bgfx common.sh defines mul() for both GLSL (as a * b) and HLSL (native mul).
-// HLSL rejects mat * vec with operator* — emit mul when a matrix is involved.
 bool binaryMulNeedsBgfxMul(const phoskia::ir::IRBinaryExpr& bin)
 {
     if (bin.op.type != phoskia::TokenType::Star || !bin.left || !bin.right) {
         return false;
     }
-    return exprIsMatrix(bin.left->resolvedType) || exprIsMatrix(bin.right->resolvedType);
+
+    const auto looksLikeMatrix = [](const phoskia::ir::IRExpr* expr) -> bool {
+        if (expr == nullptr) {
+            return false;
+        }
+        if (exprIsMatrix(expr->resolvedType)) {
+            return true;
+        }
+        if (auto id = dynamic_cast<const phoskia::ir::IRIdentifierExpr*>(expr)) {
+            return phoskia::detail::frameBuiltinIsMatrix(id->name);
+        }
+        return false;
+    };
+
+    return looksLikeMatrix(bin.left.get()) || looksLikeMatrix(bin.right.get());
 }
 
 // Phase 3.1: emit* helpers consume IR nodes. Each IR expression already
@@ -446,6 +541,8 @@ void emitExpr(std::ostringstream& out, const phoskia::ir::IRExpr& e,
             out << "gl_WorkGroupID";
         } else if (lookupName == "dispatch_id") {
             out << "(gl_NumWorkGroups * gl_WorkGroupID)";
+        } else if (phoskia::detail::isFrameBuiltin(lookupName)) {
+            out << phoskia::detail::bgfxFrameBuiltinExpr(lookupName);
         } else {
             out << lookupName;
         }
@@ -768,6 +865,16 @@ bool dirExists(const std::string& p) {
     return ayt::io::Directory::exists(p);
 }
 
+bool ensureDumpDirExists(const std::string& p) {
+    if (p.empty()) {
+        return false;
+    }
+    if (dirExists(p)) {
+        return true;
+    }
+    return ayt::io::Directory::createRecursive(p);
+}
+
 // Best-effort write of one .sc debug file. Failures surface in
 // program.warnings (not errors) — the .bin bytes were already produced
 // successfully and dump failures shouldn't poison the success flag.
@@ -925,7 +1032,8 @@ void AYBGFXConverter::compileToBinary(const phoskia::ir::IRProgram& program,
         //    verify the emit shape without a real shaderc install).
 
         // 6) Disk dump (best-effort).
-        if (opts.dumpIntermediate && dirExists(opts.dumpDir)) {
+        if (opts.dumpIntermediate && !opts.dumpDir.empty()
+            && ensureDumpDirExists(opts.dumpDir)) {
             dumpScFile(opts.dumpDir, vsKey, mf.vertex, out.warnings);
             dumpScFile(opts.dumpDir, fsKey, mf.fragment, out.warnings);
             if (i == 0) {
@@ -949,7 +1057,8 @@ void AYBGFXConverter::compileToBinary(const phoskia::ir::IRProgram& program,
             // block above (right after convertBGFX succeeded) so
             // frontend tests can inspect .sc strings without a real
             // shaderc install. Dump-only branch follows.
-            if (opts.dumpIntermediate && dirExists(opts.dumpDir)) {
+            if (opts.dumpIntermediate && !opts.dumpDir.empty()
+                && ensureDumpDirExists(opts.dumpDir)) {
                 dumpScFile(opts.dumpDir, csKey, cf.compute, out.warnings);
             }
         }
@@ -1004,7 +1113,8 @@ detail::BGFXMaterialStages AYBGFXConverter::convertMaterial(const phoskia::ir::I
     // converter emits GLSL without a type prefix.
     phoskia::TypeEnvironment vsEnv;
     phoskia::TypeEnvironment fsEnv;
-    vsEnv.addVariable("u_modelViewProj", phoskia::BuiltinTypes::Mat4());
+    phoskia::detail::registerFrameBuiltins(vsEnv);
+    phoskia::detail::registerFrameBuiltins(fsEnv);
     RenameContext vsCtx;
     RenameContext fsCtx;
 
@@ -1114,6 +1224,8 @@ detail::BGFXMaterialStages AYBGFXConverter::convertMaterial(const phoskia::ir::I
     }
 
     const auto& tbl = semanticTable();
+    const VaryingLayoutPlan varyingPlan = computeVaryingLayout(vf, ff);
+    const VaryingSemanticAssigner varyingSemantics(varyingPlan);
 
     // Populate the rename maps + already-constructed per-block
     // TypeEnvironments with in/out params (e.g. `let N = normalize(nrm)`
@@ -1178,7 +1290,7 @@ detail::BGFXMaterialStages AYBGFXConverter::convertMaterial(const phoskia::ir::I
         writtenVaryings.push_back(sem);
         const auto& info = tbl.at(sem);
         vdef << info.glslType << " " << pad(info.varyingName, kNameWidth)
-             << ": " << pad(info.bgfxSemantic, kSemanticWidth)
+             << ": " << pad(varyingSemantics.lookup(sem), kSemanticWidth)
              << "= " << info.defaultExpr << ";\n";
     };
     for (const auto& s : vf->params) {
@@ -1196,7 +1308,7 @@ detail::BGFXMaterialStages AYBGFXConverter::convertMaterial(const phoskia::ir::I
             if (p->dir == phoskia::ir::IRShaderParam::Direction::In) {
                 const auto& info = tbl.at(p->semantic);
                 vdef << info.glslType << " " << pad(info.attrName, kNameWidth)
-                     << ": " << info.bgfxSemantic << ";\n";
+                     << ": " << info.attrSemantic << ";\n";
             }
         }
     }
@@ -1234,6 +1346,21 @@ detail::BGFXMaterialStages AYBGFXConverter::convertMaterial(const phoskia::ir::I
        << _uniformDecls
        << _propertyUniforms
        << "\nvoid main()\n{\n";
+    for (const auto& s : vf->params) {
+        if (auto* p = dynamic_cast<const phoskia::ir::IRShaderParam*>(s.get())) {
+            if (p->dir != phoskia::ir::IRShaderParam::Direction::Out) {
+                continue;
+            }
+            const auto& info = tbl.at(p->semantic);
+            vs << "    " << info.varyingName << " = ";
+            if (p->defaultValue) {
+                emitExpr(vs, *p->defaultValue, vsCtx);
+            } else {
+                vs << info.defaultExpr;
+            }
+            vs << ";\n";
+        }
+    }
     {
         // #[variant name] in Phoskia source expands to
         //   #ifndef BGFX_VARIANT_<NAME>

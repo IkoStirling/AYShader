@@ -8,14 +8,20 @@
 
 #include "AYPhoskia.h"
 #include "AYBGFXConverter.h"
+#include "detail/AYPhoskiaFrameBuiltins.h"
 #include "detail/AYBGFXStageSources.h"
 #include "AYLexer.h"
 #include "AYParser.h"
 #include "AYAst.h"
 #include "AYIr.h"
+#include "AYShadercDriver.h"
 #include "AYTest.h"
+#include <cstdio>
 #include <cstdlib>
+#include <sstream>
 #include <stdexcept>
+#include <sys/stat.h>
+#include <unordered_set>
 
 using namespace ayt::shader;
 using namespace ayt::shader::phoskia;
@@ -24,8 +30,7 @@ TEST_SUITE(BGFXConverterTests)
 
 // ===== Helpers =====
 
-// End-to-end: source ?AST ?IR ?first material's three-piece set.
-static detail::BGFXMaterialStages compileFirstMaterial(const std::string& src) {
+static ayt::shader::detail::BGFXMaterialStages compileFirstMaterial(const std::string& src) {
     Lexer lexer(src);
     std::vector<Token> tokens;
     lexer.tokenize(tokens);
@@ -45,6 +50,114 @@ static detail::BGFXMaterialStages compileFirstMaterial(const std::string& src) {
         throw std::runtime_error("convertBGFX produced no materials");
     }
     return res.materialStages.front();
+}
+
+#ifndef AY_SHADER_SHADERC_HINT
+#  ifdef _WIN32
+#    define AY_SHADER_SHADERC_HINT "thirdParty/bgfx-install/debug/bin/shaderc.exe"
+#  else
+#    define AY_SHADER_SHADERC_HINT "thirdParty/bgfx-install/debug/bin/shaderc"
+#  endif
+#endif
+#ifndef AY_SHADER_BGFX_COMMON_HINT
+#  define AY_SHADER_BGFX_COMMON_HINT "../../../thirdparty/bgfx/examples/common"
+#endif
+#ifndef AY_SHADER_BGFX_SRC_HINT
+#  define AY_SHADER_BGFX_SRC_HINT "../../../thirdparty/bgfx/src"
+#endif
+
+static bool fileExists(const std::string& path)
+{
+    if (path.empty()) {
+        return false;
+    }
+    struct stat st;
+    return ::stat(path.c_str(), &st) == 0;
+}
+
+static bool shadercEnvironmentAvailable()
+{
+    if (!fileExists(AY_SHADER_SHADERC_HINT) || !fileExists(AY_SHADER_BGFX_COMMON_HINT)) {
+        return false;
+    }
+    try {
+        AYShadercDriver probe(AY_SHADER_SHADERC_HINT);
+        return !probe.shadercPath().empty();
+    } catch (...) {
+        return false;
+    }
+}
+
+static std::vector<std::string> bgfxShaderIncludeDirs()
+{
+    std::vector<std::string> dirs;
+    if (fileExists(AY_SHADER_BGFX_COMMON_HINT)) {
+        dirs.push_back(AY_SHADER_BGFX_COMMON_HINT);
+    }
+    if (fileExists(AY_SHADER_BGFX_SRC_HINT)) {
+        dirs.push_back(AY_SHADER_BGFX_SRC_HINT);
+    }
+    return dirs;
+}
+
+static bool varyingDefinitionsHaveUniqueInterpolatorSemantics(const std::string& vdef)
+{
+    std::unordered_set<std::string> seen;
+    std::istringstream lines(vdef);
+    std::string line;
+    while (std::getline(lines, line)) {
+        const size_t namePos = line.find("v_");
+        if (namePos == std::string::npos) {
+            continue;
+        }
+        const size_t colonPos = line.find(':', namePos);
+        if (colonPos == std::string::npos) {
+            continue;
+        }
+        const size_t eqPos = line.find('=', colonPos);
+        const size_t endPos = eqPos == std::string::npos ? line.size() : eqPos;
+        std::string semantic = line.substr(colonPos + 1, endPos - colonPos - 1);
+        while (!semantic.empty() && semantic.front() == ' ') {
+            semantic.erase(semantic.begin());
+        }
+        while (!semantic.empty() && semantic.back() == ' ') {
+            semantic.pop_back();
+        }
+        if (semantic.empty() || !seen.insert(semantic).second) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool compileMaterialStagesForProfile(const ayt::shader::detail::BGFXMaterialStages& files,
+                                            const std::string& platform,
+                                            const std::string& profile)
+{
+    AYShadercDriver driver(AY_SHADER_SHADERC_HINT);
+    const std::vector<std::string> includeDirs = bgfxShaderIncludeDirs();
+
+    auto compileStage = [&](const char* stage, const std::string& source) {
+        ShaderCompileRequest req;
+        req.scSource = source;
+        req.stage = stage;
+        req.varyingdefSource = files.varyingDefinitions;
+        req.platform = platform;
+        req.profile = profile;
+        req.includeDirs = includeDirs;
+        req.outputName = std::string(stage) + "_" + platform + "_" + profile;
+        const ShaderCompileResult result = driver.compile(req);
+        if (!result.ok) {
+            std::fprintf(stderr,
+                         "shaderc failed (%s/%s %s): %s\n",
+                         platform.c_str(), profile.c_str(), stage,
+                         result.stderrText.c_str());
+        }
+        return result.ok;
+    };
+
+    return compileStage("vertex", files.vertex)
+        && compileStage("fragment", files.fragment);
 }
 
 static std::unique_ptr<Program> parseProgram(const std::string& src) {
@@ -175,6 +288,233 @@ TEST_CASE(uniforms_emitted_in_both_vs_and_fs) {
     CHECK(files.vertex.find("uniform mat4 u_modelViewProj") != std::string::npos);
     CHECK(files.fragment.find("uniform vec4 u_time") != std::string::npos);
     CHECK(files.vertex.find("mul(u_modelViewProj, vec4(0.0, 0.0, 0.0, 1.0))") != std::string::npos);
+}
+
+TEST_CASE(phoskia_frame_builtins_lower_to_bgfx_common_sh) {
+    const char* src = R"(
+        material Lit {
+            vertex {
+                in pos : position
+                return modelViewProjection * vec4(pos, 1.0)
+            }
+            fragment {
+                return vec4(1.0)
+            }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    CHECK(files.vertex.find("modelViewProjection") == std::string::npos);
+    CHECK(files.vertex.find("mul(u_modelViewProj, vec4(a_position, 1.0))") != std::string::npos);
+}
+
+TEST_CASE(phoskia_model_matrix_uses_mul_in_out_default) {
+    const char* src = R"(
+        material X {
+            vertex {
+                in nrm : normal
+                out worldNormal : normal = (modelMatrix * vec4(nrm, 0.0)).xyz
+                return modelViewProjection * vec4(0.0, 0.0, 0.0, 1.0)
+            }
+            fragment {
+                in worldNormal : normal
+                return vec4(worldNormal, 1.0)
+            }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    CHECK(files.vertex.find("modelMatrix") == std::string::npos);
+    CHECK(files.vertex.find("mul(u_model[0], vec4(a_normal, 0.0))") != std::string::npos);
+    CHECK(files.vertex.find("u_model[0] * float4") == std::string::npos);
+}
+
+TEST_CASE(phoskia_matrix_frame_builtins_lower_to_bgfx) {
+    const char* src = R"(
+        material X {
+            vertex {
+                in pos : position
+                let w = viewProjectionMatrix * vec4(pos, 1.0)
+                let v = viewMatrix * vec4(pos, 1.0)
+                let p = projectionMatrix * vec4(pos, 1.0)
+                let mv = modelViewMatrix * vec4(pos, 1.0)
+                let invV = inverseViewMatrix * vec4(pos, 1.0)
+                let invP = inverseProjectionMatrix * vec4(pos, 1.0)
+                let invVP = inverseViewProjectionMatrix * vec4(pos, 1.0)
+                let invMV = inverseModelViewMatrix * vec4(pos, 1.0)
+                return modelViewProjection * vec4(pos, 1.0)
+            }
+            fragment {
+                return vec4(1.0)
+            }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    CHECK(files.vertex.find("inverseViewMatrix") == std::string::npos);
+    CHECK(files.vertex.find("inverseProjectionMatrix") == std::string::npos);
+    CHECK(files.vertex.find("inverseViewProjectionMatrix") == std::string::npos);
+    CHECK(files.vertex.find("inverseModelViewMatrix") == std::string::npos);
+    CHECK(files.vertex.find("mul(u_viewProj,") != std::string::npos);
+    CHECK(files.vertex.find("mul(u_view,") != std::string::npos);
+    CHECK(files.vertex.find("mul(u_proj,") != std::string::npos);
+    CHECK(files.vertex.find("mul(u_modelView,") != std::string::npos);
+    CHECK(files.vertex.find("mul(u_invView,") != std::string::npos);
+    CHECK(files.vertex.find("mul(u_invProj,") != std::string::npos);
+    CHECK(files.vertex.find("mul(u_invViewProj,") != std::string::npos);
+    CHECK(files.vertex.find("mul(u_invModelView,") != std::string::npos);
+    CHECK(files.vertex.find("mul(u_modelViewProj,") != std::string::npos);
+}
+
+TEST_CASE(phoskia_viewport_and_alpha_frame_builtins_lower_in_fragment) {
+    const char* src = R"(
+        material X {
+            vertex {
+                return modelViewProjection * vec4(0.0, 0.0, 0.0, 1.0)
+            }
+            fragment {
+                let rect = viewportRect
+                let texel = viewportTexel
+                let alpha = alphaReference
+                return vec4(rect.xy * texel.xy, alpha, 1.0)
+            }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    CHECK(files.fragment.find("viewportRect") == std::string::npos);
+    CHECK(files.fragment.find("viewportTexel") == std::string::npos);
+    CHECK(files.fragment.find("alphaReference") == std::string::npos);
+    CHECK(files.fragment.find("u_viewRect") != std::string::npos);
+    CHECK(files.fragment.find("u_viewTexel") != std::string::npos);
+    CHECK(files.fragment.find("u_alphaRef") != std::string::npos);
+}
+
+TEST_CASE(phoskia_frame_builtin_table_covers_bgfx_common_sh) {
+    using namespace ayt::shader::phoskia::detail;
+    CHECK(kFrameBuiltinCount == 13u);
+    for (std::size_t i = 0; i < kFrameBuiltinCount; ++i) {
+        const FrameBuiltinSpec& spec = kFrameBuiltins[i];
+        CHECK(findFrameBuiltin(spec.phoskiaName) == &spec);
+        CHECK(std::string(bgfxFrameBuiltinExpr(spec.phoskiaName)) == spec.bgfxExpr);
+        if (spec.kind == FrameBuiltinKind::Mat4) {
+            CHECK(frameBuiltinIsMatrix(spec.phoskiaName));
+        } else {
+            CHECK(!frameBuiltinIsMatrix(spec.phoskiaName));
+        }
+    }
+}
+
+TEST_CASE(lit_shader_varying_normal_and_uv_use_bgfx_cross_platform_semantics) {
+    const char* src = R"(
+        material Lit {
+            vertex {
+                in nrm : normal
+                in uv  : texcoord
+                out nOut : normal = nrm
+                out uvOut : texcoord = uv
+                return modelViewProjection * vec4(0.0, 0.0, 0.0, 1.0)
+            }
+            fragment {
+                in nOut : normal
+                in uvOut : texcoord
+                return vec4(nOut, 1.0)
+            }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    CHECK(files.varyingDefinitions.find("v_texcoord0 : TEXCOORD0") != std::string::npos);
+    CHECK(files.varyingDefinitions.find("v_normal    : NORMAL") != std::string::npos);
+    CHECK(files.varyingDefinitions.find("a_normal    : NORMAL") != std::string::npos);
+    CHECK(files.varyingDefinitions.find("a_texcoord0 : TEXCOORD0") != std::string::npos);
+    CHECK(varyingDefinitionsHaveUniqueInterpolatorSemantics(files.varyingDefinitions));
+}
+
+TEST_CASE(lit_shader_varying_slots_texcoord_only) {
+    const char* src = R"(
+        material Unlit {
+            vertex {
+                in uv : texcoord
+                out uvOut : texcoord = uv
+                return modelViewProjection * vec4(0.0, 0.0, 0.0, 1.0)
+            }
+            fragment {
+                in uvOut : texcoord
+                return vec4(uvOut, 0.0, 1.0)
+            }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    CHECK(files.varyingDefinitions.find("v_texcoord0 : TEXCOORD0") != std::string::npos);
+    CHECK(files.varyingDefinitions.find("v_normal") == std::string::npos);
+    CHECK(varyingDefinitionsHaveUniqueInterpolatorSemantics(files.varyingDefinitions));
+}
+
+TEST_CASE(lit_shader_varying_slots_normal_texcoord_color) {
+    const char* src = R"(
+        material Lit {
+            vertex {
+                in nrm : normal
+                in uv  : texcoord
+                in clr : color
+                out nOut : normal = nrm
+                out uvOut : texcoord = uv
+                out cOut : color = clr
+                return modelViewProjection * vec4(0.0, 0.0, 0.0, 1.0)
+            }
+            fragment {
+                in nOut : normal
+                in uvOut : texcoord
+                in cOut : color
+                return cOut
+            }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    CHECK(files.varyingDefinitions.find("v_color0    : COLOR0") != std::string::npos);
+    CHECK(files.varyingDefinitions.find("v_texcoord0 : TEXCOORD0") != std::string::npos);
+    CHECK(files.varyingDefinitions.find("v_normal    : NORMAL") != std::string::npos);
+    CHECK(varyingDefinitionsHaveUniqueInterpolatorSemantics(files.varyingDefinitions));
+}
+
+TEST_CASE(lit_shader_shaderc_across_bgfx_platform_profiles) {
+    if (!shadercEnvironmentAvailable()) {
+        std::fprintf(stderr, "SKIP lit_shader_shaderc_across_bgfx_platform_profiles: shaderc/common.sh unavailable\n");
+        return;
+    }
+
+    const char* src = R"(
+        material SimpleLit {
+            texture2d albedoMap
+            uniform vec3 lightDir
+            property baseColor = vec4(1.0, 1.0, 1.0, 1.0)
+            vertex {
+                in pos : position
+                in nrm : normal
+                in uv  : texcoord
+                out worldNormal : normal = (modelMatrix * vec4(nrm, 0.0)).xyz
+                out uvOut : texcoord = uv
+                return modelViewProjection * vec4(pos, 1.0)
+            }
+            fragment {
+                in worldNormal : normal
+                in uvOut : texcoord
+                let albedo = sample(albedoMap, uvOut) * baseColor
+                let ndotl = max(dot(normalize(worldNormal), normalize(lightDir)), 0.05)
+                return vec4(albedo.rgb * ndotl, albedo.a)
+            }
+        }
+    )";
+    const ayt::shader::detail::BGFXMaterialStages files = compileFirstMaterial(src);
+    CHECK(varyingDefinitionsHaveUniqueInterpolatorSemantics(files.varyingDefinitions));
+
+    struct ProfileTarget {
+        const char* platform;
+        const char* profile;
+    };
+    static const ProfileTarget kRequiredTargets[] = {
+        {"windows", "s_5_0"},
+        {"linux", "430"},
+    };
+    for (const ProfileTarget& target : kRequiredTargets) {
+        CHECK(compileMaterialStagesForProfile(files, target.platform, target.profile));
+    }
 }
 
 // ===== Properties become uniforms =====
@@ -492,7 +832,7 @@ TEST_CASE(pbr_geometry_smith_inlined_in_fs) {
     CHECK(files.fragment.find("geometrySmith") == std::string::npos);
 }
 
-// ===== Scalarvector broadcasting emission =====
+// ===== Scalar?vector broadcasting emission =====
 //
 // GLSL accepts component-wise arithmetic in either operand order
 // (`vec3 * float` and `float * vec3` both yield vec3). The BGFX

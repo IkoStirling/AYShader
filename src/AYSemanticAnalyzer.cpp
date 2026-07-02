@@ -6,6 +6,7 @@
 #include "AYBuiltinTypes.h"   // Phase 2 Step 5: isBuiltinType gate on
                                // uniform / property type lexemes.
 #include "AYBuiltinFunctions.h"
+#include "detail/AYPhoskiaFrameBuiltins.h"
 #include <iostream>
 
 namespace ayt::shader::phoskia
@@ -150,8 +151,7 @@ void AYSemanticAnalyzer::analyzeShaderParam(const ShaderParam& param) {
 void AYSemanticAnalyzer::analyzeVertexFunc(const VertexFunc& func) {
     _env.pushScope();
     _inShaderFunc = true;
-    // bgfx common.sh builtins (not re-declared in generated .sc).
-    _env.addVariable("u_modelViewProj", BuiltinTypes::Mat4());
+    detail::registerFrameBuiltins(_env);
     for (const auto& p : func.params) {
         if (auto sp = dynamic_cast<const ShaderParam*>(p.get())) {
             analyzeShaderParam(*sp);
@@ -167,6 +167,7 @@ void AYSemanticAnalyzer::analyzeVertexFunc(const VertexFunc& func) {
 void AYSemanticAnalyzer::analyzeFragmentFunc(const FragmentFunc& func) {
     _env.pushScope();
     _inShaderFunc = true;
+    detail::registerFrameBuiltins(_env);
     for (const auto& p : func.inputs) {
         if (auto sp = dynamic_cast<const ShaderParam*>(p.get())) {
             analyzeShaderParam(*sp);

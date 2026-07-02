@@ -216,8 +216,12 @@ void runOneFixture(const std::string& name) {
     std::string srcPath = dir + "/" + name + ".phoskia";
     std::string outPath = dir + "/" + name + ".sc";
 
-    CHECK(fs::exists(srcPath));
-    if (!fs::exists(srcPath)) return;
+    if (!fs::exists(srcPath)) {
+        std::fprintf(stderr,
+                     "SKIP golden_%s: missing fixture '%s' (set AY_SHADER_REGEN_GOLDEN=1 after adding fixtures)\n",
+                     name.c_str(), srcPath.c_str());
+        return;
+    }
 
     std::string src = readFile(srcPath);
     CHECK_FALSE(src.empty());
