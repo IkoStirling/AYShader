@@ -73,6 +73,33 @@ BindingId ShaderResource::getStorageBufferBinding(const std::string& name) const
     return lookupBinding(impl->storageBufferBindings, name);
 }
 
+bool ShaderResource::hasUniformBinding(BindingId id) const
+{
+    if (id == InvalidBinding) {
+        return false;
+    }
+    ShaderResourceImpl* impl = resolveImpl(_id);
+    if (impl == nullptr) {
+        return false;
+    }
+    const BindingEntry* entry = findBindingEntry(*impl, id);
+    return entry != nullptr
+        && (entry->kind == BindingKind::Uniform || entry->kind == BindingKind::UniformBlock);
+}
+
+bool ShaderResource::hasTextureBinding(BindingId id) const
+{
+    if (id == InvalidBinding) {
+        return false;
+    }
+    ShaderResourceImpl* impl = resolveImpl(_id);
+    if (impl == nullptr) {
+        return false;
+    }
+    const BindingEntry* entry = findBindingEntry(*impl, id);
+    return entry != nullptr && entry->kind == BindingKind::Texture;
+}
+
 size_t ShaderResource::getUniformBlockSize(BindingId blockId) const
 {
     ShaderResourceImpl* impl = resolveImpl(_id);

@@ -39,6 +39,10 @@ public:
     BindingId getUniformBlockBinding(const std::string& name) const;
     BindingId getStorageBufferBinding(const std::string& name) const;
 
+    // True when `id` is a uniform/UBO binding on this resource (not a texture slot).
+    bool hasUniformBinding(BindingId id) const;
+    bool hasTextureBinding(BindingId id) const;
+
     size_t getUniformBlockSize(BindingId blockId) const;
     size_t getUniformBlockFieldOffset(BindingId blockId,
                                       const std::string& fieldName) const;

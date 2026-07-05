@@ -124,9 +124,30 @@ uint16_t uniformElementCount(const std::string& type, uint8_t declaredCount)
     return 1;
 }
 
-bgfx::ShaderHandle createShaderFromBytes(const std::vector<uint8_t>& bytes)
+bool isValidBgfxShaderBinary(const std::vector<uint8_t>& bytes, char stageTag)
+{
+    if (bytes.size() < 4) {
+        return false;
+    }
+    const uint8_t* header = bytes.data();
+    return header[0] == static_cast<uint8_t>(stageTag)
+        && header[1] == static_cast<uint8_t>('S')
+        && header[2] == static_cast<uint8_t>('H');
+}
+
+bgfx::ShaderHandle createShaderFromBytes(const std::vector<uint8_t>& bytes, char stageTag,
+                                         std::vector<std::string>& errors)
 {
     if (bytes.empty()) {
+        errors.push_back("shader bytes empty");
+        return BGFX_INVALID_HANDLE;
+    }
+    if (!isValidBgfxShaderBinary(bytes, stageTag)) {
+        errors.push_back(std::string("invalid bgfx shader header for stage '")
+                         + stageTag + "' (size=" + std::to_string(bytes.size())
+                         + ", magic=" + std::to_string(bytes[0]) + std::to_string(bytes[1])
+                         + std::to_string(bytes[2]) + std::to_string(bytes[3])
+                         + "); check shaderc/bgfx version match");
         return BGFX_INVALID_HANDLE;
     }
     const bgfx::Memory* mem = bgfx::copy(bytes.data(), static_cast<uint32_t>(bytes.size()));
@@ -224,8 +245,8 @@ bool wireUpProgram(ShaderResourceImpl& impl, const CompiledShaderProgram& prog,
     }
 
     if (hasMaterial) {
-        impl.vertexShader = createShaderFromBytes(prog.vsBin);
-        impl.fragmentShader = createShaderFromBytes(prog.fsBin);
+        impl.vertexShader = createShaderFromBytes(prog.vsBin, 'V', errors);
+        impl.fragmentShader = createShaderFromBytes(prog.fsBin, 'F', errors);
         if (!bgfx::isValid(impl.vertexShader) || !bgfx::isValid(impl.fragmentShader)) {
             errors.push_back("ShaderResource wire-up: bgfx::createShader failed for vs/fs");
             return false;
@@ -247,7 +268,7 @@ bool wireUpProgram(ShaderResourceImpl& impl, const CompiledShaderProgram& prog,
         impl.vertexShader = BGFX_INVALID_HANDLE;
         impl.fragmentShader = BGFX_INVALID_HANDLE;
     } else {
-        impl.computeShader = createShaderFromBytes(prog.csBin);
+        impl.computeShader = createShaderFromBytes(prog.csBin, 'C', errors);
         if (!bgfx::isValid(impl.computeShader)) {
             errors.push_back("ShaderResource wire-up: bgfx::createShader failed for cs");
             return false;
@@ -303,28 +324,40 @@ void ShaderResourceImpl::destroyGpuResources()
 }
 
 struct ShaderResourcePool::Impl {
-    static std::atomic<uint32_t> s_nextPoolSerial;
-    static std::unordered_map<uint32_t, Impl*> s_poolRegistry;
-    static std::mutex s_poolRegistryMutex;
+    static std::unordered_map<uint32_t, Impl*>& poolRegistry()
+    {
+        // Intentionally leaked: survives static destruction of pools at process exit.
+        static std::unordered_map<uint32_t, Impl*>* registry =
+            new std::unordered_map<uint32_t, Impl*>();
+        return *registry;
+    }
+
+    static std::mutex& poolRegistryMutex()
+    {
+        static std::mutex* mutex = new std::mutex();
+        return *mutex;
+    }
 
     static void registerPool(uint32_t serial, Impl* impl)
     {
-        std::lock_guard<std::mutex> lock(s_poolRegistryMutex);
-        s_poolRegistry[serial] = impl;
+        std::lock_guard<std::mutex> lock(poolRegistryMutex());
+        poolRegistry()[serial] = impl;
     }
 
     static void unregisterPool(uint32_t serial)
     {
-        std::lock_guard<std::mutex> lock(s_poolRegistryMutex);
-        s_poolRegistry.erase(serial);
+        std::lock_guard<std::mutex> lock(poolRegistryMutex());
+        poolRegistry().erase(serial);
     }
 
     static Impl* findPool(uint32_t serial)
     {
-        std::lock_guard<std::mutex> lock(s_poolRegistryMutex);
-        const auto it = s_poolRegistry.find(serial);
-        return it != s_poolRegistry.end() ? it->second : nullptr;
+        std::lock_guard<std::mutex> lock(poolRegistryMutex());
+        const auto it = poolRegistry().find(serial);
+        return it != poolRegistry().end() ? it->second : nullptr;
     }
+
+    static std::atomic<uint32_t> s_nextPoolSerial;
 
     uint32_t poolSerial = 0;
     std::string shadercPath;
@@ -852,6 +885,82 @@ void ShaderResourcePool::release(ShaderResource& res)
     res.reset();
 }
 
+ShaderResource ShaderResourcePool::acquireFromBgfxSc(const std::string& vertexSc,
+                                                     const std::string& fragmentSc,
+                                                     const std::string& varyingDefSc,
+                                                     const std::string& cacheKey)
+{
+    if (!_impl) {
+        _impl = std::make_unique<Impl>();
+    }
+
+    _impl->ensurePlatformProfileResolved();
+
+    const std::string keyMaterial = _impl->makeCacheKeyMaterial(
+        cacheKey.empty() ? "bgfx_sc" : cacheKey,
+        vertexSc + "\n---\n" + fragmentSc + "\n---\n" + varyingDefSc,
+        phoskia::CompileOptions{});
+    const std::string key = detail::sha256Hex(keyMaterial);
+
+    if (const auto cacheIt = _impl->cache.find(key); cacheIt != _impl->cache.end()) {
+        ShaderResourceImpl* cached =
+            _impl->resolveLocal(detail::shaderHandleLocalId(cacheIt->second));
+        if (cached != nullptr && bgfx::isValid(cached->programHandle)) {
+            ++_impl->stats.binaryHits;
+            return ShaderResource(cacheIt->second);
+        }
+        _impl->cache.erase(cacheIt);
+    }
+
+    BGFXCompileOptions opts = _impl->engineBgfxOpts(phoskia::CompileOptions{});
+
+    AYShadercDriver driver;
+    try {
+        driver = opts.shadercPath.empty() ? AYShadercDriver() : AYShadercDriver(opts.shadercPath);
+    } catch (const std::exception& e) {
+        _impl->lastCompileErrors = {std::string("shaderc unavailable: ") + e.what()};
+        return ShaderResource{};
+    }
+
+    auto compileStage = [&](const char* stage, const std::string& source,
+                            std::vector<uint8_t>& out) -> bool {
+        ShaderCompileRequest req;
+        req.scSource           = source;
+        req.stage              = stage;
+        req.varyingdefSource   = varyingDefSc;
+        req.platform           = opts.platform;
+        req.profile            = opts.profile;
+        req.includeDirs        = opts.includeDirs;
+        req.outputName         = std::string("bgfx_sc_") + stage;
+        const ShaderCompileResult result = driver.compile(req);
+        if (!result.ok) {
+            _impl->lastCompileErrors.push_back(result.stderrText);
+            return false;
+        }
+        out = result.bytes;
+        return !out.empty();
+    };
+
+    CompiledShaderProgram prog;
+    if (!compileStage("vertex", vertexSc, prog.vsBin)
+        || !compileStage("fragment", fragmentSc, prog.fsBin)) {
+        return ShaderResource{};
+    }
+
+    BGFXTexture texBinding;
+    texBinding.name    = "s_texColor";
+    texBinding.binding = 0;
+    prog.textures.push_back(texBinding);
+    prog.success       = true;
+
+    ShaderResource resource = acquire(prog);
+    if (resource.isValid()) {
+        _impl->cache[key] = resource.id();
+        ++_impl->stats.binaryMisses;
+    }
+    return resource;
+}
+
 ShaderResource ShaderResourcePool::acquire(const CompiledShaderProgram& prog)
 {
     if (!_impl) {
@@ -884,8 +993,5 @@ void ShaderResourcePool::shutdown()
 }
 
 std::atomic<uint32_t> ShaderResourcePool::Impl::s_nextPoolSerial{1};
-std::unordered_map<uint32_t, ShaderResourcePool::Impl*>
-    ShaderResourcePool::Impl::s_poolRegistry{};
-std::mutex ShaderResourcePool::Impl::s_poolRegistryMutex{};
 
 } // namespace ayt::shader

@@ -104,14 +104,17 @@ SpawnResult spawnCapturing(const std::string& exe,
     si.hStdOutput = hWrite;
     si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
     si.dwFlags   |= STARTF_USESTDHANDLES;
+    si.dwFlags   |= STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
 
     PROCESS_INFORMATION pi{};
     std::wstring cmdLineW(cmdLine.begin(), cmdLine.end());
 
+    constexpr DWORD kCreateNoWindow = 0x08000000u;
     BOOL ok = CreateProcessW(
         nullptr, cmdLineW.data(),
         nullptr, nullptr,
-        TRUE, 0, nullptr, nullptr,
+        TRUE, kCreateNoWindow, nullptr, nullptr,
         &si, &pi);
 
     if (!ok) {

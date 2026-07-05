@@ -71,6 +71,12 @@ public:
                            const phoskia::CompileOptions& opts,
                            const std::string& cacheKey = "");
 
+    // Compile raw bgfx .sc sources (non-Phoskia) with the same shaderc options as engine materials.
+    ShaderResource acquireFromBgfxSc(const std::string& vertexSc,
+                                     const std::string& fragmentSc,
+                                     const std::string& varyingDefSc,
+                                     const std::string& cacheKey = "bgfx_sc");
+
     void release(ShaderResource& res);
     void shutdown();
 
