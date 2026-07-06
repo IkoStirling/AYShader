@@ -785,13 +785,40 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
         }
     }
 
+    // Phase 1 RD-04: HLSL (D3D) has no `layout(std140) uniform` keyword.
+    // Emit `cbuffer` blocks instead when the target platform is
+    // windows / dxbc. This fixes the "unrecognized identifier 'layout'"
+    // failure we hit on the D3D compile path during the Suzanne
+    // skinned demo (frame 0/30/60 screenshots).
+    const bool isHlsl = (opts.platform == "windows");
+
+    auto toHlslType = [](const std::string& glsl) -> std::string {
+        if (glsl == "vec2" || glsl == "ivec2") return "float2";
+        if (glsl == "vec3" || glsl == "ivec3") return "float3";
+        if (glsl == "vec4" || glsl == "ivec4") return "float4";
+        if (glsl == "mat2" || glsl == "mat2x2") return "float2x2";
+        if (glsl == "mat3" || glsl == "mat3x3") return "float3x3";
+        if (glsl == "mat4" || glsl == "mat4x4") return "float4x4";
+        if (glsl == "float")  return "float";
+        if (glsl == "int")    return "int";
+        return glsl;
+    };
+
     for (const auto& ub : program.uniformBlocks) {
         if (!ub) continue;
         std::ostringstream blockSrc;
         int binding = ub->uboBinding;            // -1 = auto
         if (binding < 0) binding = nextAutoBinding++;
-        blockSrc << "layout(std140, binding = " << binding
-                 << ") uniform " << ub->name << " {\n";
+        if (isHlsl) {
+            // HLSL cbuffer (DXBC): no trailing-instance name and no
+            // `layout()` qualifier. GLSL's `uniform Name { ... } Name`
+            // reuses the block name as an instance identifier; HLSL
+            // binds the buffer by register, not by the trailing id.
+            blockSrc << "cbuffer " << ub->name << " : register(b" << binding << ")\n{\n";
+        } else {
+            blockSrc << "layout(std140, binding = " << binding
+                     << ") uniform " << ub->name << " {\n";
+        }
         for (size_t i = 0; i < ub->uboFields.size(); ++i) {
             std::string fieldTypeLex = "vec4";  // fallback (matches IR warning policy)
             if (ub->uboFields[i]) fieldTypeLex = ub->uboFields[i]->toString();
@@ -818,13 +845,18 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
             if (elementLex == "mat4x4") elementLex = "mat4";
             else if (elementLex == "mat3x3") elementLex = "mat3";
             else if (elementLex == "mat2x2") elementLex = "mat2";
-            blockSrc << "    " << elementLex << " " << ub->uboFieldNames[i];
+            const std::string emitType = isHlsl ? toHlslType(elementLex) : elementLex;
+            blockSrc << "    " << emitType << " " << ub->uboFieldNames[i];
             if (arrayLength > 0) {
                 blockSrc << "[" << arrayLength << "]";
             }
             blockSrc << ";\n";
         }
-        blockSrc << "} " << ub->name << ";\n\n";
+        if (isHlsl) {
+            blockSrc << "};\n\n";
+        } else {
+            blockSrc << "} " << ub->name << ";\n\n";
+        }
         _uboDecls += blockSrc.str();
 
         BGFXUniformBlock bub;
