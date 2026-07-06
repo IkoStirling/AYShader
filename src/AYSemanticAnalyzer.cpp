@@ -143,6 +143,11 @@ void AYSemanticAnalyzer::analyzeShaderParam(const ShaderParam& param) {
         case PhoskiaSemantic::Normal:   type = BuiltinTypes::Vec3(); break;
         case PhoskiaSemantic::Color:    type = BuiltinTypes::Vec4(); break;
         case PhoskiaSemantic::Texcoord: type = BuiltinTypes::Vec2(); break;
+        // Phase 1 RD-03: skinning vertex attributes are vec4 in Phoskia.
+        // Indices bytes (0..255) get re-encoded by the renderer's
+        // repack path into bgfx's normalized u8 channel.
+        case PhoskiaSemantic::BoneIndices: type = BuiltinTypes::Vec4(); break;
+        case PhoskiaSemantic::BoneWeights: type = BuiltinTypes::Vec4(); break;
     }
     _env.addVariable(param.name, type);
     _symbols[param.name] = type;

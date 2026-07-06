@@ -275,14 +275,23 @@ std::unique_ptr<IRDeclaration> IRGenerator::lowerDecl(const phoskia::Stmt& s) {
         out->name = ub->name;
         out->uboFieldNames.reserve(ub->fields.size());
         out->uboFields.reserve(ub->fields.size());
+        out->uboFieldArrayLengths.reserve(ub->fields.size());
         for (const auto& f : ub->fields) {
             out->uboFieldNames.push_back(f.name);
+            out->uboFieldArrayLengths.push_back(f.arrayLength);
             auto t = lexemeToType(f.type);
             if (!t) {
                 _warnings.push_back("UniformBlock '" + ub->name + "' field '" + f.name +
                     "' has unrecognized type lexeme '" + f.type +
                     "'; BGFX emission will fall back to vec4");
                 t = phoskia::BuiltinTypes::Vec4();
+            }
+            // Phase 1 RD-04: when arrayLength > 0, wrap the element type
+            // as ArrayType<size>. Downstream BGFX emit uses this to produce
+            // `mat4 bones[128];`; std140 layout uses arrayLength*elementSize.
+            if (f.arrayLength > 0) {
+                t = std::make_shared<phoskia::ArrayType>(t,
+                    static_cast<size_t>(f.arrayLength));
             }
             out->uboFields.push_back(t);
         }

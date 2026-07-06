@@ -271,6 +271,10 @@ public:
     // Phase 3.4 trusts the GLSL compiler to compute the layout.
     std::vector<std::shared_ptr<Type>> uboFields;     // only when kind == UniformBlock
     std::vector<std::string>          uboFieldNames;  // parallel to uboFields
+    // Phase 1 RD-04: parallel array-length vector (0 = non-array,
+    // >0 = `type name[N]` source form). Std140 layout and BGFX emit
+    // use this to expand into N*elementSize bytes / `mat4 bones[N];`.
+    std::vector<int>                  uboFieldArrayLengths;
     int uboBinding = -1;                              // only when kind == UniformBlock; Phase 3.5-B semantics
 
     IRDeclaration() : kind(Kind::Uniform) {}

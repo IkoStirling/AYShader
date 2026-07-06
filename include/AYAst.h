@@ -55,11 +55,17 @@ class VariantAttribute;
 // Phoskia semantic types (used by ShaderParam) — replaces bgfx
 // POSITION/NORMAL/COLOR0/TEXCOORD0 from the programmer's perspective.
 // Mapping to bgfx semantic slots lives in the converter.
+//
+// Phase 1 RD-03: BoneIndices / BoneWeights feed skeletal skinning.
+// They map to bgfx::Attrib::Indices (4x u8 normalized) and
+// bgfx::Attrib::Weight (4x f32) — see VertexLayoutBridge.cpp.
 enum class PhoskiaSemantic : uint8_t {
     Position,
     Normal,
     Color,
     Texcoord,
+    BoneIndices,
+    BoneWeights,
 };
 
 // (2) AstNode base — must come BEFORE any class derives from it.
@@ -308,6 +314,10 @@ public:
 struct UniformBlockField {
     std::string type;   // GLSL lexeme: "float" / "vec3" / "uint" / ...
     std::string name;
+    // Phase 1 RD-04: optional fixed-size array suffix. 0 = non-array
+    // (default); >0 = `type name[N]` in source — Std140 layout expands
+    // the field to N*elementSize bytes, GLSL emit produces `type name[N];`.
+    int arrayLength = 0;
 };
 class UniformBlockDecl : public Stmt {
 public:

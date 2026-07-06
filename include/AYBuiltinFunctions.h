@@ -123,4 +123,14 @@ namespace UtilityFunctions {
     void registerIf();
 }
 
+// Phase 1 RD-03: skeletal animation helper builtins.
+// `skinningMatrix(ivec4 indices, vec4 weights, mat4[] bones, vec4 pos)`
+// returns the linear-blend skinning transform applied to `pos`.
+// In Phoskia the bones argument is a single `mat4` field (not a
+// collection) — the GLSL emit expands the call into a 4-bone
+// weighted sum using the field name as the array identifier.
+namespace SkeletalFunctions {
+    void registerSkinningMatrix();
+}
+
 } // namespace ayt::shader::phoskia

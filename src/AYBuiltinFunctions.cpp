@@ -63,6 +63,34 @@ void BuiltinFunctionRegistry::registerDefaults() {
     auto M3 = BuiltinTypes::Mat3();
     auto M4 = BuiltinTypes::Mat4();
 
+    // Phase 1 RD-03: register the skinningMatrix builtin (no-op stub —
+    // the BGFX backend special-cases this call by name and emits a
+    // weighted-sum expansion inline).
+    //
+    // Registered INLINE here (not via SkeletalFunctions::registerXxx)
+    // because the registry's ctor is mid-construction when this runs —
+    // calling `instance()` from a sub-function re-enters the static
+    // local and recurses forever.
+    {
+        auto sk_IV4 = std::make_shared<VectorType>(PrimitiveType::Int, 4);
+        auto sk_V4 = BuiltinTypes::Vec4();
+        auto sk_M4 = BuiltinTypes::Mat4();
+        auto sk_M4Array = std::make_shared<ArrayType>(sk_M4);
+        auto sk_stub = [](auto) -> float { return 0.0f; };
+        // Two overloads: bones as ArrayType<mat4> (preferred / what the
+        // parser lowers to when the field is `mat4 bones[N]`), and bones
+        // as bare Mat4 (fallback if the type env doesn't preserve the
+        // array wrapping).
+        registerFunction("skinningMatrix",
+            std::vector<std::shared_ptr<Type>>{ sk_IV4, sk_V4, sk_M4Array, sk_V4 },
+            sk_V4, sk_stub,
+            "Linear-blend skinning transform (ivec4 indices, vec4 weights, mat4[] bones, vec4 pos) -> vec4");
+        registerFunction("skinningMatrix",
+            std::vector<std::shared_ptr<Type>>{ sk_IV4, sk_V4, sk_M4, sk_V4 },
+            sk_V4, sk_stub,
+            "Linear-blend skinning transform (fallback non-array mat4 bones)");
+    }
+
     // Phase 2 Step 2: placeholder runtime impl. The BGFX backend
     // ignores all of this and emits GLSL directly. The interpreter
     // fallback (used by tests) doesn't actually run these bodies.
@@ -430,6 +458,16 @@ namespace UtilityFunctions {
     void registerReduce() {}
     void registerFilter() {}
     void registerIf() {}
+}
+
+namespace SkeletalFunctions {
+    // Phase 1 RD-03: skinningMatrix is registered INLINE in
+    // BuiltinFunctionRegistry::registerDefaults above. A namespace
+    // function would re-enter `instance()` and recurse forever
+    // (the registry ctor is mid-construction when registerDefaults
+    // runs). The empty body here mirrors the MathFunctions / PBRFunctions
+    // namespace stub pattern — kept in the header for future extensions.
+    void registerSkinningMatrix() {}
 }
 
 } // namespace ayt::shader::phoskia

@@ -1,0 +1,30 @@
+uniformblock Skeleton {
+    mat4 bones[128]
+}
+material SkinnedLit {
+    texture2d albedoMap
+    uniform vec3 lightDir
+    uniform vec3 lightColor
+    property baseColor = vec4(1.0, 1.0, 1.0, 1.0)
+
+    vertex {
+        in pos    : position
+        in nrm    : normal
+        in uv     : texcoord
+        in boneId : boneindices
+        in boneWt : boneweights
+
+        out vWorldNormal : normal = vec3(0.0, 0.0, 1.0)
+        out vUv          : texcoord = vec2(0.0, 0.0)
+
+        let skinned = skinningMatrix(boneId, boneWt, Skeleton.bones, vec4(pos, 1.0))
+        return modelViewProjection * skinned
+    }
+    fragment {
+        in vWorldNormal : normal
+        in vUv          : texcoord
+        let albedo = sample(albedoMap, vUv) * baseColor
+        let ndotl = max(dot(normalize(vWorldNormal), -lightDir), 0.05)
+        return vec4(albedo.rgb * lightColor * ndotl, albedo.a)
+    }
+}

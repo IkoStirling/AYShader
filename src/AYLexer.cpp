@@ -153,6 +153,11 @@ TokenType Lexer::identifierType(const std::string& lexeme) {
         {"normal", TokenType::Normal},
         {"color", TokenType::Color},
         {"texcoord", TokenType::Texcoord},
+        // Phase 1 RD-03: skeletal skinning vertex semantics.
+        // Map to bgfx::Attrib::Indices (4x u8 normalized) and
+        // bgfx::Attrib::Weight (4x f32) in the BGFX converter.
+        {"boneindices", TokenType::BoneIndices},
+        {"boneweights", TokenType::BoneWeights},
         // GLSL type names are intentionally NOT keywords — they are
         // emitted as plain Identifier tokens (lexeme = "vec3", "float",
         // ...). Whether a given Identifier is a builtin type is decided

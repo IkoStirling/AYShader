@@ -153,6 +153,14 @@ semanticTable() {
         {phoskia::PhoskiaSemantic::Normal,   {"NORMAL",    "a_normal",    "v_normal",    "vec3", "vec3(0.0, 0.0, 1.0)"}},
         {phoskia::PhoskiaSemantic::Color,    {"COLOR0",    "a_color0",    "v_color0",    "vec4", "vec4(1.0, 0.0, 0.0, 1.0)"}},
         {phoskia::PhoskiaSemantic::Texcoord, {"TEXCOORD0", "a_texcoord0", "v_texcoord0", "vec2", "vec2(0.0, 0.0)"}},
+        // Phase 1 RD-03: skeletal skinning vertex attributes.
+        // These map to bgfx's BLENDINDICES (4x u8 normalized) and
+        // BLENDWEIGHT (4x f32) slots. Phoskia types here are vec4
+        // for both — Phoskia does not have a distinct integer-vector
+        // type for indices; the AYRenderer repack path takes care of
+        // the per-component byte packing for the Indices channel.
+        {phoskia::PhoskiaSemantic::BoneIndices, {"BLENDINDICES", "a_indices", "", "vec4", "vec4(0.0, 0.0, 0.0, 0.0)"}},
+        {phoskia::PhoskiaSemantic::BoneWeights, {"BLENDWEIGHT",  "a_weights", "", "vec4", "vec4(0.0, 0.0, 0.0, 0.0)"}},
     };
     return table;
 }
@@ -511,6 +519,38 @@ void emitExpr(std::ostringstream& out, const phoskia::ir::IRExpr& e,
                     out << ")";
                 }
                 return;
+            } else if (callee->name == "skinningMatrix") {
+                // Phase 1 RD-03: linear-blend skinning.
+                //   skinningMatrix(indices, weights, bones, pos) →
+                //     weights.x * bones[int(indices.x)] * pos
+                //   + weights.y * bones[int(indices.y)] * pos
+                //   + weights.z * bones[int(indices.z)] * pos
+                //   + weights.w * bones[int(indices.w)] * pos
+                // `bones` is the third argument's emitted expression —
+                // for `Skeleton.bones` (mat4[] UBO field) the emit
+                // produces `Skeleton.bones`, valid as an array accessor
+                // in GLSL. Indices come in as ivec4; cast to int for
+                // older GLSL profiles.
+                if (call->args.size() != 4) {
+                    out << "/* skinningMatrix: expected 4 args */ vec4(0.0)";
+                    return;
+                }
+                const char* weightChannels = "xyzw";
+                out << "(";
+                for (int c = 0; c < 4; ++c) {
+                    if (c > 0) out << " + ";
+                    out << "(";
+                    emitExpr(out, *call->args[1], ctx);  // weights
+                    out << "." << weightChannels[c] << ") * (";
+                    emitExpr(out, *call->args[2], ctx);  // bones
+                    out << "[int(";
+                    emitExpr(out, *call->args[0], ctx);  // indices
+                    out << "." << weightChannels[c] << ")] * ";
+                    emitExpr(out, *call->args[3], ctx);  // pos
+                    out << ")";
+                }
+                out << ")";
+                return;
             } else {
                 out << callee->name;
             }
@@ -755,7 +795,34 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
         for (size_t i = 0; i < ub->uboFields.size(); ++i) {
             std::string fieldTypeLex = "vec4";  // fallback (matches IR warning policy)
             if (ub->uboFields[i]) fieldTypeLex = ub->uboFields[i]->toString();
-            blockSrc << "    " << fieldTypeLex << " " << ub->uboFieldNames[i] << ";\n";
+            // Phase 1 RD-04: emit `mat4 bones[N];` when arrayLength>0.
+            // Strip the "array<...>" wrapping the IR Type inserts — GLSL
+            // wants the raw element type plus `[N]`. Also normalize
+            // `mat4x4` → `mat4` (single-number form is what bgfx's GLSL
+            // 1.20 profile accepts).
+            const int arrayLength = (i < ub->uboFieldArrayLengths.size())
+                ? ub->uboFieldArrayLengths[i] : 0;
+            std::string elementLex = fieldTypeLex;
+            const auto openBracket = elementLex.find("array<");
+            if (openBracket == 0) {
+                const auto closeAngle = elementLex.find('>');
+                if (closeAngle != std::string::npos) {
+                    elementLex = elementLex.substr(openBracket + 6,
+                        closeAngle - openBracket - 6);
+                    const auto comma = elementLex.find(',');
+                    if (comma != std::string::npos) {
+                        elementLex = elementLex.substr(0, comma);
+                    }
+                }
+            }
+            if (elementLex == "mat4x4") elementLex = "mat4";
+            else if (elementLex == "mat3x3") elementLex = "mat3";
+            else if (elementLex == "mat2x2") elementLex = "mat2";
+            blockSrc << "    " << elementLex << " " << ub->uboFieldNames[i];
+            if (arrayLength > 0) {
+                blockSrc << "[" << arrayLength << "]";
+            }
+            blockSrc << ";\n";
         }
         blockSrc << "} " << ub->name << ";\n\n";
         _uboDecls += blockSrc.str();
@@ -765,19 +832,46 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
         bub.binding = binding;
         bub.fieldNames = ub->uboFieldNames;
 
+        // Phase 1 RD-04: feed arrayLengths through to std140 layout so
+        // total block size accounts for N*elementSize.
         std::vector<std::string> fieldTypes;
         fieldTypes.reserve(ub->uboFields.size());
+        std::vector<size_t> fieldArrayLengths;
+        fieldArrayLengths.reserve(ub->uboFields.size());
         for (size_t i = 0; i < ub->uboFields.size(); ++i) {
             std::string fieldTypeLex = "vec4";
             if (ub->uboFields[i]) {
                 fieldTypeLex = ub->uboFields[i]->toString();
             }
+            // Strip "array<T, N>" / "array<T>" wrapping for std140 — the
+            // helper wants the bare element type plus the parallel
+            // arrayLengths vector (we keep that already). Also normalize
+            // `mat4x4` → `mat4` etc. so the std140 table recognizes them.
+            const auto openBracket = fieldTypeLex.find("array<");
+            if (openBracket == 0) {
+                const auto closeAngle = fieldTypeLex.find('>');
+                if (closeAngle != std::string::npos) {
+                    fieldTypeLex = fieldTypeLex.substr(openBracket + 6,
+                        closeAngle - openBracket - 6);
+                    const auto comma = fieldTypeLex.find(',');
+                    if (comma != std::string::npos) {
+                        fieldTypeLex = fieldTypeLex.substr(0, comma);
+                    }
+                }
+            }
+            if (fieldTypeLex == "mat4x4") fieldTypeLex = "mat4";
+            else if (fieldTypeLex == "mat3x3") fieldTypeLex = "mat3";
+            else if (fieldTypeLex == "mat2x2") fieldTypeLex = "mat2";
             fieldTypes.push_back(fieldTypeLex);
+            const int al = (i < ub->uboFieldArrayLengths.size())
+                ? ub->uboFieldArrayLengths[i] : 0;
+            fieldArrayLengths.push_back(static_cast<size_t>(al > 0 ? al : 1));
         }
 
         detail::Std140Layout layout;
         std::string layoutError;
-        if (!detail::computeStd140Layout(bub.fieldNames, fieldTypes, layout, &layoutError)) {
+        if (!detail::computeStd140Layout(bub.fieldNames, fieldTypes, layout,
+                                          &layoutError, fieldArrayLengths)) {
             out.errors.push_back("UniformBlock '" + ub->name + "': " + layoutError);
             out.success = false;
             return;

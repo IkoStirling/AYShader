@@ -650,13 +650,37 @@ std::unique_ptr<Stmt> Parser::parseUniformBlockDecl() {
     consume(TokenType::LeftBrace, "Expected '{' before uniform block body");
     std::vector<UniformBlockField> fields;
     while (!check(TokenType::RightBrace) && !isAtEnd()) {
-        // Each field: <type> <name> ';' (optional)
+        // Each field: <type> <name> [<int_literal>]? ';' (optional)
         // The `type` token must be an Identifier (covers builtin
         // scalar / vector names that were demoted from keywords in
         // Phase 2 Step 5 — see design.md §11.1).
+        //
+        // Phase 1 RD-04: optional fixed-size array suffix.
+        //   mat4 bones[128];
+        // The literal int inside `[...]` is consumed as `arrayLength`.
+        // Std140 layout expands to N*elementSize bytes; GLSL emit
+        // produces `mat4 bones[128];`.
         Token fieldType = consumeName("Expected uniform block field type");
         Token fieldName = consumeName("Expected uniform block field name");
-        fields.push_back({fieldType.lexeme, fieldName.lexeme});
+        int arrayLength = 0;
+        if (match(TokenType::LeftBracket)) {
+            Token sizeTok = consume(TokenType::IntLiteral,
+                                    "Expected integer literal for array size");
+            try {
+                arrayLength = static_cast<int>(std::stol(sizeTok.lexeme));
+            } catch (const std::exception&) {
+                error("uniform block array size must be a non-negative integer");
+                return nullptr;
+            }
+            if (arrayLength <= 0) {
+                error("uniform block array size must be positive (got "
+                      + std::to_string(arrayLength) + ")");
+                return nullptr;
+            }
+            consume(TokenType::RightBracket,
+                    "Expected ']' after array size");
+        }
+        fields.push_back({fieldType.lexeme, fieldName.lexeme, arrayLength});
         match(TokenType::Semicolon);  // ';' is optional (Python-like)
     }
     consume(TokenType::RightBrace, "Expected '}' after uniform block body");
@@ -716,8 +740,10 @@ std::unique_ptr<Stmt> Parser::parseShaderParam(ShaderParam::Direction dir) {
     else if (match(TokenType::Normal))   semantic = PhoskiaSemantic::Normal;
     else if (match(TokenType::Color))    semantic = PhoskiaSemantic::Color;
     else if (match(TokenType::Texcoord)) semantic = PhoskiaSemantic::Texcoord;
+    else if (match(TokenType::BoneIndices)) semantic = PhoskiaSemantic::BoneIndices;
+    else if (match(TokenType::BoneWeights)) semantic = PhoskiaSemantic::BoneWeights;
     else {
-        error("Expected Phoskia semantic type (position/normal/color/texcoord)");
+        error("Expected Phoskia semantic type (position/normal/color/texcoord/boneindices/boneweights)");
         return nullptr;
     }
 

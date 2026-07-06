@@ -297,5 +297,14 @@ TEST_CASE(golden_compute_with_storage_binding) {
 TEST_CASE(golden_material_with_ubo_binding) {
     runOneFixture("material_with_ubo_binding");
 }
+// Phase 1 RD-03: skinned_lit.phoskia exercises the new
+//   - BoneIndices / BoneWeights vertex semantics,
+//   - `mat4 bones[128]` UBO array field syntax,
+//   - skinningMatrix builtin call.
+// The .sc baseline is auto-generated on first run; regenerate with
+// AY_SHADER_REGEN_GOLDEN=1 after an intentional converter change.
+TEST_CASE(golden_skinned_lit) {
+    runOneFixture("skinned_lit");
+}
 
 TEST_SUITE_END
