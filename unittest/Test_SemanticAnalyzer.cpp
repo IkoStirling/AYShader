@@ -27,7 +27,7 @@ namespace {
 // Helper: parse + analyze. Returns analyzer + env so tests can query
 // either the analyzer's permanent `_symbols` table (via getType) or
 // the env directly. Note: TypeEnvironment's getVariable only walks
-// currently-active scopes â€?after analyze() returns the inner shader
+// currently-active scopes ï¿½?after analyze() returns the inner shader
 // scopes have already been popped, so shader params are NOT visible
 // through env->getVariable. Use analyzer.getType() instead.
 struct AnalyzeResult {
@@ -295,7 +295,7 @@ TEST_CASE(swizzle_rgb_on_vec4_ok) {
 TEST_CASE(uniform_with_non_builtin_type_is_error) {
     // After Step 5 token-demotion, "vec3" / "float" / etc. are plain
     // Identifier tokens. The SemanticAnalyzer now validates them via
-    // AYBuiltinTypes::isBuiltinType â€?a typo like "vec33" surfaces a
+    // AYBuiltinTypes::isBuiltinType ï¿½?a typo like "vec33" surfaces a
     // Go-style diagnostic here rather than failing inside the BGFX
     // backend later.
     const char* src = R"(
@@ -312,7 +312,7 @@ TEST_CASE(uniform_with_non_builtin_type_is_error) {
 
 TEST_CASE(uniform_with_builtin_type_passes_type_check) {
     // Sanity: vec3 / float / mat4 etc. must NOT trip the
-    // isBuiltinType gate â€?only genuinely unknown lexemes should.
+    // isBuiltinType gate ï¿½?only genuinely unknown lexemes should.
     const char* src = R"(
         material X {
             uniform vec3 cameraPos
@@ -323,6 +323,45 @@ TEST_CASE(uniform_with_builtin_type_passes_type_check) {
     )";
     auto r = analyze(src);
     CHECK_FALSE(r.hasErrors);
+}
+
+// ===== Phase 1 RD-03: bone semantics registered as vec4 =====
+
+TEST_CASE(vertex_in_boneindices_registers_as_vec4) {
+    // Phase 1 RD-03: the BLENDINDICES attribute in bgfx is a vec4 of
+    // normalized indices (index/255 packed as float). Phoskia's
+    // `boneindices` semantic therefore maps to vec4 (not ivec4) so
+    // the same code path as the bgfx shaderc side. The semantic
+    // analyzer must register the param with type = vec4.
+    const char* src = R"(
+        material X {
+            vertex { in boneId : boneindices; return vec4(boneId) }
+            fragment { return vec4(1.0) }
+        }
+    )";
+    auto r = analyze(src);
+    CHECK(r.ok);
+    CHECK_FALSE(r.hasErrors);
+    auto t = r.analyzer->getType("boneId");
+    CHECK(t != nullptr);
+    auto v4 = BuiltinTypes::Vec4();
+    CHECK(t->equals(*v4));
+}
+
+TEST_CASE(vertex_in_boneweights_registers_as_vec4) {
+    // Mirror case for the weights attribute (BLENDWEIGHT in bgfx).
+    const char* src = R"(
+        material X {
+            vertex { in boneWt : boneweights; return vec4(boneWt) }
+            fragment { return vec4(1.0) }
+        }
+    )";
+    auto r = analyze(src);
+    CHECK_FALSE(r.hasErrors);
+    auto t = r.analyzer->getType("boneWt");
+    CHECK(t != nullptr);
+    auto v4 = BuiltinTypes::Vec4();
+    CHECK(t->equals(*v4));
 }
 
 TEST_SUITE_END
