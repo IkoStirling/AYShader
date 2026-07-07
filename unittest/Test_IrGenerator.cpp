@@ -2,7 +2,7 @@
 // AYShader IR Generator Unit Tests (Phase 3.1)
 // ============================================================
 //
-// Exercises IRGenerator::generate â€?the AST â†?IR lowering pass. Every
+// Exercises IRGenerator::generate ï¿½?the AST ï¿½?IR lowering pass. Every
 // IR expression carries a pre-resolved `Type` pointer; backends read it
 // directly instead of running TypeInference. The IR is a 1:1 mirror of
 // the AST with the same node classes plus resolvedType on every Expr.
@@ -11,11 +11,11 @@
 //   - ir_minimal_material_lowers_to_ir_program
 //       IR separates declarations + vertex/fragment into pre-sorted fields.
 //   - ir_let_stmt_carries_resolved_type
-//       let x = 1.0 â†?IRLetStmt.initializer->resolvedType == Float.
+//       let x = 1.0 ï¿½?IRLetStmt.initializer->resolvedType == Float.
 //   - ir_call_expr_carries_resolved_type
-//       normalize(vec3(1.0)) â†?IRCallExpr.resolvedType == Vec3.
+//       normalize(vec3(1.0)) ï¿½?IRCallExpr.resolvedType == Vec3.
 //   - ir_property_uniform_type_resolved_from_initializer
-//       property col = vec3(1.0) â†?IRDeclaration.propertyInit type is Vec3,
+//       property col = vec3(1.0) ï¿½?IRDeclaration.propertyInit type is Vec3,
 //       and the BGFX backend emits `uniform vec3 col` (the regression
 //       fixed in b9723a5 must survive the IR transition).
 //   - ir_compute_decl_passes_through_faithfully
@@ -94,7 +94,7 @@ TEST_CASE(ir_let_stmt_carries_resolved_type) {
             CHECK(let->name == "x");
             CHECK_NOT_NULL(let->initializer.get());
             CHECK_NOT_NULL(let->initializer->resolvedType.get());
-            // 1.0 is a Float literal â€?should resolve to PrimitiveType(Float).
+            // 1.0 is a Float literal ï¿½?should resolve to PrimitiveType(Float).
             auto prim = std::dynamic_pointer_cast<PrimitiveType_>(let->initializer->resolvedType);
             CHECK_NOT_NULL(prim.get());
             CHECK(prim->primitive() == PrimitiveType::Float);
@@ -117,7 +117,7 @@ TEST_CASE(ir_call_expr_carries_resolved_type) {
         if (auto let = dynamic_cast<IRLetStmt*>(s.get())) {
             foundLet = true;
             CHECK_NOT_NULL(let->initializer.get());
-            // normalize(vec3(...)) is a builtin call â†?resolvedType is
+            // normalize(vec3(...)) is a builtin call ï¿½?resolvedType is
             // VectorType(Float, 3) per the BuiltinFunctionRegistry.
             auto vec = std::dynamic_pointer_cast<VectorType>(let->initializer->resolvedType);
             CHECK_NOT_NULL(vec.get());
@@ -207,7 +207,7 @@ TEST_CASE(ir_thread_id_x_resolves_to_uint) {
     // `thread_id().x`) reaches `inferMemberExpr` with objectType =
     // uvec3, and the single-axis swizzle resolves to `uint`. The
     // BGFX backend's let-stmt emission then reads that resolvedType
-    // and emits `uint idx = ...` â€?strict GLSL type-correctness.
+    // and emits `uint idx = ...` ï¿½?strict GLSL type-correctness.
     auto ir = generateIR(R"(
         compute Foo {
             let idx = thread_id.x
@@ -247,7 +247,7 @@ TEST_CASE(ir_compute_shared_decl_lowers_to_shared_kind) {
     CHECK(decl->sharedSize == 64);
     auto vec = std::dynamic_pointer_cast<VectorType>(decl->sharedElementType);
     // sharedElementType for `shared float tile[64]` is
-    // PrimitiveType_(Float) (the scalar), not VectorType â€?same
+    // PrimitiveType_(Float) (the scalar), not VectorType ï¿½?same
     // shape as StorageDecl's element type.
     auto prim = std::dynamic_pointer_cast<PrimitiveType_>(decl->sharedElementType);
     CHECK_NOT_NULL(prim.get());
@@ -259,7 +259,7 @@ TEST_CASE(ir_uniformblock_lowers_with_field_types) {
     // `uniformblock Camera { vec3 position; float fov; uint flags; }`
     // produces an IRProgram::uniformBlocks entry with one IRDeclaration
     // whose kind=UniformBlock. Field types resolve through the
-    // lexemeToType table â€?vec3 â†?VectorType(Float,3), float â†?    // Float, uint â†?Uint (Phase 3.3 Block 1).
+    // lexemeToType table ï¿½?vec3 ï¿½?VectorType(Float,3), float ï¿½?    // Float, uint ï¿½?Uint (Phase 3.3 Block 1).
     auto ir = generateIR(R"(
         uniformblock Camera {
             vec3 position
@@ -278,16 +278,16 @@ TEST_CASE(ir_uniformblock_lowers_with_field_types) {
     CHECK(decl->uboFieldNames[0] == "position");
     CHECK(decl->uboFieldNames[1] == "fov");
     CHECK(decl->uboFieldNames[2] == "flags");
-    // vec3 â†?VectorType(Float, 3)
+    // vec3 ï¿½?VectorType(Float, 3)
     auto vec3 = std::dynamic_pointer_cast<VectorType>(decl->uboFields[0]);
     CHECK_NOT_NULL(vec3.get());
     CHECK(vec3->elementType() == PrimitiveType::Float);
     CHECK(vec3->dimension() == 3);
-    // float â†?Float
+    // float ï¿½?Float
     auto flt = std::dynamic_pointer_cast<PrimitiveType_>(decl->uboFields[1]);
     CHECK_NOT_NULL(flt.get());
     CHECK(flt->primitive() == PrimitiveType::Float);
-    // uint â†?Uint
+    // uint ï¿½?Uint
     auto u = std::dynamic_pointer_cast<PrimitiveType_>(decl->uboFields[2]);
     CHECK_NOT_NULL(u.get());
     CHECK(u->primitive() == PrimitiveType::Uint);
@@ -296,7 +296,7 @@ TEST_CASE(ir_uniformblock_lowers_with_field_types) {
 // Phase 3.5-B: `ir_uniformblock_binding_auto_increments` was retired
 // because binding slot resolution moved from IRGenerator (Phase 3.4
 // `nextBinding_` counter) to BGFX emit time. The IRGenerator is now
-// purely declarative â€?it propagates the AST's `binding` field (-1
+// purely declarative ï¿½?it propagates the AST's `binding` field (-1
 // or literal) into `IRDeclaration::uboBinding` verbatim. Auto-slot
 // assignment at emit time is covered by the Phoskia e2e tests
 // (`compile_uniformblock_without_binding_uses_auto_slot` and
@@ -319,7 +319,7 @@ TEST_CASE(ir_uniformblock_lowers_with_explicit_binding) {
 }
 
 TEST_CASE(ir_uniformblock_lowers_without_binding_keeps_default) {
-    // Phase 3.5-B: no `binding` suffix â†?uboBinding stays at its
+    // Phase 3.5-B: no `binding` suffix ï¿½?uboBinding stays at its
     // sentinel default (-1), telling the BGFX emit to auto-assign a
     // slot. Mirrors the SSBO test
     // `ir_storage_lowers_without_binding_keeps_default`.
@@ -342,7 +342,7 @@ TEST_CASE(ir_uniformblock_unknown_field_type_warns) {
     // produces a non-fatal warning and falls back to vec4. We
     // can't check the warning string here (it's only collected on
     // IRProgram::warnings which the test framework doesn't print
-    // by default), but the field is still lowered â€?the block
+    // by default), but the field is still lowered ï¿½?the block
     // doesn't error out and just emits `vec4 particle;` in GLSL.
     auto ir = generateIR(R"(
         uniformblock Foo {
@@ -360,7 +360,7 @@ TEST_CASE(ir_uniformblock_unknown_field_type_warns) {
 // ===== Phase 3.5-A: storage decl explicit binding slot =====
 
 TEST_CASE(ir_storage_lowers_with_explicit_binding) {
-    // `storage foo : rwstructuredbuffer<int> binding 2;` â€?the
+    // `storage foo : rwstructuredbuffer<int> binding 2;` ï¿½?the
     // binding literal is propagated onto the IRDeclaration's
     // storageBinding field. The BGFX backend reads this to emit
     // `layout(std430, binding = 2)`.
@@ -378,7 +378,7 @@ TEST_CASE(ir_storage_lowers_with_explicit_binding) {
 }
 
 TEST_CASE(ir_storage_lowers_without_binding_keeps_default) {
-    // Absence of `binding` â†?storageBinding stays at -1 (the default).
+    // Absence of `binding` ï¿½?storageBinding stays at -1 (the default).
     // The BGFX backend auto-assigns slots at emit time, starting from
     // max(explicit bindings) + 1.
     auto ir = generateIR(R"(
@@ -394,7 +394,7 @@ TEST_CASE(ir_storage_lowers_without_binding_keeps_default) {
 TEST_CASE(ir_two_storage_decls_with_distinct_bindings) {
     // Two storage decls with explicit bindings: the IR carries
     // each literal as-is (the BGFX backend detects duplicates at
-    // emit time, not at IR time â€?that keeps lowering simple).
+    // emit time, not at IR time ï¿½?that keeps lowering simple).
     auto ir = generateIR(R"(
         compute Foo {
             storage counters : rwstructuredbuffer<int> binding 0
@@ -404,6 +404,38 @@ TEST_CASE(ir_two_storage_decls_with_distinct_bindings) {
     CHECK(ir.computes.front()->declarations.size() == 2);
     CHECK(ir.computes.front()->declarations[0]->storageBinding == 0);
     CHECK(ir.computes.front()->declarations[1]->storageBinding == 1);
+}
+
+// ===== Phase 1 RD-03: UBO array field in IR =====
+
+TEST_CASE(ir_uniformblock_array_field_preserves_arraylength) {
+    // Phase 1 RD-03: `mat4 bones[128]` must reach the IR layer with
+    // (a) uboFieldArrayLengths carrying 128 and (b) the field type
+    // wrapped in ArrayType<size>. The BGFX backend reads uboFieldArrayLengths
+    // directly to emit `mat4 bones[128];` (the ArrayType wrapping is
+    // stripped before HLSL/GLSL emission to keep the element type clean).
+    auto ir = generateIR(R"(
+        uniformblock Skeleton {
+            mat4 bones[128]
+        }
+        material P { vertex { } fragment { } }
+    )");
+    CHECK(ir.uniformBlocks.size() == 1);
+    const auto& decl = ir.uniformBlocks.front();
+    CHECK(decl->uboFields.size() == 1);
+    CHECK(decl->uboFieldNames.size() == 1);
+    CHECK(decl->uboFieldNames[0] == "bones");
+    CHECK(decl->uboFieldArrayLengths.size() == 1);
+    CHECK(decl->uboFieldArrayLengths[0] == 128);
+    // The field type must be wrapped in ArrayType<size>.
+    auto arr = std::dynamic_pointer_cast<ArrayType>(decl->uboFields[0]);
+    CHECK_NOT_NULL(arr.get());
+    CHECK(arr->size() == 128u);
+    // Element type is mat4 (MatrixType FloatÃ—4).
+    auto mat = std::dynamic_pointer_cast<MatrixType>(arr->elementType());
+    CHECK_NOT_NULL(mat.get());
+    CHECK(mat->rows() == 4u);
+    CHECK(mat->cols() == 4u);
 }
 
 }
