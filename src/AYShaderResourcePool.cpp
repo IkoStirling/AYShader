@@ -15,7 +15,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <optional>
@@ -41,6 +43,172 @@ struct HotReloadWatch {
     std::vector<std::string> cacheKeys;
     std::vector<uint64_t> liveHandles;
 };
+
+} // namespace
+
+namespace {
+
+// Hand-authored bgfx .sc shaders bypass Phoskia/AYBGFXConverter, so binding
+// metadata must be synthesized here or ForwardOpaquePass never uploads data.
+bool uniformAlreadyDeclared(const CompiledShaderProgram& prog, const std::string& name)
+{
+    for (const BGFXUniform& u : prog.uniforms) {
+        if (u.name == name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+size_t parseBoneArrayCount(const std::string& source)
+{
+    size_t boneCount = 4;
+    const size_t bonesKey = source.find("bones[");
+    if (bonesKey != std::string::npos) {
+        const size_t start = bonesKey + 6;
+        if (start < source.size() && std::isdigit(static_cast<unsigned char>(source[start]))) {
+            boneCount = static_cast<size_t>(std::strtoul(source.c_str() + start, nullptr, 10));
+        }
+    }
+    return boneCount > 0 ? boneCount : 4;
+}
+
+bool tryInjectBoneUniformArray(const std::string& vertexSc, CompiledShaderProgram& prog)
+{
+    if (vertexSc.find("uniform mat4 bones") == std::string::npos) {
+        return false;
+    }
+    if (uniformAlreadyDeclared(prog, "bones")) {
+        return true;
+    }
+
+    const size_t boneCount = parseBoneArrayCount(vertexSc);
+    BGFXUniform uniform;
+    uniform.name  = "bones";
+    uniform.type  = "mat4";
+    uniform.count = static_cast<uint8_t>(boneCount > 255 ? 255 : boneCount);
+    prog.uniforms.push_back(std::move(uniform));
+    std::fprintf(stderr,
+                 "[ShaderResourcePool] synthesized bones[] uniform (mat4 x %zu)\n",
+                 boneCount);
+    return true;
+}
+
+bool tryInjectSkeletonUniformBlock(const std::string& vertexSc, CompiledShaderProgram& prog)
+{
+    if (vertexSc.find("cbuffer Skeleton") == std::string::npos) {
+        return false;
+    }
+    for (const BGFXUniformBlock& existing : prog.uniformBlocks) {
+        if (existing.name == "Skeleton") {
+            return true;
+        }
+    }
+
+    const size_t boneCount = parseBoneArrayCount(vertexSc);
+
+    int binding = 0;
+    const size_t regPos = vertexSc.find("register(b");
+    if (regPos != std::string::npos) {
+        binding = std::atoi(vertexSc.c_str() + regPos + 10);
+    }
+
+    BGFXUniformBlock block;
+    block.name      = "Skeleton";
+    block.binding   = binding;
+    block.sizeBytes = boneCount * 64u;
+    block.fieldNames.push_back("bones");
+
+    BGFXUniformBlockMember member;
+    member.name         = "bones";
+    member.type         = "mat4";
+    member.offsetBytes  = 0;
+    member.sizeBytes    = block.sizeBytes;
+    block.members.push_back(member);
+
+    prog.uniformBlocks.push_back(std::move(block));
+    std::fprintf(stderr,
+                 "[ShaderResourcePool] synthesized Skeleton UBO (%zu bytes, %zu bones)\n",
+                 member.sizeBytes, boneCount);
+    return true;
+}
+
+void tryInjectDeclaredUniforms(const std::string& source, CompiledShaderProgram& prog)
+{
+    size_t searchFrom = 0;
+    while (searchFrom < source.size()) {
+        const size_t pos = source.find("uniform ", searchFrom);
+        if (pos == std::string::npos) {
+            break;
+        }
+        size_t cursor = pos + 8;
+        while (cursor < source.size()
+               && std::isspace(static_cast<unsigned char>(source[cursor]))) {
+            ++cursor;
+        }
+
+        size_t typeStart = cursor;
+        while (cursor < source.size()
+               && (std::isalnum(static_cast<unsigned char>(source[cursor]))
+                   || source[cursor] == '_')) {
+            ++cursor;
+        }
+        if (cursor == typeStart) {
+            searchFrom = pos + 8;
+            continue;
+        }
+        const std::string type = source.substr(typeStart, cursor - typeStart);
+
+        while (cursor < source.size()
+               && std::isspace(static_cast<unsigned char>(source[cursor]))) {
+            ++cursor;
+        }
+        size_t nameStart = cursor;
+        while (cursor < source.size()
+               && (std::isalnum(static_cast<unsigned char>(source[cursor]))
+                   || source[cursor] == '_')) {
+            ++cursor;
+        }
+        if (cursor == nameStart) {
+            searchFrom = pos + 8;
+            continue;
+        }
+        const std::string name = source.substr(nameStart, cursor - nameStart);
+
+        if (type == "mat4" && name == "bones") {
+            searchFrom = cursor;
+            continue;
+        }
+        if (uniformAlreadyDeclared(prog, name)) {
+            searchFrom = cursor;
+            continue;
+        }
+
+        BGFXUniform uniform;
+        uniform.name = name;
+        uniform.type = type;
+        uniform.count = 1;
+        prog.uniforms.push_back(uniform);
+
+        searchFrom = cursor;
+    }
+}
+
+void tryInjectTextureBindings(const std::string& fragmentSc, CompiledShaderProgram& prog)
+{
+    if (fragmentSc.find("s_texColor") == std::string::npos) {
+        return;
+    }
+    for (const BGFXTexture& t : prog.textures) {
+        if (t.name == "s_texColor") {
+            return;
+        }
+    }
+    BGFXTexture texBinding;
+    texBinding.name    = "s_texColor";
+    texBinding.binding = 0;
+    prog.textures.push_back(texBinding);
+}
 
 } // namespace
 
@@ -179,8 +347,24 @@ bool buildBindingTable(ShaderResourceImpl& impl, const CompiledShaderProgram& pr
 
         const size_t blockBytes = block.sizeBytes > 0 ? block.sizeBytes : 16u;
         const uint16_t numVec4 = static_cast<uint16_t>((blockBytes + 15u) / 16u);
-        entry.uniformHandle = bgfx::createUniform(
-            block.name.c_str(), bgfx::UniformType::Vec4, numVec4);
+
+        // bgfx skinning: mat4[] inside a cbuffer binds by member name (bones),
+        // not the cbuffer label (Skeleton). Vec4 slots are for std140 scalars.
+        if (block.members.size() == 1
+            && block.members[0].type == "mat4"
+            && block.members[0].sizeBytes >= 64u) {
+            const uint16_t mat4Count =
+                static_cast<uint16_t>(block.members[0].sizeBytes / 64u);
+            entry.uniformHandle = bgfx::createUniform(
+                block.members[0].name.c_str(),
+                bgfx::UniformType::Mat4,
+                mat4Count);
+            entry.uniformSubmitCount = mat4Count;
+        } else {
+            entry.uniformHandle = bgfx::createUniform(
+                block.name.c_str(), bgfx::UniformType::Vec4, numVec4);
+            entry.uniformSubmitCount = numVec4;
+        }
 
         const BindingId id = allocateBinding(nextId, impl, entry);
         impl.uniformBlockBindings.emplace(block.name, id);
@@ -209,10 +393,12 @@ bool buildBindingTable(ShaderResourceImpl& impl, const CompiledShaderProgram& pr
         BindingEntry entry;
         entry.kind = BindingKind::Uniform;
         entry.name = uniform.name;
+        const uint16_t count = uniformElementCount(uniform.type, uniform.count);
+        entry.uniformSubmitCount = count;
         entry.uniformHandle = bgfx::createUniform(
             uniform.name.c_str(),
             *bgfxType,
-            uniformElementCount(uniform.type, uniform.count));
+            count);
 
         const BindingId id = allocateBinding(nextId, impl, entry);
         impl.uniformBindings.emplace(uniform.name, id);
@@ -370,7 +556,13 @@ struct ShaderResourcePool::Impl {
         "linux"
 #endif
         ;
-    std::string profile = "430";
+    std::string profile =
+#if defined(_WIN32)
+        "s_5_0"
+#else
+        "430"
+#endif
+        ;
     bool platformExplicit = false;
     bool profileExplicit = false;
     bool autoProbe = true;
@@ -418,17 +610,43 @@ struct ShaderResourcePool::Impl {
             return;
         }
         const bgfx::Caps* caps = bgfx::getCaps();
-        if (caps == nullptr) {
+        if (caps != nullptr) {
+            std::string probedPlatform = platform;
+            std::string probedProfile = profile;
+            mapRendererTypeToPlatformProfile(caps->rendererType, probedPlatform, probedProfile);
+            if (!platformExplicit) {
+                platform = probedPlatform;
+            }
+            if (!profileExplicit) {
+                profile = probedProfile;
+            }
             return;
         }
-        std::string probedPlatform = platform;
-        std::string probedProfile = profile;
-        mapRendererTypeToPlatformProfile(caps->rendererType, probedPlatform, probedProfile);
-        if (!platformExplicit) {
-            platform = probedPlatform;
-        }
-        if (!profileExplicit) {
-            profile = probedProfile;
+
+        // bgfx::getCaps() unavailable — avoid linux/430 defaults on Windows hosts.
+        if (!platformExplicit || !profileExplicit) {
+#if defined(_WIN32)
+            if (!platformExplicit) {
+                platform = "windows";
+            }
+            if (!profileExplicit) {
+                profile = "s_5_0";
+            }
+#elif defined(__APPLE__)
+            if (!platformExplicit) {
+                platform = "osx";
+            }
+            if (!profileExplicit) {
+                profile = "metal";
+            }
+#else
+            if (!platformExplicit) {
+                platform = "linux";
+            }
+            if (!profileExplicit) {
+                profile = "spirv";
+            }
+#endif
         }
     }
 
@@ -694,6 +912,16 @@ void ShaderResourcePool::setAutoProbeFromRendererType(bool enabled)
     _impl->autoProbe = enabled;
 }
 
+void ShaderResourcePool::resolvePlatformFromRenderer()
+{
+    if (!_impl) {
+        _impl = std::make_unique<Impl>();
+    }
+    _impl->ensurePlatformProfileResolved();
+    std::fprintf(stderr, "[ShaderResourcePool] compile target: platform=%s profile=%s\n",
+                 _impl->platform.c_str(), _impl->profile.c_str());
+}
+
 void ShaderResourcePool::bindRendererTypeForTests(uint8_t bgfxRendererType,
                                                   const std::string& platform,
                                                   const std::string& profile)
@@ -947,10 +1175,11 @@ ShaderResource ShaderResourcePool::acquireFromBgfxSc(const std::string& vertexSc
         return ShaderResource{};
     }
 
-    BGFXTexture texBinding;
-    texBinding.name    = "s_texColor";
-    texBinding.binding = 0;
-    prog.textures.push_back(texBinding);
+    tryInjectBoneUniformArray(vertexSc, prog);
+    tryInjectSkeletonUniformBlock(vertexSc, prog);
+    tryInjectDeclaredUniforms(vertexSc, prog);
+    tryInjectDeclaredUniforms(fragmentSc, prog);
+    tryInjectTextureBindings(fragmentSc, prog);
     prog.success       = true;
 
     ShaderResource resource = acquire(prog);

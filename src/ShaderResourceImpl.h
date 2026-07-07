@@ -28,6 +28,7 @@ struct BindingEntry {
     uint8_t             textureBinding = 0;
 
     size_t uniformBlockSizeBytes = 0;
+    uint16_t uniformSubmitCount = 1;
     std::unordered_map<std::string, size_t> uniformBlockFieldOffsets;
     std::unordered_map<std::string, size_t> uniformBlockFieldSizes;
 };

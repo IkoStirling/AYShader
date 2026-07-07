@@ -219,7 +219,8 @@ void ShaderResource::submit(const DrawCallContext& ctx) const
         if (pending.data.empty()) {
             continue;
         }
-        bgfx::setUniform(entry->uniformHandle, pending.data.data());
+        bgfx::setUniform(entry->uniformHandle, pending.data.data(),
+                         entry->uniformSubmitCount);
     }
 
     for (const PendingTexture& pending : impl->pendingTextures) {

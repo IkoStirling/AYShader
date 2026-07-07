@@ -5,10 +5,10 @@ vec3 a_position  : POSITION;
 vec3 a_normal    : NORMAL;
 vec2 a_texcoord0 : TEXCOORD0;
 vec4 a_indices   : BLENDINDICES;
-vec4 a_weights   : BLENDWEIGHT;
+vec4 a_weight    : BLENDWEIGHT;
 
 // === material 0 vs ===
-$input a_position, a_normal, a_texcoord0, a_indices, a_weights
+$input a_position, a_normal, a_texcoord0, a_indices, a_weight
 $output v_normal, v_texcoord0
 
 #include "common.sh"
@@ -25,7 +25,7 @@ void main()
 {
     v_normal = vec3(0.0, 0.0, 1.0);
     v_texcoord0 = vec2(0.0, 0.0);
-    vec4 skinned = ((a_weights.x) * (Skeleton.bones[int(a_indices.x)] * vec4(a_position, 1.0)) + (a_weights.y) * (Skeleton.bones[int(a_indices.y)] * vec4(a_position, 1.0)) + (a_weights.z) * (Skeleton.bones[int(a_indices.z)] * vec4(a_position, 1.0)) + (a_weights.w) * (Skeleton.bones[int(a_indices.w)] * vec4(a_position, 1.0)));
+    vec4 skinned = ((a_weight.x) * (Skeleton.bones[int(a_indices.x)] * vec4(a_position, 1.0)) + (a_weight.y) * (Skeleton.bones[int(a_indices.y)] * vec4(a_position, 1.0)) + (a_weight.z) * (Skeleton.bones[int(a_indices.z)] * vec4(a_position, 1.0)) + (a_weight.w) * (Skeleton.bones[int(a_indices.w)] * vec4(a_position, 1.0)));
     gl_Position = mul(u_modelViewProj, skinned);
 }
 

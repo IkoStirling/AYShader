@@ -175,6 +175,11 @@ private:
     // entry per compute storage decl, with binding resolved
     // including any auto-assigned slots).
     std::vector<BGFXStorageBuffer> _storageBuffers;
+    // Phase 1 RD-04 / SuzanneSkinnedDemo fix: target platform string
+    // captured by compileToBinary() so convertBGFX can branch on
+    // `windows` (D3D/DXBC) to emit HLSL cbuffer instead of GLSL
+    // `layout(std140) uniform`. GLSL targets are unaffected.
+    std::string _compilePlatform = "linux";
     // Phase 3.6: cached shaderc driver. Lazy-initialized on first
     // compileToBinary() call so that AYBGFXConverter construction
     // itself never throws when shaderc is missing — only the actual

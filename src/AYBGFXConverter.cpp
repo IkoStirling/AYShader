@@ -160,7 +160,7 @@ semanticTable() {
         // type for indices; the AYRenderer repack path takes care of
         // the per-component byte packing for the Indices channel.
         {phoskia::PhoskiaSemantic::BoneIndices, {"BLENDINDICES", "a_indices", "", "vec4", "vec4(0.0, 0.0, 0.0, 0.0)"}},
-        {phoskia::PhoskiaSemantic::BoneWeights, {"BLENDWEIGHT",  "a_weights", "", "vec4", "vec4(0.0, 0.0, 0.0, 0.0)"}},
+        {phoskia::PhoskiaSemantic::BoneWeights, {"BLENDWEIGHT",  "a_weight", "", "vec4", "vec4(0.0, 0.0, 0.0, 0.0)"}},
     };
     return table;
 }
@@ -790,7 +790,7 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
     // windows / dxbc. This fixes the "unrecognized identifier 'layout'"
     // failure we hit on the D3D compile path during the Suzanne
     // skinned demo (frame 0/30/60 screenshots).
-    const bool isHlsl = (opts.platform == "windows");
+    const bool isHlsl = (_compilePlatform == "windows");
 
     auto toHlslType = [](const std::string& glsl) -> std::string {
         if (glsl == "vec2" || glsl == "ivec2") return "float2";
@@ -1029,6 +1029,10 @@ void AYBGFXConverter::compileToBinary(const phoskia::ir::IRProgram& program,
 
     // 1) Convert .sc sources via the existing path.
     BGFXConvertResult conv;
+    // Phase 1 RD-04: stash target platform so convertBGFX can emit
+    // HLSL cbuffer on D3D (windows) targets. Set before the call so
+    // any nested convertPath sees the same value.
+    _compilePlatform = opts.platform;
     convertBGFX(program, conv);
     out.uniformBlocks   = conv.uniformBlocks;
     out.storageBuffers  = conv.storageBuffers;

@@ -50,6 +50,9 @@ public:
 
     void require(ShaderCapability capability);
     void setAutoProbeFromRendererType(bool enabled);
+    // Call after bgfx::init so the first acquire uses the active renderer
+    // (e.g. D3D11 -> windows / s_5_0, not the stale GLSL 430 default).
+    void resolvePlatformFromRenderer();
     void bindRendererTypeForTests(uint8_t bgfxRendererType, const std::string& platform,
                                   const std::string& profile);
 
