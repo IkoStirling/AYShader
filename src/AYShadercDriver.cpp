@@ -74,6 +74,11 @@ SpawnResult spawnCapturing(const std::string& exe,
                            const std::vector<std::string>& args) {
     SpawnResult r{-1, ""};
 
+    if (exe.empty()) {
+        r.output = "spawnCapturing: executable path is empty";
+        return r;
+    }
+
     auto quoteArg = [](const std::string& s) -> std::string {
         std::string out = "\"";
         for (char c : s) {
@@ -261,10 +266,17 @@ void AYShadercDriver::clearDefaultExecutable() {
     defaultExecutable().reset();
 }
 
+bool AYShadercDriver::hasDefaultExecutable() {
+    const auto p = defaultExecutable();
+    return p && !p->empty();
+}
+
 // Default constructor: looks up the process-wide default. Throws
 // std::runtime_error if no default has been set (the user forgot
 // the startup call) or std::invalid_argument if the configured
 // path doesn't point to an existing file.
+// (Destructor moved to header to avoid LNK4006 — see header comment.)
+
 AYShadercDriver::AYShadercDriver() {
     auto p = defaultExecutable();
     if (!p) {
@@ -289,6 +301,12 @@ AYShadercDriver::AYShadercDriver() {
 
 ShaderCompileResult AYShadercDriver::compile(const ShaderCompileRequest& req) {
     ShaderCompileResult result;
+
+    if (_shadercPath.empty()) {
+        result.stderrText = "shaderc path is empty; refusing to spawn";
+        return result;
+    }
+    std::string shadercPath = _shadercPath;
 
     // 1) Stage the in-memory .sc to a temp file.
     std::string scPath = uniqueScTempPath();
@@ -339,7 +357,7 @@ ShaderCompileResult AYShadercDriver::compile(const ShaderCompileRequest& req) {
         };
         // Run the actual spawn and read-back through a scope that
         // deletes vdPath on the way out regardless of outcome.
-        SpawnResult sr = spawnCapturing(_shadercPath, args);
+        SpawnResult sr = spawnCapturing(shadercPath, args);
         if (sr.exitCode == 0) {
             ayt::io::MemoryMappedFile mm(binPath);
             if (mm.isValid()) {
@@ -359,7 +377,7 @@ ShaderCompileResult AYShadercDriver::compile(const ShaderCompileRequest& req) {
     }
 
     // 3) Spawn.
-    SpawnResult sr = spawnCapturing(_shadercPath, args);
+    SpawnResult sr = spawnCapturing(shadercPath, args);
 
     // 4) Read .bin back into memory via MemoryMappedFile (zero-copy
     //    versus the pre-migration std::ifstream + istreambuf_iterator).

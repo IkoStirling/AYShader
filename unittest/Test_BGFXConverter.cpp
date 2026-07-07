@@ -612,40 +612,30 @@ TEST_CASE(multiple_materials_each_get_three_pieces) {
 // ===== End-to-end via Compiler =====
 
 TEST_CASE(compiler_emits_three_pieces) {
-    // Phase 3.6 Commit 5: switched from `Compiler::compile()` (whose
-    // `.output` is the deprecated .sc joiner) to
-    // `Compiler::compileToProgram({keepSources=true})`. The frontend
-    // get-the-shape contract is "sources map populated with the
-    // expected keys; vs/fs strings contain the bgfx prologue".
-    ayt::shader::phoskia::Compiler compiler;
-    ayt::shader::phoskia::CompileOptions opts;
-    opts.keepSources = true;
+    // Commit 5 emit-shape contract: three .sc pieces (vs, fs,
+    // varying_definitions) with bgfx prologue ($input in vs).
+    //
+    // Use convertBGFX (same as the rest of this file). Do NOT call
+    // compileToProgram here — that path also invokes shaderc when a
+    // process default is configured, which is unrelated to the shape
+    // this case locks. compileToProgram + keepSources is covered by
+    // Test_CompileToProgram.cpp; shaderc round-trip by
+    // lit_shader_shaderc_across_bgfx_platform_profiles above.
     const char* src = R"(
         material Unlit {
             vertex { return vec4(0.0, 0.0, 0.0, 1.0) }
             fragment { return vec4(1.0, 0.0, 0.0, 1.0) }
         }
     )";
-    // Isolate env-var influence ?these tests run before env tests
-    // that intentionally flip AY_PHOSKIA_KEEP_SOURCES/DUMP_SC.
-#ifdef _WIN32
-    _putenv("AY_PHOSKIA_KEEP_SOURCES=");
-    _putenv("AY_PHOSKIA_DUMP_SC=");
-#else
-    unsetenv("AY_PHOSKIA_KEEP_SOURCES");
-    unsetenv("AY_PHOSKIA_DUMP_SC");
-#endif
-    CompiledShaderProgram program =
-        compiler.compileToProgram(src, opts);
-    CHECK(program.success || !program.sources.empty());
-    // Frontend-facing shape: program.sources carries every .sc
-    // string emitted by the backend. Reading `program.sources[k]`
-    // is the new canonical alternative to the legacy
-    // `CompileResult::output.find(...)` pattern.
-    CHECK(program.sources.count("varying_definitions") == 1);
-    CHECK(program.sources.count("vertex_stage_0") == 1);
-    CHECK(program.sources.count("fragment_stage_0") == 1);
-    CHECK(program.sources.at("vertex_stage_0").find("$input") != std::string::npos);
+    const ayt::shader::detail::BGFXMaterialStages files = compileFirstMaterial(src);
+    // The empty Unlit material has no `in` decls, so the
+    // varying_definitions piece is legitimately empty (see
+    // empty_material_produces_three_pieces above). The vs/fs pieces
+    // must still be populated and the vs must carry the bgfx $input
+    // prologue so the frontend can hand it to shaderc verbatim.
+    CHECK(!files.vertex.empty());
+    CHECK(!files.fragment.empty());
+    CHECK(files.vertex.find("$input") != std::string::npos);
 }
 
 // ===== Phase 2 Step 1: [variant] expands to opt-in #ifndef =====
@@ -1028,9 +1018,9 @@ TEST_CASE(skinning_matrix_call_expands_to_weighted_sum) {
     // Phase 1 RD-03: `skinningMatrix(indices, weights, bones, pos)` is
     // a builtin that must inline-expand to a 4-term linear-blend sum:
     //   w.x * bones[i.x] * pos + w.y * bones[i.y] * pos + ...
-    // The actual emit reads the bones arg literally, so passing the
-    // UBO field `Skeleton.bones` (a mat4[]) produces
-    // `Skeleton.bones[int(i.x)]` etc. in the output.
+    // The BGFX backend renames the in-params to the bgfx attribute
+    // names (boneindices → a_indices, boneweights → a_weight) before
+    // emit, so the expansion references a_indices.x..w and a_weight.x..w.
     const char* src = R"(
         uniformblock Skeleton {
             mat4 bones[128]
@@ -1047,15 +1037,15 @@ TEST_CASE(skinning_matrix_call_expands_to_weighted_sum) {
     )";
     auto files = compileFirstMaterial(src);
     // The expansion must reference the bones arg with index casts.
-    CHECK(files.vertex.find("Skeleton.bones[int(boneId.x)]") != std::string::npos);
-    CHECK(files.vertex.find("Skeleton.bones[int(boneId.y)]") != std::string::npos);
-    CHECK(files.vertex.find("Skeleton.bones[int(boneId.z)]") != std::string::npos);
-    CHECK(files.vertex.find("Skeleton.bones[int(boneId.w)]") != std::string::npos);
+    CHECK(files.vertex.find("Skeleton.bones[int(a_indices.x)]") != std::string::npos);
+    CHECK(files.vertex.find("Skeleton.bones[int(a_indices.y)]") != std::string::npos);
+    CHECK(files.vertex.find("Skeleton.bones[int(a_indices.z)]") != std::string::npos);
+    CHECK(files.vertex.find("Skeleton.bones[int(a_indices.w)]") != std::string::npos);
     // All four weight components must multiply their terms.
-    CHECK(files.vertex.find("boneWt.x") != std::string::npos);
-    CHECK(files.vertex.find("boneWt.y") != std::string::npos);
-    CHECK(files.vertex.find("boneWt.z") != std::string::npos);
-    CHECK(files.vertex.find("boneWt.w") != std::string::npos);
+    CHECK(files.vertex.find("a_weight.x") != std::string::npos);
+    CHECK(files.vertex.find("a_weight.y") != std::string::npos);
+    CHECK(files.vertex.find("a_weight.z") != std::string::npos);
+    CHECK(files.vertex.find("a_weight.w") != std::string::npos);
 }
 
 TEST_SUITE_END

@@ -103,6 +103,10 @@ public:
     // Tests use this for clean teardown.
     static void clearDefaultExecutable();
 
+    // True when setDefaultExecutable() has been called and the stored
+    // path is non-empty. Does not verify the file exists on disk.
+    static bool hasDefaultExecutable();
+
     // ---- Construction ----
     //
     // Default ctor: uses the path configured via
@@ -124,6 +128,8 @@ public:
 
     // For diagnostics / tests.
     const std::string&    shadercPath() const { return _shadercPath; }
+
+    ~AYShadercDriver() = default;
 
 private:
     std::string _shadercPath;

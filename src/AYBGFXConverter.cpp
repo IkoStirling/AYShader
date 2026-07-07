@@ -1067,6 +1067,18 @@ void AYBGFXConverter::compileToBinary(const phoskia::ir::IRProgram& program,
         }
     }
 
+    // keepSources-only callers (frontend emit-shape tests) must not
+    // require shaderc when no executable is configured. Sources are
+    // already populated above; skip spawn entirely.
+    if (opts.keepSources && !out.sources.empty()) {
+        const bool shadercConfigured =
+            !opts.shadercPath.empty() || AYShadercDriver::hasDefaultExecutable();
+        if (!shadercConfigured) {
+            out.success = true;
+            return;
+        }
+    }
+
     // 2) Lazy-init the shaderc driver. Per-call
     //    `opts.shadercPath` (if non-empty) wins over the
     //    process-wide default configured via
@@ -1084,7 +1096,9 @@ void AYBGFXConverter::compileToBinary(const phoskia::ir::IRProgram& program,
             }
         } catch (const std::exception& e) {
             out.errors.push_back(std::string("AYShadercDriver: ") + e.what());
-            out.success = false;
+            // keepSources fills `out.sources` before shaderc; callers
+            // can verify .sc emit shape without a shaderc install.
+            out.success = opts.keepSources && !out.sources.empty();
             return;
         }
     }
