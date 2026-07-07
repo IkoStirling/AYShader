@@ -406,7 +406,7 @@ TEST_CASE(realistic_material_declaration) {
 }
 
 TEST_CASE(variant_attribute_syntax) {
-    // Phoskia `[variant name]` syntax: 5 tokens â€?`[` `variant` `<name>` `]` EOF.
+    // Phoskia `[variant name]` syntax: 5 tokens ï¿½?`[` `variant` `<name>` `]` EOF.
     Lexer lexer("[ variant useEmission ]");
     std::vector<Token> tokens;
     lexer.tokenize(tokens);
@@ -425,7 +425,7 @@ TEST_CASE(type_names_are_plain_identifiers) {
     // Round-trip every builtin type name through the lexer and assert
     // each one is a TokenType::Identifier carrying the literal name as
     // its lexeme. No more TokenType::Vec3 / Float / Mat4 / Bool / ...
-    // â€?those enum values have been removed from AYToken.h.
+    // ï¿½?those enum values have been removed from AYToken.h.
     const char* names[] = {
         "float", "vec2", "vec3", "vec4",
         "int", "ivec2", "ivec3", "ivec4",
@@ -439,6 +439,33 @@ TEST_CASE(type_names_are_plain_identifiers) {
         CHECK(tokens[0].type == TokenType::Identifier);
         CHECK(tokens[0].lexeme == name);
     }
+}
+
+// ===== Phase 1 RD-03: bone semantics keywords =====
+
+TEST_CASE(keyword_boneindices) {
+    // Phase 1 RD-03: `boneindices` is a dedicated TokenType (not Identifier).
+    // The parser dispatch in parseShaderParam relies on this to route to
+    // PhoskiaSemantic::BoneIndices, which the BGFX converter maps to the
+    // BLENDINDICES vertex attribute in the bgfx .sc varying def.
+    Lexer lexer("boneindices");
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    CHECK(tokens.size() == 2);  // 'boneindices' + EOF
+    CHECK(tokens[0].type == TokenType::BoneIndices);
+    CHECK(tokens[0].lexeme == "boneindices");
+    CHECK(tokens[1].type == TokenType::EndOfFile);
+}
+
+TEST_CASE(keyword_boneweights) {
+    // Phase 1 RD-03: `boneweights` mirrors `boneindices` for the second
+    // skinned-mesh attribute. BGFX converter maps to BLENDWEIGHT.
+    Lexer lexer("boneweights");
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    CHECK(tokens.size() == 2);
+    CHECK(tokens[0].type == TokenType::BoneWeights);
+    CHECK(tokens[0].lexeme == "boneweights");
 }
 
 TEST_SUITE_END
