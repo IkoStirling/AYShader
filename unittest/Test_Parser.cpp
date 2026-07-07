@@ -846,4 +846,88 @@ TEST_CASE(uniform_with_non_builtin_type_lexeme_parses_without_parser_error) {
     CHECK(uni->type == "hello");  // captured lexeme, rejected downstream
 }
 
+// ===== Phase 1 RD-03: bone semantics + UBO array syntax =====
+
+TEST_CASE(parse_material_accepts_boneindices_semantic) {
+    // Phase 1 RD-03: `boneindices` is a built-in Phoskia semantic
+    // accepted by parseShaderParam alongside position/normal/etc. The
+    // BGFX converter maps this to the bgfx BLENDINDICES attribute.
+    const char* src = R"(
+        material P {
+            vertex {
+                in boneId : boneindices
+                return vec4(0.0)
+            }
+            fragment { return vec4(1.0) }
+        }
+    )";
+    auto prog = parseSource(src);
+    CHECK(prog != nullptr);
+    auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
+    CHECK(mat != nullptr);
+    auto* vs = dynamic_cast<VertexFunc*>(mat->declarations[0].get());
+    CHECK(vs != nullptr);
+    CHECK(vs->params.size() == 1);
+    auto* p = dynamic_cast<ShaderParam*>(vs->params[0].get());
+    CHECK(p != nullptr);
+    CHECK(p->dir == ShaderParam::Direction::In);
+    CHECK(p->name == "boneId");
+    CHECK(p->semantic == PhoskiaSemantic::BoneIndices);
+}
+
+TEST_CASE(parse_material_accepts_boneweights_semantic) {
+    // Mirror case for the weights attribute (maps to BLENDWEIGHT).
+    const char* src = R"(
+        material P {
+            vertex {
+                in boneWt : boneweights
+                return vec4(0.0)
+            }
+            fragment { return vec4(1.0) }
+        }
+    )";
+    auto prog = parseSource(src);
+    auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
+    auto* vs = dynamic_cast<VertexFunc*>(mat->declarations[0].get());
+    auto* p = dynamic_cast<ShaderParam*>(vs->params[0].get());
+    CHECK(p != nullptr);
+    CHECK(p->name == "boneWt");
+    CHECK(p->semantic == PhoskiaSemantic::BoneWeights);
+}
+
+TEST_CASE(parse_uniformblock_accepts_array_field) {
+    // Phase 1 RD-03: `uniformblock` parser consumes `[ N ]` after a
+    // field. The result is recorded as `arrayLength > 0` on the
+    // UniformBlockField, then the IR layer wraps the type in
+    // `ArrayType<size>` and std140 layout reads the parallel
+    // `uboFieldArrayLengths` vector.
+    const char* src = R"(
+        uniformblock Skeleton {
+            mat4 bones[128]
+        }
+    )";
+    auto prog = parseSource(src);
+    CHECK(prog != nullptr);
+    auto* ub = dynamic_cast<UniformBlockDecl*>(prog->declarations[0].get());
+    CHECK(ub != nullptr);
+    CHECK(ub->name == "Skeleton");
+    CHECK(ub->fields.size() == 1);
+    CHECK(ub->fields[0].type == "mat4");
+    CHECK(ub->fields[0].name == "bones");
+    CHECK(ub->fields[0].arrayLength == 128);
+}
+
+TEST_CASE(parse_uniformblock_array_length_must_be_positive) {
+    // `mat4 bones[0]` is a structural error — std140 layout requires
+    // at least one element. The parser must surface this rather
+    // than silently producing a 0-sized array.
+    const char* src = "uniformblock S { mat4 bones[0] }";
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    parser.parse();
+    CHECK(parser.hasErrors());
+}
+
 TEST_SUITE_END
