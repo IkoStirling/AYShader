@@ -974,4 +974,88 @@ TEST_CASE(compute_alongside_material_converts_both) {
     CHECK(!res.computeStages[0].compute.empty());
 }
 
+// ===== Phase 1 RD-03: bone semantics + UBO array + skinningMatrix =====
+
+TEST_CASE(uniform_block_array_field_emits_glsl_array_decl) {
+    // Phase 1 RD-03: `mat4 bones[128]` UBO field must reach the GLSL
+    // emit as `mat4 bones[128];` inside the `layout(std140, binding=...)
+    // uniform Skeleton { ... } Skeleton;` block. Both the vs and fs
+    // output splice the same _uboDecls string in (per the comment at
+    // AYBGFXConverter.cpp:1474-1543), so we check one to verify the
+    // emit path. The binding number is auto-assigned (0 in this case
+    // since it's the only block).
+    const char* src = R"(
+        uniformblock Skeleton {
+            mat4 bones[128]
+        }
+        material P {
+            vertex { return vec4(0.0) }
+            fragment { return vec4(1.0) }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    CHECK(files.vertex.find("uniform Skeleton") != std::string::npos);
+    CHECK(files.vertex.find("mat4 bones[128];") != std::string::npos);
+    CHECK(files.fragment.find("uniform Skeleton") != std::string::npos);
+    CHECK(files.fragment.find("mat4 bones[128];") != std::string::npos);
+}
+
+TEST_CASE(bone_semantics_emit_blendindices_blendweight_attrs) {
+    // Phase 1 RD-03: a material with `in x : boneindices` and
+    // `in y : boneweights` must produce a varying_def.sc that contains
+    // the bgfx shaderc attribute names BLENDINDICES and BLENDWEIGHT
+    // (these are the attribute slot names shaderc accepts; the
+    // a_indices / a_weight names come from the BGFX semantic table).
+    const char* src = R"(
+        material P {
+            vertex {
+                in boneId : boneindices
+                in boneWt : boneweights
+                return vec4(boneId + boneWt)
+            }
+            fragment { return vec4(1.0) }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    CHECK(files.varyingDefinitions.find("BLENDINDICES") != std::string::npos);
+    CHECK(files.varyingDefinitions.find("BLENDWEIGHT") != std::string::npos);
+    // And the $input line in the vertex stage must list both attrs.
+    CHECK(files.vertex.find("a_indices") != std::string::npos);
+    CHECK(files.vertex.find("a_weight") != std::string::npos);
+}
+
+TEST_CASE(skinning_matrix_call_expands_to_weighted_sum) {
+    // Phase 1 RD-03: `skinningMatrix(indices, weights, bones, pos)` is
+    // a builtin that must inline-expand to a 4-term linear-blend sum:
+    //   w.x * bones[i.x] * pos + w.y * bones[i.y] * pos + ...
+    // The actual emit reads the bones arg literally, so passing the
+    // UBO field `Skeleton.bones` (a mat4[]) produces
+    // `Skeleton.bones[int(i.x)]` etc. in the output.
+    const char* src = R"(
+        uniformblock Skeleton {
+            mat4 bones[128]
+        }
+        material P {
+            vertex {
+                in boneId : boneindices
+                in boneWt : boneweights
+                let pos = vec4(1.0)
+                return skinningMatrix(boneId, boneWt, Skeleton.bones, pos)
+            }
+            fragment { return vec4(1.0) }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    // The expansion must reference the bones arg with index casts.
+    CHECK(files.vertex.find("Skeleton.bones[int(boneId.x)]") != std::string::npos);
+    CHECK(files.vertex.find("Skeleton.bones[int(boneId.y)]") != std::string::npos);
+    CHECK(files.vertex.find("Skeleton.bones[int(boneId.z)]") != std::string::npos);
+    CHECK(files.vertex.find("Skeleton.bones[int(boneId.w)]") != std::string::npos);
+    // All four weight components must multiply their terms.
+    CHECK(files.vertex.find("boneWt.x") != std::string::npos);
+    CHECK(files.vertex.find("boneWt.y") != std::string::npos);
+    CHECK(files.vertex.find("boneWt.z") != std::string::npos);
+    CHECK(files.vertex.find("boneWt.w") != std::string::npos);
+}
+
 TEST_SUITE_END
