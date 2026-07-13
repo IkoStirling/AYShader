@@ -1,9 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(AYShader VERSION 1.0.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
+# C++ standard follows the root CMakeLists (currently C++23; may move to C++26).
+# Do not pin a standard here.
 
 # AYShader library (no ALIAS — sources and includes attach directly)
 #
