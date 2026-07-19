@@ -3150,7 +3150,7 @@ return ayt::io::path::join(dir,
 
 本任务同步在 AYIO 增加 4 + 2 个 API：
 
-**`File` 类新增静态便利函数**（`include/AYFile.h`，`src/AYFile.cpp`）：
+**`File` 类新增静态便利函数**（`include/ayio/File.h`，`src/AYFile.cpp`）：
 ```cpp
 static std::string         readAllText(const std::string& path);
 static std::vector<uint8_t> readAllBytes(const std::string& path);

@@ -6,8 +6,8 @@
 
 #include "detail/AYShaderDiskCache.h"
 
-#include <AYFile.h>
-#include <AYDirectory.h>
+#include <ayio/File.h>
+#include <ayio/Directory.h>
 
 #include <cstdint>
 #include <cstring>

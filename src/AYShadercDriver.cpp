@@ -26,9 +26,9 @@
 
 #include "AYShadercDriver.h"
 
-#include <AYFile.h>
-#include <AYPath.h>
-#include <AYEnv.h>
+#include <ayio/File.h>
+#include <ayio/Path.h>
+#include <ayio/Env.h>
 
 #include <atomic>
 #include <memory>          // std::shared_ptr (for the global default)
