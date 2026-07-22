@@ -60,6 +60,9 @@ private:
     std::unordered_map<std::string, std::shared_ptr<Type>> _symbols;
     std::unordered_map<std::string, std::shared_ptr<Type>> _materialProperties;
     bool _inShaderFunc = false;
+    // >0 while analyzing a fragment that declared MRT `out` targets.
+    // Return→gl_FragColor is forbidden in that mode.
+    size_t _fragmentMrtOutputCount = 0;
 };
 
 } // namespace ayt::shader::phoskia

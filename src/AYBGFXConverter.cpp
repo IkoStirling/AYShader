@@ -1437,6 +1437,24 @@ detail::BGFXMaterialStages AYBGFXConverter::convertMaterial(const phoskia::ir::I
             }
         }
     }
+    // Phase 6 #6 MRT: declaration-order `out` → gl_FragData[N]. These are
+    // color attachments, not varyings — do not touch varying.def / $input.
+    for (size_t i = 0; i < ff->outputs.size(); ++i) {
+        if (auto* p = dynamic_cast<const phoskia::ir::IRShaderParam*>(ff->outputs[i].get())) {
+            const std::string slot = "gl_FragData[" + std::to_string(i) + "]";
+            fsCtx.map[p->name] = slot;
+            const auto& info = tbl.at(p->semantic);
+            std::shared_ptr<phoskia::Type> t;
+            const std::string& g = info.glslType;
+            if      (g == "vec2") t = phoskia::BuiltinTypes::Vec2();
+            else if (g == "vec3") t = phoskia::BuiltinTypes::Vec3();
+            else if (g == "vec4") t = phoskia::BuiltinTypes::Vec4();
+            if (t) {
+                fsEnv.addVariable(p->name, t);
+                fsEnv.addVariable(slot, t);
+            }
+        }
+    }
 
     // ---- varying.def.sc
     // bgfx canonical layout (matches examples/01-cubes/varying.def.sc):
@@ -1583,10 +1601,29 @@ detail::BGFXMaterialStages AYBGFXConverter::convertMaterial(const phoskia::ir::I
        << _textureDecls
        << "\nvoid main()\n{\n";
     {
+        const bool mrt = !ff->outputs.empty();
+        // Seed each MRT slot with the declared default (or vec4(0) so
+        // unwritten attachments stay defined).
+        if (mrt) {
+            for (size_t i = 0; i < ff->outputs.size(); ++i) {
+                if (auto* p = dynamic_cast<const phoskia::ir::IRShaderParam*>(ff->outputs[i].get())) {
+                    fs << "    gl_FragData[" << i << "] = ";
+                    if (p->defaultValue) {
+                        emitExpr(fs, *p->defaultValue, fsCtx);
+                    } else {
+                        fs << "vec4(0.0, 0.0, 0.0, 0.0)";
+                    }
+                    fs << ";\n";
+                }
+            }
+        }
         // See vertex block above for the #[variant] semantics — opt-in
         // #ifndef that selects the variant code only when the user passes
         // `--define BGFX_VARIANT_<NAME>` to shaderc.
         std::vector<std::string> openVariants;
+        // MRT mode: no single FragColor outputVar — body writes via renamed
+        // out identifiers. Legacy mode: return → gl_FragColor.
+        const char* fsOutputVar = mrt ? nullptr : "gl_FragColor";
         for (const auto& stmt : ff->body) {
             if (auto va = dynamic_cast<const phoskia::ir::IRVariantAttribute*>(stmt.get())) {
                 fs << "#ifndef " << variantMacroName(va->name) << "\n";
@@ -1594,7 +1631,7 @@ detail::BGFXMaterialStages AYBGFXConverter::convertMaterial(const phoskia::ir::I
                 fs << "#else\n";
                 openVariants.push_back(va->name);
             } else {
-                emitStmt(fs, *stmt, fsCtx, "gl_FragColor", fsEnv);
+                emitStmt(fs, *stmt, fsCtx, fsOutputVar, fsEnv);
             }
         }
         for (size_t i = 0; i < openVariants.size(); ++i) {

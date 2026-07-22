@@ -599,15 +599,16 @@ TEST_CASE(fragment_with_in_params) {
     CHECK(p0->semantic == PhoskiaSemantic::Normal);
 }
 
-TEST_CASE(fragment_out_is_error) {
-    // 'out' inside a fragment block is meaningless ?parser records an
-    // error but still consumes the token so it can recover.
+TEST_CASE(fragment_out_parses_as_mrt) {
+    // Phase 6 #6: fragment `out` is MRT (declaration order → gl_FragData[N]).
     const char* src = R"(
         material X {
             vertex { return vec4(0.0) }
             fragment {
-                out nrm : normal
-                return vec4(0.0)
+                out albedo : color = vec4(0.0)
+                out nrm : color = vec4(0.0, 0.0, 1.0, 0.0)
+                albedo = vec4(1.0, 0.0, 0.0, 1.0)
+                nrm = vec4(0.0, 1.0, 0.0, 0.0)
             }
         }
     )";
@@ -615,8 +616,21 @@ TEST_CASE(fragment_out_is_error) {
     std::vector<Token> tokens;
     lexer.tokenize(tokens);
     Parser parser(tokens);
-    parser.parse();
-    CHECK(parser.hasErrors());
+    auto prog = parser.parse();
+    CHECK(!parser.hasErrors());
+    auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
+    CHECK(mat != nullptr);
+    auto* fs = dynamic_cast<FragmentFunc*>(mat->declarations[1].get());
+    CHECK(fs != nullptr);
+    CHECK(fs->outputs.size() == 2);
+    auto* o0 = dynamic_cast<ShaderParam*>(fs->outputs[0].get());
+    auto* o1 = dynamic_cast<ShaderParam*>(fs->outputs[1].get());
+    CHECK(o0 != nullptr);
+    CHECK(o1 != nullptr);
+    CHECK(o0->name == "albedo");
+    CHECK(o1->name == "nrm");
+    CHECK(o0->dir == ShaderParam::Direction::Out);
+    CHECK(o1->dir == ShaderParam::Direction::Out);
 }
 
 // ===== Body statements inside vertex / fragment =====

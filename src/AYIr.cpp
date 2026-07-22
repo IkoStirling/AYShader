@@ -362,19 +362,32 @@ std::unique_ptr<IRFragmentFunc> IRGenerator::lowerFragmentFuncWithEnv(const phos
                                                                       phoskia::TypeEnvironment& env) {
     auto out = std::make_unique<IRFragmentFunc>();
     detail::registerFrameBuiltins(env);
+    static const std::unordered_map<phoskia::PhoskiaSemantic, std::shared_ptr<Type>> semType = {
+        {phoskia::PhoskiaSemantic::Position,  BuiltinTypes::Vec3()},
+        {phoskia::PhoskiaSemantic::Normal,    BuiltinTypes::Vec3()},
+        {phoskia::PhoskiaSemantic::Color,     BuiltinTypes::Vec4()},
+        {phoskia::PhoskiaSemantic::Texcoord,  BuiltinTypes::Vec2()},
+        {phoskia::PhoskiaSemantic::BoneIndices, BuiltinTypes::Vec4()},
+        {phoskia::PhoskiaSemantic::BoneWeights, BuiltinTypes::Vec4()},
+    };
     for (const auto& s : ff.inputs) {
         if (auto p = dynamic_cast<const phoskia::ShaderParam*>(s.get())) {
             auto sp = lowerShaderParam(*p, &env);
             if (sp) {
-                static const std::unordered_map<phoskia::PhoskiaSemantic, std::shared_ptr<Type>> semType = {
-                    {phoskia::PhoskiaSemantic::Position,  BuiltinTypes::Vec3()},
-                    {phoskia::PhoskiaSemantic::Normal,    BuiltinTypes::Vec3()},
-                    {phoskia::PhoskiaSemantic::Color,     BuiltinTypes::Vec4()},
-                    {phoskia::PhoskiaSemantic::Texcoord,  BuiltinTypes::Vec2()},
-                };
                 auto it = semType.find(p->semantic);
                 if (it != semType.end()) env.addVariable(p->name, it->second);
                 out->inputs.push_back(std::move(sp));
+            }
+        }
+    }
+    // Phase 6 #6 MRT outs: register names so body assignments type-check.
+    for (const auto& s : ff.outputs) {
+        if (auto p = dynamic_cast<const phoskia::ShaderParam*>(s.get())) {
+            auto sp = lowerShaderParam(*p, &env);
+            if (sp) {
+                auto it = semType.find(p->semantic);
+                if (it != semType.end()) env.addVariable(p->name, it->second);
+                out->outputs.push_back(std::move(sp));
             }
         }
     }

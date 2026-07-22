@@ -2644,13 +2644,13 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 
 #### 🟡 Phase 6 — 高级渲染特性（覆盖剩余 10%）— **原 Phase 3.8，降级**
 
-| # | 能力 | 表面语法 | emit | 估算 | 依赖 |
-|---|---|---|---|---|---|
-| 6 | **MRT（多 render target）** | `out color1 : color = vec4(0.0);` 加序号 / 命名 | `gl_FragData[0..7] = ...;` | 1.5 天 | — |
-| 7 | **Vertex 多 attribute** | `in tan : tangent;` / `in uv2 : texcoord1;` | 扩 `semanticTable()` | 1 天 | — |
-| 8 | **Indirect dispatch/draw** | `dispatchIndirect(buf, off, x, y, z);` builtin | bgfx `dispatchIndirect` 宏 | 1 天 | 候选 1 |
-| 9 | **Integer sampler** | `texture2di lookup;` / `texture2du lookup;` | `ISAMPLER2D / USAMPLER2D` | 0.5 天 | 候选 2 |
-| 10 | **Shadow sampler** | `texture2dshadow shadowMap;` | `SAMPLER2DSHADOW` + PCF 内置 | 0.5 天 | 候选 2 |
+| # | 能力 | 表面语法 | emit | 估算 | 依赖 | 状态 |
+|---|---|---|---|---|---|---|
+| 6 | **MRT（多 render target）** | `out color1 : color = vec4(0.0);` 声明序 → slot | `gl_FragData[0..7] = ...;` | 1.5 天 | — | ✅ |
+| 7 | **Vertex 多 attribute** | `in tan : tangent;` / `in uv2 : texcoord1;` | 扩 `semanticTable()` | 1 天 | — | — |
+| 8 | **Indirect dispatch/draw** | `dispatchIndirect(buf, off, x, y, z);` builtin | bgfx `dispatchIndirect` 宏 | 1 天 | 候选 1 | — |
+| 9 | **Integer sampler** | `texture2di lookup;` / `texture2du lookup;` | `ISAMPLER2D / USAMPLER2D` | 0.5 天 | 候选 2 | — |
+| 10 | **Shadow sampler** | `texture2dshadow shadowMap;` | `SAMPLER2DSHADOW` + PCF 内置 | 0.5 天 | 候选 2 | — |
 
 合计：~4.5 天。**打开 deferred shading / G-buffer / 高级 PBR / GPU-driven culling 等场景**。
 

@@ -822,22 +822,35 @@ std::unique_ptr<Stmt> Parser::parseVertexFunc() {
 std::unique_ptr<Stmt> Parser::parseFragmentFunc() {
     consume(TokenType::LeftBrace, "Expected '{' before fragment body");
     std::vector<StmtPtr> inputs;
+    std::vector<StmtPtr> outputs;
     std::vector<StmtPtr> body;
+    // Phase 6 #6: fragment may declare MRT `out` targets (max 8). Declaration
+    // order becomes gl_FragData[0..N-1]. Prefer `: color` for each target.
+    constexpr size_t kMaxFragmentMrtOutputs = 8;
     while (!check(TokenType::RightBrace) && !isAtEnd()) {
         if (check(TokenType::In)) {
             advance();
             if (auto p = parseShaderParam(ShaderParam::Direction::In)) {
                 inputs.push_back(std::move(p));
             }
+            match(TokenType::Semicolon);
             continue;
         }
         if (check(TokenType::Out)) {
-            error("Fragments cannot have 'out' parameters");
             advance();
+            if (outputs.size() >= kMaxFragmentMrtOutputs) {
+                error("Fragment MRT supports at most 8 'out' targets (gl_FragData[0..7])");
+                // Still parse the param so recovery stays on track.
+                (void)parseShaderParam(ShaderParam::Direction::Out);
+            } else if (auto p = parseShaderParam(ShaderParam::Direction::Out)) {
+                outputs.push_back(std::move(p));
+            }
+            match(TokenType::Semicolon);
             continue;
         }
         break;
     }
+    while (check(TokenType::Semicolon) && !isAtEnd()) advance();
     while (!check(TokenType::RightBrace) && !isAtEnd()) {
         size_t before = _current;
         if (auto stmt = parseStatement()) {
@@ -856,7 +869,8 @@ std::unique_ptr<Stmt> Parser::parseFragmentFunc() {
         if (_current == before) advance();
     }
     consume(TokenType::RightBrace, "Expected '}' after fragment body");
-    return std::make_unique<FragmentFunc>(std::move(inputs), std::move(body));
+    return std::make_unique<FragmentFunc>(
+        std::move(inputs), std::move(outputs), std::move(body));
 }
 
 std::unique_ptr<Stmt> Parser::parseVariantAttribute() {

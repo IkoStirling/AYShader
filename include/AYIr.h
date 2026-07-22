@@ -308,7 +308,14 @@ public:
     IRFragmentFunc() = default;
     IRFragmentFunc(std::vector<IRStmtPtr> inputs, std::vector<IRStmtPtr> body)
         : inputs(std::move(inputs)), body(std::move(body)) {}
-    std::vector<IRStmtPtr> inputs;  // IRShaderParam (In only)
+    IRFragmentFunc(std::vector<IRStmtPtr> inputs,
+                   std::vector<IRStmtPtr> outputs,
+                   std::vector<IRStmtPtr> body)
+        : inputs(std::move(inputs))
+        , outputs(std::move(outputs))
+        , body(std::move(body)) {}
+    std::vector<IRStmtPtr> inputs;   // IRShaderParam (In)
+    std::vector<IRStmtPtr> outputs;  // IRShaderParam (Out) — MRT targets
     std::vector<IRStmtPtr> body;
 };
 

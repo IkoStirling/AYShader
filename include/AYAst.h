@@ -369,9 +369,18 @@ class FragmentFunc : public Stmt {
 public:
     FragmentFunc(std::vector<StmtPtr> inputs, std::vector<StmtPtr> body)
         : inputs(std::move(inputs)), body(std::move(body)) {}
+    FragmentFunc(std::vector<StmtPtr> inputs,
+                 std::vector<StmtPtr> outputs,
+                 std::vector<StmtPtr> body)
+        : inputs(std::move(inputs))
+        , outputs(std::move(outputs))
+        , body(std::move(body)) {}
     void accept(AstVisitor& visitor) override;
-    // Only `in` params — fragments have no outputs.
+    // Varying inputs from the vertex stage.
     std::vector<StmtPtr> inputs;
+    // Phase 6 #6 MRT: optional `out` color targets, declaration order →
+    // gl_FragData[0..N-1]. Empty → legacy single-target `return` → gl_FragColor.
+    std::vector<StmtPtr> outputs;
     std::vector<StmtPtr> body;
 };
 

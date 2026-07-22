@@ -172,15 +172,34 @@ void AYSemanticAnalyzer::analyzeVertexFunc(const VertexFunc& func) {
 void AYSemanticAnalyzer::analyzeFragmentFunc(const FragmentFunc& func) {
     _env.pushScope();
     _inShaderFunc = true;
+    _fragmentMrtOutputCount = func.outputs.size();
     detail::registerFrameBuiltins(_env);
     for (const auto& p : func.inputs) {
         if (auto sp = dynamic_cast<const ShaderParam*>(p.get())) {
             analyzeShaderParam(*sp);
         }
     }
+    for (const auto& p : func.outputs) {
+        if (auto sp = dynamic_cast<const ShaderParam*>(p.get())) {
+            // MRT color attachments are vec4 slots; prefer `: color`.
+            if (sp->semantic != PhoskiaSemantic::Color) {
+                warning("Fragment MRT 'out' should use ': color' (gl_FragData is vec4); "
+                        "got semantic for '" + sp->name + "'",
+                        0, 0);
+            }
+            analyzeShaderParam(*sp);
+            if (sp->defaultValue) {
+                analyzeExpr(*sp->defaultValue);
+            }
+        }
+    }
+    if (func.outputs.size() > 8) {
+        error("Fragment MRT supports at most 8 'out' targets (gl_FragData[0..7])", 0, 0);
+    }
     for (const auto& stmt : func.body) {
         analyze(*stmt);
     }
+    _fragmentMrtOutputCount = 0;
     _inShaderFunc = false;
     _env.popScope();
 }
@@ -194,6 +213,17 @@ void AYSemanticAnalyzer::analyzeLetStmt(const LetStmt& stmt) {
 void AYSemanticAnalyzer::analyzeReturnStmt(const ReturnStmt& stmt) {
     if (!_inShaderFunc) {
         error("Return statement outside of shader block", 0, 0);
+        return;
+    }
+    // Phase 6 #6: MRT fragments write via `out` names → gl_FragData[N].
+    // Mixing with return→gl_FragColor is undefined; forbid it.
+    if (_fragmentMrtOutputCount > 0) {
+        error("Fragment with MRT 'out' targets cannot use 'return'; "
+              "assign to the out names instead (maps to gl_FragData[N])",
+              0, 0);
+        if (stmt.value) {
+            (void)analyzeExpr(*stmt.value);
+        }
         return;
     }
     if (!stmt.value) return;
