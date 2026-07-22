@@ -145,26 +145,63 @@ std::shared_ptr<Type> TypeInference::inferCallExpr(const CallExpr& expr) {
     // These double as both ordinary functions (when registered as builtins)
     // AND as type constructors (vec3(vec4), vec4(vec3, float), ...).
     if (auto id = dynamic_cast<const IdentifierExpr*>(expr.callee.get())) {
-        // Phase 2 Step 2: use arity-aware overload lookup so `normalize(v3)`
-        // picks the vec3→vec3 overload and not the (later-registered)
-        // vec4→vec4 one. Without this, the last-registered overload wins.
-        auto builtin = BuiltinFunctionRegistry::instance().getFunctionByArity(
-            id->name, expr.args.size());
+        // Infer arguments first so same-arity overloads (mix float vs vec3,
+        // normalize vec2 vs vec3, …) can be scored by concrete arg types.
+        // Arity-only lookup previously always returned the first registered
+        // mix(F,F,F) and emitted `float lit = mix(vec3, …)`.
+        std::vector<std::shared_ptr<Type>> argTypes;
+        argTypes.reserve(expr.args.size());
+        for (const auto& a : expr.args) {
+            argTypes.push_back(infer(*a));
+        }
+
+        const BuiltinFunction* builtin = nullptr;
+        int bestScore = -1;
+        if (auto* overloads =
+                BuiltinFunctionRegistry::instance().getOverloads(id->name)) {
+            for (const auto& ovl : *overloads) {
+                if (ovl.paramTypes.size() != argTypes.size()) continue;
+                int score = 0;
+                bool ok = true;
+                for (size_t i = 0; i < argTypes.size(); ++i) {
+                    auto arg = resolveTypeVar(argTypes[i]);
+                    const auto& param = ovl.paramTypes[i];
+                    if (std::dynamic_pointer_cast<TypeVar>(arg)) {
+                        // Unresolved — soft match; prefer overloads that
+                        // still fit once other args pin the type.
+                        score += 1;
+                        continue;
+                    }
+                    if (param->kind() == TypeKind::Dynamic ||
+                        arg->kind() == TypeKind::Dynamic) {
+                        score += 3;
+                        continue;
+                    }
+                    if (arg->equals(*param)) {
+                        score += 10;
+                        continue;
+                    }
+                    ok = false;
+                    break;
+                }
+                if (!ok) continue;
+                if (score > bestScore) {
+                    bestScore = score;
+                    builtin = &ovl;
+                }
+            }
+        }
+
         if (builtin) {
-            for (size_t i = 0; i < expr.args.size(); ++i) {
-                auto argType = infer(*expr.args[i]);
-                unify(argType, builtin->paramTypes[i]);
+            for (size_t i = 0; i < argTypes.size(); ++i) {
+                unify(argTypes[i], builtin->paramTypes[i]);
             }
             return builtin->returnType;
         }
 
-        // No overload matched the arity. Try by-name fallback for arity
-        // mismatches: still infer each arg for error recovery, return
-        // the return type of the first overload so the analyzer can
-        // surface a "wrong number of arguments" message.
+        // No overload matched arity/types. By-name fallback for recovery.
         auto anyOvl = BuiltinFunctionRegistry::instance().getFunction(id->name);
         if (anyOvl) {
-            for (const auto& a : expr.args) infer(*a);
             return anyOvl->returnType;
         }
 

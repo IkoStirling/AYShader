@@ -15,8 +15,8 @@ uniform vec3 cameraPos;
 uniform float roughness;
 uniform float metallic;
 uniform float clearcoatRoughness;
-uniform vec3 emission = vec3(0.0, 0.0, 0.0);
-uniform vec3 envColor = vec3(0.4, 0.45, 0.5);
+uniform vec3 emission;
+uniform vec3 envColor;
 
 void main()
 {
@@ -34,8 +34,8 @@ uniform vec3 cameraPos;
 uniform float roughness;
 uniform float metallic;
 uniform float clearcoatRoughness;
-uniform vec3 emission = vec3(0.0, 0.0, 0.0);
-uniform vec3 envColor = vec3(0.4, 0.45, 0.5);
+uniform vec3 emission;
+uniform vec3 envColor;
 SAMPLER2D(albedoMap, 0);
 SAMPLER2D(normalMap, 1);
 

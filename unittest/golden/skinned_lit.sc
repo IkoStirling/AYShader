@@ -19,7 +19,7 @@ layout(std140, binding = 0) uniform Skeleton {
 
 uniform vec3 lightDir;
 uniform vec3 lightColor;
-uniform vec4 baseColor = vec4(1.0, 1.0, 1.0, 1.0);
+uniform vec4 baseColor;
 
 void main()
 {
@@ -40,7 +40,7 @@ layout(std140, binding = 0) uniform Skeleton {
 
 uniform vec3 lightDir;
 uniform vec3 lightColor;
-uniform vec4 baseColor = vec4(1.0, 1.0, 1.0, 1.0);
+uniform vec4 baseColor;
 SAMPLER2D(albedoMap, 0);
 
 void main()

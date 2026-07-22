@@ -40,6 +40,13 @@ const BuiltinFunction* BuiltinFunctionRegistry::getFunctionByArity(const std::st
     return nullptr;
 }
 
+const std::vector<BuiltinFunction>* BuiltinFunctionRegistry::getOverloads(
+    const std::string& name) const {
+    auto it = _functions.find(name);
+    if (it == _functions.end() || it->second.empty()) return nullptr;
+    return &it->second;
+}
+
 std::vector<std::string> BuiltinFunctionRegistry::getAllFunctionNames() const {
     std::vector<std::string> names;
     for (const auto& pair : _functions) {
@@ -192,6 +199,22 @@ void BuiltinFunctionRegistry::registerDefaults() {
         float t = std::get<float>(args[2]);
         return a + t * (b - a);
     });
+
+    // GLSL mix(x,y,a) for scalars — without this, float mix() falls through
+    // to Dynamic and the BGFX emitter prefixes `vec3` (breaks shadow filters).
+    registerFunction("mix", {F, F, F}, F, [](auto args) -> float {
+        float a = std::get<float>(args[0]);
+        float b = std::get<float>(args[1]);
+        float t = std::get<float>(args[2]);
+        return a + t * (b - a);
+    });
+
+    // bgfx shaderlib packFloatToRgba / unpackRgbaToFloat (RGBA8 shadow depth).
+    // Bodies are inlined by AYBGFXConverter (shaderc has no shaderlib include).
+    registerFunction("packFloatToRgba", {F}, V4, vec3Return,
+                     "Pack [0,1] float into RGBA8 channels");
+    registerFunction("unpackFloatFromRgba", {V4}, F, vec3Return,
+                     "Unpack RGBA8 packed depth float");
 
     registerFunction("step", {F, F}, F, [](auto args) -> float {
         float edge = std::get<float>(args[0]);

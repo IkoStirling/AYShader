@@ -1,11 +1,23 @@
 // AYLexer.cpp - Lexer implementation
 
 #include "AYLexer.h"
+#include <cctype>
 #include <unordered_map>
 #include <iostream>
 
 namespace ayt::shader::phoskia
 {
+
+namespace {
+
+// MSVC Debug CRT asserts when isdigit/isalpha see a negative signed char
+// (UTF-8 continuation bytes from comments / pasted source). Always widen
+// through unsigned char first.
+inline bool isDigitByte(char c)  { return std::isdigit(static_cast<unsigned char>(c)) != 0; }
+inline bool isAlphaByte(char c)  { return std::isalpha(static_cast<unsigned char>(c)) != 0; }
+inline bool isAlnumByte(char c)  { return std::isalnum(static_cast<unsigned char>(c)) != 0; }
+
+} // namespace
 
 Lexer::Lexer(const std::string& source)
     : _source(source), _start(0), _current(0), _line(1), _column(1) {}
@@ -54,7 +66,19 @@ void Lexer::scanToken(std::vector<Token>& out) {
         case '+': makeToken(out, TokenType::Plus, 1); break;
         case '-': makeToken(out, TokenType::Minus, 1); break;
         case '*': makeToken(out, TokenType::Star, 1); break;
-        case '/': makeToken(out, TokenType::Slash, 1); break;
+        case '/': {
+            // Line comments: `// ...` through end of line. Without this,
+            // UTF-8 bytes in comments hit isdigit() as signed char and
+            // trip the Debug CRT assert (ucrtbased.dll).
+            if (match('/')) {
+                while (peek() != '\n' && !isAtEnd()) {
+                    advance();
+                }
+            } else {
+                makeToken(out, TokenType::Slash, 1);
+            }
+            break;
+        }
         case '%': makeToken(out, TokenType::Percent, 1); break;
         case '=': makeToken(out, match('=') ? TokenType::EqualEqual : TokenType::Equal, 1); break;
         case '!': makeToken(out, match('=') ? TokenType::BangEqual : TokenType::Bang, 1); break;
@@ -80,9 +104,9 @@ void Lexer::scanToken(std::vector<Token>& out) {
             _column = 0;
             break;
         default:
-            if (isdigit(c)) {
+            if (isDigitByte(c)) {
                 number(out);
-            } else if (isalpha(c) || c == '_') {
+            } else if (isAlphaByte(c) || c == '_') {
                 identifier(out);
             } else {
                 makeToken(out, TokenType::Unknown, 1);
@@ -170,7 +194,7 @@ TokenType Lexer::identifierType(const std::string& lexeme) {
 }
 
 Token Lexer::number(std::vector<Token>& out) {
-    while (isdigit(peek())) advance();
+    while (isDigitByte(peek())) advance();
 
     // Decide whether this is an integer or float literal based on whether
     // a fractional part follows. "42" → IntLiteral, "3.14" → FloatLiteral.
@@ -178,10 +202,10 @@ Token Lexer::number(std::vector<Token>& out) {
     // an integer followed by a Dot operator, matching the
     // `number_zero_point_not_float` test expectation.
     bool hasFraction = false;
-    if (peek() == '.' && isdigit(peekNext())) {
+    if (peek() == '.' && isDigitByte(peekNext())) {
         hasFraction = true;
         advance();
-        while (isdigit(peek())) advance();
+        while (isDigitByte(peek())) advance();
     }
 
     Token token;
@@ -196,7 +220,7 @@ Token Lexer::number(std::vector<Token>& out) {
 }
 
 Token Lexer::identifier(std::vector<Token>& out) {
-    while (isalnum(peek()) || peek() == '_') advance();
+    while (isAlnumByte(peek()) || peek() == '_') advance();
 
     Token token;
     token.lexeme = _source.substr(_start, _current - _start);

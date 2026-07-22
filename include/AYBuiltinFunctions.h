@@ -35,11 +35,15 @@ public:
     // type inference because overloads may differ in arity / param types.
     const BuiltinFunction* getFunction(const std::string& name) const;
 
-    // Overload-aware lookup: returns the overload whose arity matches
-    // `argsSize`. Returns nullptr if no overload matches (caller should
-    // fall through to a type-constructor path or report a type error).
+    // Overload-aware lookup: returns the FIRST overload whose arity matches
+    // `argsSize`. Insufficient when multiple same-arity overloads exist
+    // (e.g. mix(float,float,float) vs mix(vec3,vec3,float)) — prefer
+    // getOverloads + type scoring in the type checker.
     const BuiltinFunction* getFunctionByArity(const std::string& name,
                                               size_t argsSize) const;
+
+    // All registered overloads for `name`, or nullptr if unknown.
+    const std::vector<BuiltinFunction>* getOverloads(const std::string& name) const;
 
     std::vector<std::string> getAllFunctionNames() const;
 

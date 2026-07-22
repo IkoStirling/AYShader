@@ -36,6 +36,8 @@ public:
 
     BindingId getUniformBinding(const std::string& name) const;
     BindingId getTextureBinding(const std::string& name) const;
+    // SAMPLER2D(name, slot) unit recorded at compile time. 0 if unknown.
+    uint8_t getTextureStage(BindingId id) const;
     BindingId getUniformBlockBinding(const std::string& name) const;
     BindingId getStorageBufferBinding(const std::string& name) const;
 
@@ -51,6 +53,11 @@ public:
 
     void setUniform(BindingId id, const void* data, size_t sizeBytes) const;
     void setUniformBlock(BindingId blockId, const void* data, size_t sizeBytes) const;
+    // Binds `tex` to this sampler. The texture unit is taken from the
+    // shader's SAMPLER2D(name, slot) — the `stage` argument is ignored
+    // when the binding has a recorded slot (preferred). Passing a wrong
+    // hard-coded stage (e.g. always 0 for albedo, always 1 for shadow)
+    // swaps maps and turns R32F shadow depth into grayscale "albedo".
     void setTexture(uint8_t stage, BindingId id, const TextureHandle& tex) const;
     void submit(const DrawCallContext& ctx) const;
 

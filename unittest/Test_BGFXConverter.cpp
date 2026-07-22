@@ -528,7 +528,7 @@ TEST_CASE(properties_become_uniforms) {
         }
     )";
     auto files = compileFirstMaterial(src);
-    CHECK(files.fragment.find("uniform vec4 tint = vec4(1.0, 0.5, 0.25, 1.0)") != std::string::npos);
+    CHECK(files.fragment.find("uniform vec4 tint;") != std::string::npos);
 }
 
 // ===== builtin: sample() ?texture2D() =====

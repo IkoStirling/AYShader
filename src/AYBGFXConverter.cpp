@@ -519,6 +519,32 @@ void emitExpr(std::ostringstream& out, const phoskia::ir::IRExpr& e,
                     out << ")";
                 }
                 return;
+            } else if (callee->name == "packFloatToRgba") {
+                // bgfx examples/common/shaderlib.sh packFloatToRgba —
+                // inlined because Phoskia→sc does not include shaderlib.
+                //   res = fract(v * bitSh); res -= res.xxyz * bitMsk;
+                if (call->args.size() != 1) {
+                    out << "/* packFloatToRgba: expected 1 arg */ vec4(0.0)";
+                    return;
+                }
+                out << "(fract((";
+                emitExpr(out, *call->args[0], ctx);
+                out << ") * vec4(16777216.0, 65536.0, 256.0, 1.0)) - "
+                       "fract((";
+                emitExpr(out, *call->args[0], ctx);
+                out << ") * vec4(16777216.0, 65536.0, 256.0, 1.0)).xxyz * "
+                       "vec4(0.0, 0.00390625, 0.00390625, 0.00390625))";
+                return;
+            } else if (callee->name == "unpackFloatFromRgba") {
+                // bgfx unpackRgbaToFloat — dot(rgba, bitSh).
+                if (call->args.size() != 1) {
+                    out << "/* unpackFloatFromRgba: expected 1 arg */ 0.0";
+                    return;
+                }
+                out << "dot((";
+                emitExpr(out, *call->args[0], ctx);
+                out << "), vec4(5.96046448e-8, 0.000015258789, 0.00390625, 1.0))";
+                return;
             } else if (callee->name == "skinningMatrix") {
                 // Phase 1 RD-03: linear-blend skinning.
                 //   skinningMatrix(indices, weights, bones, pos) →
@@ -701,17 +727,13 @@ std::string inferPropertyGLSLType(const phoskia::ir::IRDeclaration& decl) {
 }
 
 void emitPropertyUniform(std::ostream& out, const phoskia::ir::IRDeclaration& decl) {
+    // bgfx uniforms are Vec4 slots updated via setUniform — do NOT emit
+    // GLSL initializers (`= …`). shaderc/HLSL ignores or mishandles them,
+    // and a defaulted `uniform float` can disagree with the Vec4 upload
+    // path (seen as black lit + wrong shadowDebugVis). CPU/material
+    // uploads own the defaults.
     std::string glslType = inferPropertyGLSLType(decl);
-    out << "uniform " << glslType << " " << decl.name << " = ";
-    if (decl.propertyInit) {
-        std::ostringstream tmp;
-        RenameContext empty;  // properties don't reference in/out params
-        emitExpr(tmp, *decl.propertyInit, empty);
-        out << tmp.str();
-    } else {
-        out << "0.0";
-    }
-    out << ";\n";
+    out << "uniform " << glslType << " " << decl.name << ";\n";
 }
 
 } // namespace
@@ -1340,10 +1362,15 @@ detail::BGFXMaterialStages AYBGFXConverter::convertMaterial(const phoskia::ir::I
                 // Register in both per-block type envs so the let-stmt
                 // type inference in either block resolves references to
                 // this property to the right GLSL type.
+                // IMPORTANT: float/int properties must be registered too —
+                // skipping them leaves the name as Dynamic and mix()/ops
+                // can be inferred as vec3 (seen as `vec3 shadow = mix(1.0,..)`).
                 std::shared_ptr<phoskia::Type> ptype;
-                if      (glslType == "vec2") ptype = phoskia::BuiltinTypes::Vec2();
-                else if (glslType == "vec3") ptype = phoskia::BuiltinTypes::Vec3();
-                else if (glslType == "vec4") ptype = phoskia::BuiltinTypes::Vec4();
+                if      (glslType == "float") ptype = phoskia::BuiltinTypes::Float;
+                else if (glslType == "int")   ptype = phoskia::BuiltinTypes::Int;
+                else if (glslType == "vec2")  ptype = phoskia::BuiltinTypes::Vec2();
+                else if (glslType == "vec3")  ptype = phoskia::BuiltinTypes::Vec3();
+                else if (glslType == "vec4")  ptype = phoskia::BuiltinTypes::Vec4();
                 if (ptype) {
                     vsEnv.addVariable(decl->name, ptype);
                     fsEnv.addVariable(decl->name, ptype);

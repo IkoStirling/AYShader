@@ -10,7 +10,7 @@ $output
 #include "common.sh"
 
 uniform vec3 cameraPos;
-uniform vec3 emission = vec3(0.0);
+uniform vec3 emission;
 
 void main()
 {
@@ -23,7 +23,7 @@ $input v_normal
 #include "common.sh"
 
 uniform vec3 cameraPos;
-uniform vec3 emission = vec3(0.0);
+uniform vec3 emission;
 
 void main()
 {

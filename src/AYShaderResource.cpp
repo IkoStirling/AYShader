@@ -55,6 +55,19 @@ BindingId ShaderResource::getTextureBinding(const std::string& name) const
     return lookupBinding(impl->textureBindings, name);
 }
 
+uint8_t ShaderResource::getTextureStage(BindingId id) const
+{
+    ShaderResourceImpl* impl = resolveImpl(_id);
+    if (impl == nullptr || id == InvalidBinding) {
+        return 0;
+    }
+    const BindingEntry* entry = findBindingEntry(*impl, id);
+    if (entry == nullptr || entry->kind != BindingKind::Texture) {
+        return 0;
+    }
+    return entry->textureBinding;
+}
+
 BindingId ShaderResource::getUniformBlockBinding(const std::string& name) const
 {
     ShaderResourceImpl* impl = resolveImpl(_id);
@@ -198,7 +211,18 @@ void ShaderResource::setTexture(uint8_t stage, BindingId id, const TextureHandle
     }
 
     PendingTexture pending;
-    pending.stage = stage;
+    // Always use the SAMPLER2D slot recorded at compile time. Do not
+    // rename-remap by texture name — that desyncs from the .bin when
+    // declaration order differs from albedo=0/shadow=1 assumptions.
+    pending.stage = entry->textureBinding;
+    if (stage != pending.stage && stage != 0) {
+        // Caller may pass an explicit stage for single-texture programs
+        // (UI / post). Prefer recorded slot when it is non-zero or the
+        // name is a known multi-map material sampler.
+        if (entry->name != "albedoMap" && entry->name != "shadowMap") {
+            pending.stage = stage;
+        }
+    }
     pending.id = id;
     pending.texture.idx = static_cast<uint16_t>((tex.id - 1u) & 0xFFFFu);
     impl->pendingTextures.push_back(pending);

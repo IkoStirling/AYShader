@@ -196,18 +196,77 @@ void tryInjectDeclaredUniforms(const std::string& source, CompiledShaderProgram&
 
 void tryInjectTextureBindings(const std::string& fragmentSc, CompiledShaderProgram& prog)
 {
-    if (fragmentSc.find("s_texColor") == std::string::npos) {
-        return;
-    }
-    for (const BGFXTexture& t : prog.textures) {
-        if (t.name == "s_texColor") {
-            return;
+    auto alreadyHas = [&](const std::string& name) -> bool {
+        for (const BGFXTexture& t : prog.textures) {
+            if (t.name == name) {
+                return true;
+            }
         }
+        return false;
+    };
+
+    // UI path: legacy s_texColor sampler name.
+    if (fragmentSc.find("s_texColor") != std::string::npos && !alreadyHas("s_texColor")) {
+        BGFXTexture texBinding;
+        texBinding.name    = "s_texColor";
+        texBinding.binding = 0;
+        prog.textures.push_back(texBinding);
     }
-    BGFXTexture texBinding;
-    texBinding.name    = "s_texColor";
-    texBinding.binding = 0;
-    prog.textures.push_back(texBinding);
+
+    // Engine materials / hand-authored .sc: SAMPLER2D(name, slot);
+    size_t searchFrom = 0;
+    while (searchFrom < fragmentSc.size()) {
+        const size_t pos = fragmentSc.find("SAMPLER2D(", searchFrom);
+        if (pos == std::string::npos) {
+            break;
+        }
+        size_t cursor = pos + 10; // after SAMPLER2D(
+        while (cursor < fragmentSc.size()
+               && std::isspace(static_cast<unsigned char>(fragmentSc[cursor]))) {
+            ++cursor;
+        }
+        const size_t nameStart = cursor;
+        while (cursor < fragmentSc.size()
+               && (std::isalnum(static_cast<unsigned char>(fragmentSc[cursor]))
+                   || fragmentSc[cursor] == '_')) {
+            ++cursor;
+        }
+        if (cursor == nameStart) {
+            searchFrom = pos + 10;
+            continue;
+        }
+        const std::string name = fragmentSc.substr(nameStart, cursor - nameStart);
+        while (cursor < fragmentSc.size()
+               && std::isspace(static_cast<unsigned char>(fragmentSc[cursor]))) {
+            ++cursor;
+        }
+        if (cursor >= fragmentSc.size() || fragmentSc[cursor] != ',') {
+            searchFrom = cursor;
+            continue;
+        }
+        ++cursor;
+        while (cursor < fragmentSc.size()
+               && std::isspace(static_cast<unsigned char>(fragmentSc[cursor]))) {
+            ++cursor;
+        }
+        const size_t slotStart = cursor;
+        while (cursor < fragmentSc.size()
+               && std::isdigit(static_cast<unsigned char>(fragmentSc[cursor]))) {
+            ++cursor;
+        }
+        if (cursor == slotStart) {
+            searchFrom = cursor;
+            continue;
+        }
+        const int slot = std::atoi(fragmentSc.substr(slotStart, cursor - slotStart).c_str());
+        if (!alreadyHas(name) && slot >= 0 && slot < 16) {
+            BGFXTexture texBinding;
+            texBinding.name    = name;
+            texBinding.binding = static_cast<uint8_t>(slot);
+            prog.textures.push_back(texBinding);
+        }
+        searchFrom = cursor;
+    }
 }
 
 } // namespace
