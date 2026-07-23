@@ -4,6 +4,7 @@
 #include "AYShaderResourcePool.h"
 #include "ShaderResourceImpl.h"
 
+#include <cstdio>
 #include <cstring>
 
 namespace ayt::shader
@@ -192,6 +193,10 @@ void ShaderResource::setUniformBlock(BindingId blockId,
         return;
     }
     if (entry->uniformBlockSizeBytes != 0 && sizeBytes != entry->uniformBlockSizeBytes) {
+        std::fprintf(stderr,
+                     "[ShaderResource] setUniformBlock('%s') size mismatch: "
+                     "got %zu bytes, expected %zu — upload skipped\n",
+                     entry->name.c_str(), sizeBytes, entry->uniformBlockSizeBytes);
         return;
     }
 

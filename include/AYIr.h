@@ -225,6 +225,9 @@ public:
     // === Uniform ===
     std::shared_ptr<Type> uniformType;     // non-null only when kind == Uniform
     IRExprPtr uniformInit;                 // optional initializer (some uniforms default-init)
+    // Fixed-size array length for material-body `uniform T name[N]`.
+    // 0 = non-array; >0 ⇒ emit `uniform T name[N]` + createUniform count=N.
+    int uniformArrayLength = 0;
 
     // === Property ===
     IRExprPtr propertyInit;                // non-null only when kind == Property
@@ -399,6 +402,12 @@ private:
                                                              phoskia::TypeEnvironment& env);
     std::unique_ptr<IRMaterialDecl> lowerMaterialDecl(const phoskia::MaterialDecl& m);
     std::unique_ptr<IRComputeDecl> lowerComputeDecl(const phoskia::ComputeDecl& c);
+
+    // Program-scope UniformBlock instance types (StructType) — seeded into
+    // every material vs/fs env so `Lights.dirs[i].xyz` resolves to vec3
+    // instead of a free TypeVar (which the BGFX emitter prints as float
+    // and silently breaks Lambert NdotL on D3D).
+    std::vector<std::pair<std::string, std::shared_ptr<Type>>> _programUboTypes;
 
     // Resolve type for a single expression. Runs TypeInference when no
     // pre-resolved type is available; returns nullptr when even

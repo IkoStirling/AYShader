@@ -307,10 +307,20 @@ void BuiltinFunctionRegistry::registerDefaults() {
     registerFunction("fwidth", {V4}, V4, vec3Return, "GLSL fwidth (vec4)");
 
     // ---- Mix / step / smoothstep extended to vectors (Phase 2 Step 2) ----
+    // vec2 forms required for atlas UV remap:
+    //   mix(shadowAtlasRects[i].xy, shadowAtlasRects[i].zw, altUv)
+    // Missing overloads fell back to scalar mix → `float _rectUv = mix(...)`
+    // → HLSL X3018 invalid subscript `.y`.
+    registerFunction("mix", {V2, V2, F}, V2, vec3Return, "Linear blend of two vec2");
+    registerFunction("mix", {V2, V2, V2}, V2, vec3Return, "Linear blend of two vec2 (vec2 factor)");
     registerFunction("mix", {V3, V3, F}, V3, vec3Return, "Linear blend of two vec3");
+    registerFunction("mix", {V3, V3, V3}, V3, vec3Return, "Linear blend of two vec3 (vec3 factor)");
     registerFunction("mix", {V4, V4, F}, V4, vec3Return, "Linear blend of two vec4");
+    registerFunction("mix", {V4, V4, V4}, V4, vec3Return, "Linear blend of two vec4 (vec4 factor)");
+    registerFunction("step", {V2, V2}, V2, vec3Return, "Step function (vec2 form)");
     registerFunction("step", {V3, V3}, V3, vec3Return, "Step function (vector form)");
     registerFunction("step", {V4, V4}, V4, vec3Return, "Step function (vector form)");
+    registerFunction("smoothstep", {V2, V2, V2}, V2, vec3Return, "Smoothstep (vec2 form)");
     registerFunction("smoothstep", {V3, V3, V3}, V3, vec3Return, "Smoothstep (vector form)");
     registerFunction("smoothstep", {V4, V4, V4}, V4, vec3Return, "Smoothstep (vector form)");
 

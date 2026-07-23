@@ -79,32 +79,30 @@ std::shared_ptr<Type> TypeInference::inferBinaryExpr(const BinaryExpr& expr) {
     //      float for GLSL emission).
     if (expr.op.type == TokenType::Plus || expr.op.type == TokenType::Minus ||
         expr.op.type == TokenType::Star || expr.op.type == TokenType::Slash) {
-        // Try to unify operands — success means they're the same
-        // concrete type. Failure (after path-flatten) means the two
-        // sides have different concrete types; we then pick the
-        // wider type for the result.
-        bool same = unify(leftType, rightType);
-        if (!same) {
-            // Different concrete types: pick the vector side if one
-            // exists, otherwise fall back to the left type.
-            auto lv = std::dynamic_pointer_cast<VectorType>(resolveTypeVar(leftType));
-            auto rv = std::dynamic_pointer_cast<VectorType>(resolveTypeVar(rightType));
-            if (lv)        unify(resultType, leftType);
-            else if (rv)   unify(resultType, rightType);
-            else           unify(resultType, leftType);
-        } else {
-            // Same type — bind the result to it.
+        // Scalar×vector broadcasting (GLSL): `vec3 * float` → vec3.
+        // CRITICAL: do NOT unify(TypeVar, Float) first — that poisons a
+        // still-unresolved left operand (e.g. `Lights.dirs[0].xyz` when
+        // the UBO StructType was missing) into float, and the BGFX
+        // emitter then prints `float L0 = ...` which kills Lambert.
+        auto lConc = resolveTypeVar(leftType);
+        auto rConc = resolveTypeVar(rightType);
+        auto lv = std::dynamic_pointer_cast<VectorType>(lConc);
+        auto rv = std::dynamic_pointer_cast<VectorType>(rConc);
+        auto lVar = std::dynamic_pointer_cast<TypeVar>(lConc);
+        auto rVar = std::dynamic_pointer_cast<TypeVar>(rConc);
+        if (lv && !rv) {
             unify(resultType, leftType);
+        } else if (rv && !lv) {
+            unify(resultType, rightType);
+        } else if (!lVar && !rVar) {
+            unify(leftType, rightType);
+            unify(resultType, leftType);
+        } else if (!lVar) {
+            unify(resultType, leftType);
+        } else if (!rVar) {
+            unify(resultType, rightType);
         }
-        // (Phase 2 Step 8 candidate fallback for unconstrained TypeVars
-        // was rolled back — `unify(TypeVar, Float)` followed by an
-        // existing `unify(resultType, leftType)` creates a TypeVar ->
-        // TypeVar -> ... cycle that the simple H-M unify here can't
-        // detect, leading to stack overflow on long arithmetic chains
-        // (e.g. PBR `pow5 = a*a*a*a*a`). The right fix is a real
-        // union-find for TypeVar identity; deferred to a follow-up
-        // step. For now, callers should ensure at least one operand
-        // has a concrete type before chaining arithmetic.)
+        // else both unresolved TypeVars — leave resultType fresh.
     }
     // Comparison operations
     else if (expr.op.type == TokenType::EqualEqual || expr.op.type == TokenType::BangEqual ||
@@ -199,26 +197,11 @@ std::shared_ptr<Type> TypeInference::inferCallExpr(const CallExpr& expr) {
             return builtin->returnType;
         }
 
-        // No overload matched arity/types. By-name fallback for recovery.
-        auto anyOvl = BuiltinFunctionRegistry::instance().getFunction(id->name);
-        if (anyOvl) {
-            return anyOvl->returnType;
-        }
-
         // ---- Type constructor fallback (when not registered as builtin) ----
         // Phase 1 registers scalar/vector builtins via registerDefaults;
         // this branch handles arities those don't cover, e.g. vec4(v3, f),
         // mat4(v4, v4, v4, v4).
         const std::string& name = id->name;
-        // Total component count inferred from the constructor's argument shape.
-        // Rules:
-        //   vec2(f, f) | vec2(vec2)                    → 2 components
-        //   vec3(f, f, f) | vec3(vec3) | vec3(vec2, f) → 3 components
-        //   vec4(f, f, f, f) | vec4(vec4) | vec4(vec3, f) | vec4(vec2, f, f)
-        //                                                  → 4 components
-        //   mat4(v4, v4, v4, v4)                        → mat4
-        // Phase 3.3 Block 3: uvec2/3/4 added so user code can build an
-        // unsigned-int vector explicitly (e.g. `uvec3(thread_id.x, 0, 0)`).
         if (name == "vec2" || name == "vec3" || name == "vec4" ||
             name == "ivec2" || name == "ivec3" || name == "ivec4" ||
             name == "uvec2" || name == "uvec3" || name == "uvec4" ||
@@ -226,6 +209,12 @@ std::shared_ptr<Type> TypeInference::inferCallExpr(const CallExpr& expr) {
             auto inferred = inferConstructor(name, expr.args);
             if (inferred) return inferred;
         }
+
+        // No matching builtin overload and not a type constructor.
+        // Do NOT fall back to getFunction()'s first overload return
+        // type (scalar mix→float poisoned vec2 mix lets as
+        // `float _rectUv = mix(...)` when vec2 overloads were missing).
+        return newTypeVar();
     }
 
     // ---- User-defined function: FunctionType in env ----
@@ -453,7 +442,17 @@ std::shared_ptr<Type> TypeInference::inferMemberExpr(const MemberExpr& expr) {
         }
     }
 
-    // Member access on non-vector (e.g. struct field) — defer to analyzer.
+    // Member access on a struct (e.g. UniformBlock instance): Lights.dirs
+    if (auto st = std::dynamic_pointer_cast<StructType>(concrete)) {
+        for (const auto& field : st->fields()) {
+            if (field.first == expr.member) {
+                return field.second;
+            }
+        }
+        return newTypeVar();
+    }
+
+    // Member access on non-vector (e.g. unresolved) — defer to analyzer.
     return newTypeVar();
 }
 

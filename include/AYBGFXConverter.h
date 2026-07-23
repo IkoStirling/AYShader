@@ -18,6 +18,7 @@
                                 // std::vector, so the transitive cost is negligible.
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace ayt::shader
@@ -170,6 +171,15 @@ private:
     // `_uboDecls`; carried across convertMaterial / convertComputeDecl
     // to flush into the final BGFXConvertResult.
     std::vector<BGFXUniformBlock> _uniformBlocks;
+    // HLSL / D3D: UBOs packed as `uniform vec4 Name[N]` so
+    // bgfx::createUniform(Name, Vec4, N) matches reflection. Maps
+    // block → field → base vec4 index for rewriting `Name.field[i]`
+    // → `Name[base+i]` in emitExpr. Empty on GLSL targets.
+    std::unordered_map<std::string, std::unordered_map<std::string, size_t>>
+        _uboHlslFieldVec4Base;
+    // HLSL UBO field-split: `dirs` / `colors` / `bones` emitted as plain
+    // uniforms so ShaderResourcePool can createUniform by field name.
+    std::vector<BGFXUniform> _programLevelUniforms;
     // Phase 3.5-A: storage buffer binding info collected during
     // convertComputeDecl. Cleared at the top of convertBGFX (one
     // entry per compute storage decl, with binding resolved

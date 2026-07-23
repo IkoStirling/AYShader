@@ -990,6 +990,86 @@ TEST_CASE(uniform_block_array_field_emits_glsl_array_decl) {
     CHECK(files.fragment.find("mat4 bones[128];") != std::string::npos);
 }
 
+TEST_CASE(uniform_block_hlsl_splits_vec4_fields_to_named_uniforms) {
+    // D3D/bgfx: each UBO vec4[] field becomes `uniform vec4 dirs[8]` etc.
+    // Phoskia `Lights.dirs[i]` rewrites to `dirs[i]`.
+    // Multiply-by-scalar mirrors LightingPass L0 (TypeVar*float must not
+    // poison the let to float — ambient-only / black deferred lit).
+    const char* src = R"(
+        uniformblock Lights {
+            vec4 dirs[8]
+            vec4 colors[8]
+        } binding 0
+        material P {
+            vertex { return vec4(0.0) }
+            fragment {
+                let L0 = Lights.dirs[0].xyz * (1.0 / max(length(Lights.dirs[0].xyz), 0.0001))
+                let C = Lights.colors[1].xyz
+                return vec4(L0 + C, 1.0)
+            }
+        }
+    )";
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    auto ast = parser.parse();
+    ir::IRGenerator gen;
+    auto ir = gen.generate(*ast);
+    CHECK(!ir.materials.empty());
+    CHECK(ir.materials[0]->fragment != nullptr);
+    CHECK(!ir.materials[0]->fragment->body.empty());
+    auto* let0 = dynamic_cast<ir::IRLetStmt*>(ir.materials[0]->fragment->body[0].get());
+    CHECK(let0 != nullptr);
+    if (let0) {
+        CHECK(let0->name == "L0");
+        CHECK(let0->initializer != nullptr);
+        if (let0->initializer && let0->initializer->resolvedType) {
+            CHECK(let0->initializer->resolvedType->toString() == "vec3");
+        } else {
+            CHECK(false); // missing resolvedType on L0
+        }
+    }
+    AYBGFXConverter conv;
+    BGFXCompileOptions opts;
+    opts.platform = "windows";
+    opts.keepSources = true;
+    CompiledShaderProgram program;
+    conv.compileToBinary(ir, opts, program);
+    CHECK(!program.sources.empty());
+    bool sawSplit = false;
+    for (const auto& kv : program.sources) {
+        if (kv.second.find("uniform vec4 dirs[8]") != std::string::npos
+            && kv.second.find("uniform vec4 colors[8]") != std::string::npos
+            && kv.second.find("dirs[0]") != std::string::npos
+            && kv.second.find("colors[1]") != std::string::npos
+            && kv.second.find("Lights.dirs") == std::string::npos) {
+            sawSplit = true;
+            break;
+        }
+    }
+    CHECK(sawSplit);
+    // Wired as plain uniforms (not a Lights UBO entry) on HLSL.
+    bool hasDirs = false;
+    bool hasColors = false;
+    for (const auto& u : program.uniforms) {
+        if (u.name == "dirs" && u.type == "vec4" && u.count == 8) hasDirs = true;
+        if (u.name == "colors" && u.type == "vec4" && u.count == 8) hasColors = true;
+    }
+    CHECK(hasDirs);
+    CHECK(hasColors);
+    // UBO StructType seeding: L0 must be vec3 (not float) or NdotL is junk.
+    bool sawVec3L0 = false;
+    for (const auto& kv : program.sources) {
+        if (kv.second.find("vec3 L0") != std::string::npos
+            || kv.second.find("float3 L0") != std::string::npos) {
+            sawVec3L0 = true;
+            break;
+        }
+    }
+    CHECK(sawVec3L0);
+}
+
 TEST_CASE(bone_semantics_emit_blendindices_blendweight_attrs) {
     // Phase 1 RD-03: a material with `in x : boneindices` and
     // `in y : boneweights` must produce a varying_def.sc that contains

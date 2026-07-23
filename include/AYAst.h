@@ -217,11 +217,15 @@ public:
 
 class UniformDecl : public Stmt {
 public:
-    UniformDecl(const std::string& type, const std::string& name)
-        : type(type), name(name) {}
+    // arrayLength: 0 = scalar uniform; >0 = `uniform T name[N]`
+    // (mirrors UniformBlockField::arrayLength).
+    UniformDecl(const std::string& type, const std::string& name,
+                int arrayLength = 0)
+        : type(type), name(name), arrayLength(arrayLength) {}
     void accept(AstVisitor& visitor) override;
     std::string type;
     std::string name;
+    int arrayLength = 0;
 };
 
 enum class TextureSamplerKind : uint8_t {

@@ -102,7 +102,25 @@ void AYSemanticAnalyzer::analyzeUniformDecl(const UniformDecl& decl) {
     // The body might reference the uniform and we don't want to drown
     // the user in "undefined identifier" follow-up errors on top of
     // the type-mismatch error.
+    //
+    // Prefer a concrete builtin Type (not Dynamic) so material-body
+    // `uniform mat4 foo[8]` indexes resolve to mat4 — Dynamic[i]
+    // leaves an unresolved TypeVar and BGFX emits typeless `_lvp =`.
     std::shared_ptr<Type> type = BuiltinTypes::Dynamic;
+    if (decl.type == "float")      type = BuiltinTypes::Float;
+    else if (decl.type == "int")   type = BuiltinTypes::Int;
+    else if (decl.type == "uint")  type = BuiltinTypes::Uint;
+    else if (decl.type == "bool")  type = BuiltinTypes::Bool;
+    else if (decl.type == "vec2")  type = BuiltinTypes::Vec2();
+    else if (decl.type == "vec3")  type = BuiltinTypes::Vec3();
+    else if (decl.type == "vec4")  type = BuiltinTypes::Vec4();
+    else if (decl.type == "mat2")  type = BuiltinTypes::Mat2();
+    else if (decl.type == "mat3")  type = BuiltinTypes::Mat3();
+    else if (decl.type == "mat4")  type = BuiltinTypes::Mat4();
+    if (decl.arrayLength > 0) {
+        type = std::make_shared<ArrayType>(
+            type, static_cast<size_t>(decl.arrayLength));
+    }
     _env.addVariable(decl.name, type);
     _symbols[decl.name] = type;
 }

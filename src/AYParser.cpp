@@ -512,8 +512,31 @@ std::unique_ptr<Stmt> Parser::parseUniformDecl() {
     // consume() once the Lexer change lands.
     Token type = consumeTypeName("Expected uniform type");
     Token name = consumeName("Expected uniform name");
+    // Fixed-size array suffix — same grammar as UniformBlockField:
+    //   uniform mat4 lightViewProjs[8]
+    // Without this, `[8]` is left for the next statement and indexing
+    // type-inference treats the uniform as a bare mat4 → typeless
+    // `let` emit (`_lvp0 = ...` → HLSL X3004 undeclared).
+    int arrayLength = 0;
+    if (match(TokenType::LeftBracket)) {
+        Token sizeTok = consume(TokenType::IntLiteral,
+                                "Expected integer literal for uniform array size");
+        try {
+            arrayLength = static_cast<int>(std::stol(sizeTok.lexeme));
+        } catch (const std::exception&) {
+            error("uniform array size must be a positive integer");
+            return nullptr;
+        }
+        if (arrayLength <= 0) {
+            error("uniform array size must be positive (got "
+                  + std::to_string(arrayLength) + ")");
+            return nullptr;
+        }
+        consume(TokenType::RightBracket,
+                "Expected ']' after uniform array size");
+    }
     match(TokenType::Semicolon);  // ';' is optional (Python-like)
-    return std::make_unique<UniformDecl>(type.lexeme, name.lexeme);
+    return std::make_unique<UniformDecl>(type.lexeme, name.lexeme, arrayLength);
 }
 
 std::unique_ptr<Stmt> Parser::parseTextureDecl(TextureSamplerKind kind) {

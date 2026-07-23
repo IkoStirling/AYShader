@@ -22,9 +22,11 @@
 #include <ayio/Path.h>
 
 #include <cstdio>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
+#include <variant>
 
 namespace ayt::shader
 {
@@ -174,6 +176,10 @@ semanticTable() {
 struct RenameContext {
     std::unordered_map<std::string, std::string> map;
     std::unordered_map<std::string, phoskia::ir::SamplerKind> textureKinds;
+    // Non-owning; set by convertMaterial/convertCompute when targeting
+    // HLSL packed UBOs. nullptr = no rewrite (GLSL path).
+    const std::unordered_map<std::string, std::unordered_map<std::string, size_t>>*
+        uboHlslFieldVec4Base = nullptr;
     bool contains(const std::string& k) const { return map.find(k) != map.end(); }
     const std::string& lookup(const std::string& k) const {
         auto it = map.find(k);
@@ -269,10 +275,24 @@ void emitStmt(std::ostringstream& out, const phoskia::ir::IRStmt& s,
         std::shared_ptr<phoskia::Type> resolvedType;
         if (let->initializer) {
             resolvedType = let->initializer->resolvedType;
+            // Unwrap TypeVar solution chains before classifying — an
+            // unresolved TypeVar must not fall through as a typeless
+            // let, and a solved TypeVar→vec3 must emit `vec3`.
+            while (auto tv = std::dynamic_pointer_cast<phoskia::TypeVar>(resolvedType)) {
+                if (!tv->hasSolution()) break;
+                resolvedType = tv->getSolution();
+            }
             if (auto vec = std::dynamic_pointer_cast<phoskia::VectorType>(resolvedType)) {
                 glslType = vec->toString();  // "vec2" / "vec3" / "vec4" / "ivec3" / ...
             } else if (auto mat = std::dynamic_pointer_cast<phoskia::MatrixType>(resolvedType)) {
-                glslType = mat->toString();  // "mat2" / "mat3" / "mat4"
+                // Prefer `mat4` over MatrixType::toString()'s `mat4x4`.
+                // bgfx .sc → HLSL maps mat4→float4x4; `mat4x4` is left
+                // as a bare identifier and D3D fails with X3000.
+                if (mat->rows() == mat->cols()) {
+                    glslType = "mat" + std::to_string(mat->rows());
+                } else {
+                    glslType = mat->toString();  // "mat3x4" etc.
+                }
             } else if (auto p = std::dynamic_pointer_cast<phoskia::PrimitiveType_>(resolvedType)) {
                 glslType = p->toString();   // "float" / "int" / "bool"
             }
@@ -351,6 +371,18 @@ void emitExpr(std::ostringstream& out, const phoskia::ir::IRExpr& e,
         // emission. After inline, the result is the same GLSL a
         // user would have written by hand from the math.
         if (auto callee = dynamic_cast<const phoskia::ir::IRIdentifierExpr*>(call->callee.get())) {
+            // HLSL (DXBC via shaderc) rejects single-arg `floatN(x)` ctors
+            // (X3014). bgfx common.sh provides `vecN_splat(x)` for all
+            // profiles — rewrite Phoskia `vecN(scalar)` here so sources
+            // like `vec4(0.0)` / `vec3(1.0)` compile under D3D.
+            if ((callee->name == "vec2" || callee->name == "vec3" ||
+                 callee->name == "vec4") &&
+                call->args.size() == 1) {
+                out << callee->name << "_splat(";
+                emitExpr(out, *call->args[0], ctx);
+                out << ")";
+                return;
+            }
             if (callee->name == "sample") {
                 phoskia::ir::SamplerKind samplerKind = phoskia::ir::SamplerKind::Sampler2D;
                 if (!call->args.empty()) {
@@ -392,15 +424,13 @@ void emitExpr(std::ostringstream& out, const phoskia::ir::IRExpr& e,
                 // in which case we still emit something compile-able
                 // (a zero fallback) rather than crash the converter.
                 if (call->args.size() != 2) {
-                    out << "vec3(0.0)";
+                    out << "vec3_splat(0.0)";
                 } else {
                     // F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0)
-                    // Note: vec3(1.0) is a constructor call (its own
-                    // parens), so we open a paren before, let the
-                    // constructor add the inner one, then close both.
+                    // Use vec3_splat — HLSL rejects float3(1.0) (X3014).
                     out << "(";
                     emitExpr(out, *call->args[1], ctx);  // F0
-                    out << " + (vec3(1.0) - ";
+                    out << " + (vec3_splat(1.0) - ";
                     emitExpr(out, *call->args[1], ctx);
                     out << ") * pow(1.0 - ";
                     emitExpr(out, *call->args[0], ctx);  // cosTheta
@@ -415,15 +445,15 @@ void emitExpr(std::ostringstream& out, const phoskia::ir::IRExpr& e,
                 // operands to share a type, so we promote the scalar
                 // roughness^2 to vec3(roughness^2) before max.
                 if (call->args.size() != 3) {
-                    out << "vec3(0.0)";
+                    out << "vec3_splat(0.0)";
                 } else {
                     out << "(";
                     emitExpr(out, *call->args[1], ctx);  // F0
-                    out << " + (max(vec3(";
+                    out << " + (max(vec3_splat(";
                     emitExpr(out, *call->args[2], ctx);  // roughness
                     out << " * ";
                     emitExpr(out, *call->args[2], ctx);
-                    out << "), vec3(1.0) - ";
+                    out << "), vec3_splat(1.0) - ";
                     emitExpr(out, *call->args[1], ctx);
                     out << ") - ";
                     emitExpr(out, *call->args[1], ctx);  // F0
@@ -635,9 +665,63 @@ void emitExpr(std::ostringstream& out, const phoskia::ir::IRExpr& e,
             }
         }, lit->value);
     } else if (auto mem = dynamic_cast<const phoskia::ir::IRMemberExpr*>(&e)) {
+        // HLSL UBO alias: Skeleton.bones → bones (single mat4[] pack).
+        if (ctx.uboHlslFieldVec4Base != nullptr) {
+            if (auto ident =
+                    dynamic_cast<const phoskia::ir::IRIdentifierExpr*>(mem->object.get())) {
+                const auto ubIt = ctx.uboHlslFieldVec4Base->find(ident->name);
+                if (ubIt != ctx.uboHlslFieldVec4Base->end()) {
+                    const auto fIt = ubIt->second.find(mem->member);
+                    if (fIt != ubIt->second.end()
+                        && fIt->second == (std::numeric_limits<size_t>::max)()) {
+                        out << mem->member;
+                        return;
+                    }
+                }
+            }
+        }
         emitExpr(out, *mem->object, ctx);
         out << "." << mem->member;
     } else if (auto idx = dynamic_cast<const phoskia::ir::IRIndexExpr*>(&e)) {
+        // HLSL packed UBO: Lights.dirs[i] → Lights[base+i]
+        // Alias path: Skeleton.bones[i] → bones[i]
+        if (ctx.uboHlslFieldVec4Base != nullptr) {
+            if (auto mem =
+                    dynamic_cast<const phoskia::ir::IRMemberExpr*>(idx->object.get())) {
+                if (auto ident =
+                        dynamic_cast<const phoskia::ir::IRIdentifierExpr*>(mem->object.get())) {
+                    const auto ubIt = ctx.uboHlslFieldVec4Base->find(ident->name);
+                    if (ubIt != ctx.uboHlslFieldVec4Base->end()) {
+                        const auto fIt = ubIt->second.find(mem->member);
+                        if (fIt != ubIt->second.end()) {
+                            const size_t base = fIt->second;
+                            if (base == (std::numeric_limits<size_t>::max)()) {
+                                out << mem->member << "[";
+                                emitExpr(out, *idx->index, ctx);
+                                out << "]";
+                                return;
+                            }
+                            out << ident->name << "[";
+                            if (auto lit = dynamic_cast<const phoskia::ir::IRLiteralExpr*>(
+                                    idx->index.get())) {
+                                if (const int* pi = std::get_if<int>(&lit->value)) {
+                                    out << (base + static_cast<size_t>(*pi)) << "]";
+                                    return;
+                                }
+                            }
+                            if (base == 0) {
+                                emitExpr(out, *idx->index, ctx);
+                            } else {
+                                out << base << " + ";
+                                emitExpr(out, *idx->index, ctx);
+                            }
+                            out << "]";
+                            return;
+                        }
+                    }
+                }
+            }
+        }
         emitExpr(out, *idx->object, ctx);
         out << "[";
         emitExpr(out, *idx->index, ctx);
@@ -719,7 +803,11 @@ std::string inferPropertyGLSLType(const phoskia::ir::IRDeclaration& decl) {
     if (auto vec = std::dynamic_pointer_cast<phoskia::VectorType>(concrete)) {
         glslType = vec->toString();
     } else if (auto mat = std::dynamic_pointer_cast<phoskia::MatrixType>(concrete)) {
-        glslType = mat->toString();
+        if (mat->rows() == mat->cols()) {
+            glslType = "mat" + std::to_string(mat->rows());
+        } else {
+            glslType = mat->toString();
+        }
     } else if (auto p = std::dynamic_pointer_cast<phoskia::PrimitiveType_>(concrete)) {
         glslType = p->toString();
     }
@@ -762,6 +850,8 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
     // shader stages; the GLSL compiler dedupes when needed.
     _uboDecls.clear();
     _uniformBlocks.clear();
+    _uboHlslFieldVec4Base.clear();
+    _programLevelUniforms.clear();
     // Phase 3.5-A: storage buffer binding info is collected per-compute
     // (each compute may have its own set of storage decls with their
     // own binding slots). We clear at convertBGFX entry so a fresh
@@ -814,6 +904,7 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
     // skinned demo (frame 0/30/60 screenshots).
     const bool isHlsl = (_compilePlatform == "windows");
 
+    // Unused on the GLSL path; kept for mat4 HLSL field emit.
     auto toHlslType = [](const std::string& glsl) -> std::string {
         if (glsl == "vec2" || glsl == "ivec2") return "float2";
         if (glsl == "vec3" || glsl == "ivec3") return "float3";
@@ -831,76 +922,15 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
         std::ostringstream blockSrc;
         int binding = ub->uboBinding;            // -1 = auto
         if (binding < 0) binding = nextAutoBinding++;
-        if (isHlsl) {
-            // HLSL cbuffer (DXBC): no trailing-instance name and no
-            // `layout()` qualifier. GLSL's `uniform Name { ... } Name`
-            // reuses the block name as an instance identifier; HLSL
-            // binds the buffer by register, not by the trailing id.
-            blockSrc << "cbuffer " << ub->name << " : register(b" << binding << ")\n{\n";
-        } else {
-            blockSrc << "layout(std140, binding = " << binding
-                     << ") uniform " << ub->name << " {\n";
-        }
-        for (size_t i = 0; i < ub->uboFields.size(); ++i) {
-            std::string fieldTypeLex = "vec4";  // fallback (matches IR warning policy)
-            if (ub->uboFields[i]) fieldTypeLex = ub->uboFields[i]->toString();
-            // Phase 1 RD-04: emit `mat4 bones[N];` when arrayLength>0.
-            // Strip the "array<...>" wrapping the IR Type inserts — GLSL
-            // wants the raw element type plus `[N]`. Also normalize
-            // `mat4x4` → `mat4` (single-number form is what bgfx's GLSL
-            // 1.20 profile accepts).
-            const int arrayLength = (i < ub->uboFieldArrayLengths.size())
-                ? ub->uboFieldArrayLengths[i] : 0;
-            std::string elementLex = fieldTypeLex;
-            const auto openBracket = elementLex.find("array<");
-            if (openBracket == 0) {
-                const auto closeAngle = elementLex.find('>');
-                if (closeAngle != std::string::npos) {
-                    elementLex = elementLex.substr(openBracket + 6,
-                        closeAngle - openBracket - 6);
-                    const auto comma = elementLex.find(',');
-                    if (comma != std::string::npos) {
-                        elementLex = elementLex.substr(0, comma);
-                    }
-                }
-            }
-            if (elementLex == "mat4x4") elementLex = "mat4";
-            else if (elementLex == "mat3x3") elementLex = "mat3";
-            else if (elementLex == "mat2x2") elementLex = "mat2";
-            const std::string emitType = isHlsl ? toHlslType(elementLex) : elementLex;
-            blockSrc << "    " << emitType << " " << ub->uboFieldNames[i];
-            if (arrayLength > 0) {
-                blockSrc << "[" << arrayLength << "]";
-            }
-            blockSrc << ";\n";
-        }
-        if (isHlsl) {
-            blockSrc << "};\n\n";
-        } else {
-            blockSrc << "} " << ub->name << ";\n\n";
-        }
-        _uboDecls += blockSrc.str();
 
-        BGFXUniformBlock bub;
-        bub.name = ub->name;
-        bub.binding = binding;
-        bub.fieldNames = ub->uboFieldNames;
-
-        // Phase 1 RD-04: feed arrayLengths through to std140 layout so
-        // total block size accounts for N*elementSize.
+        // Normalize field element types + array lengths once (emit + std140).
         std::vector<std::string> fieldTypes;
-        fieldTypes.reserve(ub->uboFields.size());
         std::vector<size_t> fieldArrayLengths;
+        fieldTypes.reserve(ub->uboFields.size());
         fieldArrayLengths.reserve(ub->uboFields.size());
         for (size_t i = 0; i < ub->uboFields.size(); ++i) {
             std::string fieldTypeLex = "vec4";
-            if (ub->uboFields[i]) {
-                fieldTypeLex = ub->uboFields[i]->toString();
-            }
-            // Strip "array<T, N>" / "array<T>" wrapping for std140 — the
-            // helper wants the bare element type plus the parallel
-            // arrayLengths vector (we keep that already). Also normalize
-            // `mat4x4` → `mat4` etc. so the std140 table recognizes them.
+            if (ub->uboFields[i]) fieldTypeLex = ub->uboFields[i]->toString();
             const auto openBracket = fieldTypeLex.find("array<");
             if (openBracket == 0) {
                 const auto closeAngle = fieldTypeLex.find('>');
@@ -922,6 +952,11 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
             fieldArrayLengths.push_back(static_cast<size_t>(al > 0 ? al : 1));
         }
 
+        BGFXUniformBlock bub;
+        bub.name = ub->name;
+        bub.binding = binding;
+        bub.fieldNames = ub->uboFieldNames;
+
         detail::Std140Layout layout;
         std::string layoutError;
         if (!detail::computeStd140Layout(bub.fieldNames, fieldTypes, layout,
@@ -930,7 +965,6 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
             out.success = false;
             return;
         }
-
         bub.sizeBytes = layout.sizeBytes;
         bub.members.reserve(layout.members.size());
         for (const detail::Std140Member& member : layout.members) {
@@ -942,7 +976,95 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
             bub.members.push_back(std::move(outMember));
         }
 
-        _uniformBlocks.push_back(std::move(bub));
+        if (isHlsl) {
+            // D3D/bgfx wires UBOs with createUniform + setUniform. Two shapes:
+            //   1) single mat4[] (Skeleton) → `uniform mat4 bones[N]` and
+            //      createUniform("bones", Mat4, N); rewrite Skeleton.bones→bones
+            //   2) vec4-heavy blocks (Lights) → `uniform vec4 Lights[N]` and
+            //      createUniform("Lights", Vec4, N); rewrite Lights.dirs[i]
+            //      → Lights[base+i]
+            // Nested cbuffer structs do NOT reflect as the block name, so
+            // uploads silently no-op (ambient-only Lighting).
+            const bool singleMat4 =
+                fieldTypes.size() == 1 && fieldTypes[0] == "mat4";
+            bool allVec4ish = !fieldTypes.empty();
+            for (const auto& t : fieldTypes) {
+                if (t != "vec4" && t != "float4") {
+                    allVec4ish = false;
+                    break;
+                }
+            }
+            if (singleMat4) {
+                const std::string& field = ub->uboFieldNames[0];
+                const size_t n = fieldArrayLengths[0];
+                blockSrc << "uniform mat4 " << field << "[" << n << "];\n\n";
+                // Sentinel: vec4 base == SIZE_MAX means "alias field name only"
+                _uboHlslFieldVec4Base[ub->name][field] =
+                    (std::numeric_limits<size_t>::max)();
+                BGFXUniform u;
+                u.name = field;
+                u.type = "mat4";
+                u.count = static_cast<uint8_t>(n > 255 ? 255 : n);
+                _programLevelUniforms.push_back(std::move(u));
+            } else if (allVec4ish) {
+                // Emit each field as its own bgfx uniform array and rewrite
+                // `Lights.dirs[i]` → `dirs[i]` (alias sentinel). Uploading
+                // via createUniform("Lights", Vec4, 16) does not bind to a
+                // packed `uniform vec4 Lights[16]` reliably across D3D
+                // reflection — ambient-only Lighting was the symptom.
+                for (size_t i = 0; i < ub->uboFieldNames.size(); ++i) {
+                    const size_t n = fieldArrayLengths[i];
+                    blockSrc << "uniform vec4 " << ub->uboFieldNames[i]
+                             << "[" << n << "];\n";
+                    _uboHlslFieldVec4Base[ub->name][ub->uboFieldNames[i]] =
+                        (std::numeric_limits<size_t>::max)();
+                    BGFXUniform u;
+                    u.name = ub->uboFieldNames[i];
+                    u.type = "vec4";
+                    u.count = static_cast<uint8_t>(n > 255 ? 255 : n);
+                    _programLevelUniforms.push_back(std::move(u));
+                }
+                blockSrc << "\n";
+            } else {
+                // Fallback: flat cbuffer fields (no instance name). Emit
+                // still rewrites Block.field → field when possible.
+                blockSrc << "cbuffer " << ub->name << "_UBO : register(b"
+                         << binding << ")\n{\n";
+                for (size_t i = 0; i < ub->uboFieldNames.size(); ++i) {
+                    blockSrc << "    " << toHlslType(fieldTypes[i]) << " "
+                             << ub->uboFieldNames[i];
+                    if (fieldArrayLengths[i] > 1) {
+                        blockSrc << "[" << fieldArrayLengths[i] << "]";
+                    }
+                    blockSrc << ";\n";
+                    _uboHlslFieldVec4Base[ub->name][ub->uboFieldNames[i]] =
+                        (std::numeric_limits<size_t>::max)();
+                }
+                blockSrc << "};\n\n";
+            }
+            _uboDecls += blockSrc.str();
+            // Field-split HLSL UBOs are wired as plain uniforms; skip the
+            // block-level createUniform(blockName) entry (no matching
+            // symbol in .sc).
+            if (!singleMat4 && !allVec4ish) {
+                _uniformBlocks.push_back(std::move(bub));
+            }
+        } else {
+            blockSrc << "layout(std140, binding = " << binding
+                     << ") uniform " << ub->name << " {\n";
+            for (size_t i = 0; i < ub->uboFieldNames.size(); ++i) {
+                blockSrc << "    " << fieldTypes[i] << " "
+                         << ub->uboFieldNames[i];
+                if (ub->uboFieldArrayLengths.size() > i
+                    && ub->uboFieldArrayLengths[i] > 0) {
+                    blockSrc << "[" << ub->uboFieldArrayLengths[i] << "]";
+                }
+                blockSrc << ";\n";
+            }
+            blockSrc << "} " << ub->name << ";\n\n";
+            _uboDecls += blockSrc.str();
+            _uniformBlocks.push_back(std::move(bub));
+        }
     }
 
     try {
@@ -969,7 +1091,8 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
         out.success = false;
     }
 
-    out.uniforms = _uniforms;
+    out.uniforms = _programLevelUniforms;
+    out.uniforms.insert(out.uniforms.end(), _uniforms.begin(), _uniforms.end());
     out.textures = _textures;
     out.uniformBlocks = _uniformBlocks;
     // Phase 3.5-A: flush storage buffer binding info collected during
@@ -1283,6 +1406,8 @@ detail::BGFXMaterialStages AYBGFXConverter::convertMaterial(const phoskia::ir::I
     phoskia::detail::registerFrameBuiltins(fsEnv);
     RenameContext vsCtx;
     RenameContext fsCtx;
+    vsCtx.uboHlslFieldVec4Base = &_uboHlslFieldVec4Base;
+    fsCtx.uboHlslFieldVec4Base = &_uboHlslFieldVec4Base;
 
     // Phase 3.1: IR separates uniform / property / texture into a
     // discriminated IRDeclaration, and vertex / fragment are first-class
@@ -1300,20 +1425,43 @@ detail::BGFXMaterialStages AYBGFXConverter::convertMaterial(const phoskia::ir::I
                 // GLSL 1.20 profile accepts the single-number form
                 // "mat4" — fall back to that for square matrices so
                 // the emitted uniform matches the user-written source.
+                //
+                // Array uniforms (`uniform mat4 lightViewProjs[8]`) wrap
+                // the element Type in ArrayType; unwrap for the lexeme
+                // and emit `[N]` + createUniform count=N.
+                std::shared_ptr<phoskia::Type> elemType = decl->uniformType;
+                size_t arrayLen = 1;
+                if (decl->uniformArrayLength > 0) {
+                    arrayLen = static_cast<size_t>(decl->uniformArrayLength);
+                }
+                if (auto arr = std::dynamic_pointer_cast<phoskia::ArrayType>(elemType)) {
+                    elemType = arr->elementType();
+                    if (arr->size() > 0) {
+                        arrayLen = arr->size();
+                    }
+                }
                 std::string glslLex = "vec4";
-                if (decl->uniformType) {
-                    if (auto mat = std::dynamic_pointer_cast<phoskia::MatrixType>(decl->uniformType)) {
+                if (elemType) {
+                    if (auto mat = std::dynamic_pointer_cast<phoskia::MatrixType>(elemType)) {
                         if (mat->rows() == mat->cols()) {
                             glslLex = "mat" + std::to_string(mat->rows());
                         } else {
                             glslLex = mat->toString();  // "mat3x4" etc.
                         }
                     } else {
-                        glslLex = decl->uniformType->toString();
+                        glslLex = elemType->toString();
                     }
                 }
-                _uniformDecls += "uniform " + glslLex + " " + decl->name + ";\n";
-                BGFXUniform bu; bu.name = decl->name; bu.type = glslLex;
+                if (arrayLen > 1) {
+                    _uniformDecls += "uniform " + glslLex + " " + decl->name
+                                  + "[" + std::to_string(arrayLen) + "];\n";
+                } else {
+                    _uniformDecls += "uniform " + glslLex + " " + decl->name + ";\n";
+                }
+                BGFXUniform bu;
+                bu.name = decl->name;
+                bu.type = glslLex;
+                bu.count = static_cast<uint8_t>(arrayLen > 255 ? 255 : arrayLen);
                 _uniforms.push_back(std::move(bu));
                 if (decl->uniformType) {
                     vsEnv.addVariable(decl->name, decl->uniformType);
@@ -1692,6 +1840,7 @@ detail::BGFXComputeStage AYBGFXConverter::convertComputeDecl(const phoskia::ir::
     // context is empty too.
     phoskia::TypeEnvironment env;
     RenameContext ctx;
+    ctx.uboHlslFieldVec4Base = &_uboHlslFieldVec4Base;
 
     std::ostringstream cs;
     cs << "$input\n"           // empty input list (compute has no attributes)

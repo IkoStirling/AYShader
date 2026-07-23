@@ -148,12 +148,31 @@ IRProgram IRGenerator::generate(const phoskia::Program& ast,
     IRProgram out;
     _warnings.clear();
     _env = typeEnv;
-    // (Phase 3.4 had a `nextBinding_ = 0;` reset here for the
-    // per-program UBO slot counter. Phase 3.5-B removed the counter;
-    // binding slots are now resolved at BGFX emit time. The IR
-    // carries the user's `binding` literal (or -1 for "auto") in
-    // each IRDeclaration's uboBinding field.)
+    _programUboTypes.clear();
 
+    // Pass 1: lower UniformBlocks first and build StructType bindings so
+    // material bodies that reference `Block.field` type-check correctly
+    // regardless of declaration order in the source file.
+    for (const auto& decl : ast.declarations) {
+        if (auto ub = dynamic_cast<const phoskia::UniformBlockDecl*>(decl.get())) {
+            auto ir = lowerDecl(*ub);
+            if (!ir) continue;
+            std::vector<std::pair<std::string, std::shared_ptr<Type>>> fields;
+            fields.reserve(ir->uboFieldNames.size());
+            for (size_t i = 0; i < ir->uboFieldNames.size(); ++i) {
+                std::shared_ptr<Type> ft = (i < ir->uboFields.size() && ir->uboFields[i])
+                    ? ir->uboFields[i]
+                    : phoskia::BuiltinTypes::Vec4();
+                fields.emplace_back(ir->uboFieldNames[i], ft);
+            }
+            _programUboTypes.emplace_back(
+                ir->name,
+                std::make_shared<StructType>(ir->name, std::move(fields)));
+            out.uniformBlocks.push_back(std::move(ir));
+        }
+    }
+
+    // Pass 2: materials / computes (see UBO types via _programUboTypes).
     for (const auto& decl : ast.declarations) {
         if (auto mat = dynamic_cast<const phoskia::MaterialDecl*>(decl.get())) {
             auto ir = lowerMaterialDecl(*mat);
@@ -161,20 +180,13 @@ IRProgram IRGenerator::generate(const phoskia::Program& ast,
         } else if (auto cmp = dynamic_cast<const phoskia::ComputeDecl*>(decl.get())) {
             auto ir = lowerComputeDecl(*cmp);
             if (ir) out.computes.push_back(std::move(ir));
-        } else if (auto ub = dynamic_cast<const phoskia::UniformBlockDecl*>(decl.get())) {
-            // Phase 3.4: top-level uniform buffer object. The block
-            // lives in IRProgram::uniformBlocks (shared across
-            // materials / computes in the same source file) rather
-            // than in any one material's declarations vector.
-            auto ir = lowerDecl(*ub);
-            if (ir) out.uniformBlocks.push_back(std::move(ir));
         }
-        // Program-level declarations other than Material/Compute/UniformBlock
-        // are unknown — log a warning and skip.
+        // UniformBlocks already handled in pass 1.
     }
 
     out.warnings = std::move(_warnings);
     _env.reset();
+    _programUboTypes.clear();
     return out;
 }
 
@@ -187,7 +199,12 @@ std::unique_ptr<IRDeclaration> IRGenerator::lowerDecl(const phoskia::Stmt& s) {
     if (auto u = dynamic_cast<const phoskia::UniformDecl*>(&s)) {
         out->kind = IRDeclaration::Kind::Uniform;
         out->name = u->name;
+        out->uniformArrayLength = u->arrayLength;
         out->uniformType = lexemeToType(u->type);
+        if (out->uniformType && u->arrayLength > 0) {
+            out->uniformType = std::make_shared<phoskia::ArrayType>(
+                out->uniformType, static_cast<size_t>(u->arrayLength));
+        }
         if (!out->uniformType) {
             _warnings.push_back("Uniform '" + u->name +
                 "' has unrecognized GLSL type lexeme '" + u->type +
@@ -413,9 +430,28 @@ std::unique_ptr<IRMaterialDecl> IRGenerator::lowerMaterialDecl(const phoskia::Ma
     };
     phoskia::TypeEnvironment vsSeed = seedEnv();
     phoskia::TypeEnvironment fsSeed = seedEnv();
+    for (const auto& ubBinding : _programUboTypes) {
+        vsSeed.addVariable(ubBinding.first, ubBinding.second);
+        fsSeed.addVariable(ubBinding.first, ubBinding.second);
+        // Also bind each UBO field at top level. HLSL/bgfx rewrites
+        // `Lights.dirs` → `dirs`; seeding both names keeps
+        // `dirs[i].xyz` typed as vec3 even if a stage only sees the
+        // flattened identifier after rewrite (or writers use the
+        // flattened name directly).
+        if (auto st = std::dynamic_pointer_cast<StructType>(ubBinding.second)) {
+            for (const auto& field : st->fields()) {
+                vsSeed.addVariable(field.first, field.second);
+                fsSeed.addVariable(field.first, field.second);
+            }
+        }
+    }
     for (const auto& d : m.declarations) {
         if (auto u = dynamic_cast<const phoskia::UniformDecl*>(d.get())) {
             auto t = lexemeToType(u->type);
+            if (t && u->arrayLength > 0) {
+                t = std::make_shared<phoskia::ArrayType>(
+                    t, static_cast<size_t>(u->arrayLength));
+            }
             if (t) {
                 vsSeed.addVariable(u->name, t);
                 fsSeed.addVariable(u->name, t);
