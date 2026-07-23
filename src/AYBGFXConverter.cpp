@@ -575,6 +575,13 @@ void emitExpr(std::ostringstream& out, const phoskia::ir::IRExpr& e,
                 emitExpr(out, *call->args[0], ctx);
                 out << "), vec4(5.96046448e-8, 0.000015258789, 0.00390625, 1.0))";
                 return;
+            } else if ((callee->name == "atan" || callee->name == "atan2") &&
+                       call->args.size() == 2) {
+                // HLSL (DXBC via shaderc) only has atan2(y,x) for the
+                // two-arg form; GLSL profiles get atan2→atan via
+                // bgfx_shader.sh. Always emit atan2 so equirect
+                // longitude (SkyboxPass) compiles under D3D.
+                out << "atan2";
             } else if (callee->name == "skinningMatrix") {
                 // Phase 1 RD-03: linear-blend skinning.
                 //   skinningMatrix(indices, weights, bones, pos) →

@@ -178,6 +178,28 @@ void BuiltinFunctionRegistry::registerDefaults() {
         return std::tan(std::get<float>(args[0]));
     });
 
+    registerFunction("asin", {F}, F, [](auto args) -> float {
+        return std::asin(std::get<float>(args[0]));
+    });
+
+    registerFunction("acos", {F}, F, [](auto args) -> float {
+        return std::acos(std::get<float>(args[0]));
+    });
+
+    registerFunction("atan", {F}, F, [](auto args) -> float {
+        return std::atan(std::get<float>(args[0]));
+    });
+
+    // GLSL atan(y, x) / atan2(y, x) two-arg form. Needed for
+    // equirect longitude from a world-space look direction.
+    // Converter emits `atan2` so HLSL (DXBC) compiles.
+    registerFunction("atan", {F, F}, F, [](auto args) -> float {
+        return std::atan2(std::get<float>(args[0]), std::get<float>(args[1]));
+    });
+    registerFunction("atan2", {F, F}, F, [](auto args) -> float {
+        return std::atan2(std::get<float>(args[0]), std::get<float>(args[1]));
+    });
+
     registerFunction("min", {F, F}, F, [](auto args) -> float {
         return std::min(std::get<float>(args[0]), std::get<float>(args[1]));
     });
