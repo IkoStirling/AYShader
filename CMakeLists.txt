@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
-project(AYShader VERSION 1.0.0 LANGUAGES CXX)
+project(AYShader
+    VERSION 1.0.0
+    DESCRIPTION "AYShader — Phoskia shading language + Compiler + bgfx runtime + atan/asin builtins"
+)
 
 # C++ standard follows the root CMakeLists (currently C++23; may move to C++26).
 # Do not pin a standard here.
@@ -51,3 +54,5 @@ endif()
 # Unit tests
 enable_testing()
 add_subdirectory(unittest)
+
+message(STATUS "AYShader v1.0.0 (Phoskia P6 fragment MRT + atan/asin/acos builtins + SkyboxPass) — see ${CMAKE_CURRENT_SOURCE_DIR}/design.md")

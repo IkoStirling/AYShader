@@ -9,7 +9,7 @@ set(TEST_NAME AYShader_Test)
 # list, CMake doesn't re-link AYShader_Test.exe when an existing .cpp
 # grows new TEST_CASE blocks (the .cpp mtime updates, but the
 # incremental linker heuristic can decide the .exe is "fresh enough"
-# and skip â€” a common Ninja / VS generator quirk).
+# and skip â€?a common Ninja / VS generator quirk).
 #
 # CONFIGURE_DEPENDS asks CMake to re-glob on every build: a new
 # .cpp here triggers a full reconfigure (cheap on a project this
@@ -103,4 +103,5 @@ if(MSVC)
     target_compile_options(${TEST_NAME} PRIVATE /Zc:__cplusplus /Zc:preprocessor)
 endif()
 
+ay_configure_test_tmpdir(${TEST_NAME})
 add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
