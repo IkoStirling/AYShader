@@ -42,6 +42,37 @@ list(APPEND CMAKE_PREFIX_PATH
 )
 find_package(bgfx CONFIG REQUIRED)
 
+# fix-bgfx-imported-targets (PR-5 LM-2 unblock):
+# Vendored thirdParty/bgfx-install/ only ships per-config CMake files for
+# Debug and Release (bgfxTargets-debug.cmake / bgfxTargets-release.cmake);
+# there is no RelWithDebInfo variant. Without the explicit
+# IMPORTED_LOCATION_* below, any consumer built with
+# CMAKE_BUILD_TYPE=RelWithDebInfo (or via VS multi-config where
+# MAP_IMPORTED_CONFIG_RELWITHDEBINFO defaults to Release, but Release's
+# _NDEBUG bgfx.lib collides with _DEBUG consumers built from the standard
+# `out/build/x64-Debug` build dir) fails to link with
+# "imported target 'bgfx::bgfx' has no IMPORTED_LOCATION for configuration
+# 'RelWithDebInfo'" / LNK1104.
+#
+# Pure additive — for Debug (CMAKE_BUILD_TYPE=Debug, the standard x64-Debug
+# build dir) and Release the populated paths are identical to what
+# bgfxTargets-{debug,release}.cmake set; we re-assert them explicitly so
+# the property is non-empty for every config CMake might evaluate.
+# RelWithDebInfo resolves to the debug tree (BX_CONFIG_DEBUG=1) because
+# the standard build dir compiles consumers with _DEBUG.
+set(_bgfx_libdir_debug   "${CMAKE_CURRENT_SOURCE_DIR}/thirdParty/bgfx-install/debug/lib")
+set(_bgfx_libdir_release "${CMAKE_CURRENT_SOURCE_DIR}/thirdParty/bgfx-install/release/lib")
+
+foreach(_lib IN ITEMS bgfx bx bimg bimg_decode bimg_encode)
+    set_property(TARGET bgfx::${_lib} APPEND PROPERTY
+        IMPORTED_CONFIGURATIONS DEBUG RELEASE RELWITHDEBINFO)
+    set_target_properties(bgfx::${_lib} PROPERTIES
+        IMPORTED_LOCATION_DEBUG          "${_bgfx_libdir_debug}/${_lib}.lib"
+        IMPORTED_LOCATION_RELEASE        "${_bgfx_libdir_release}/${_lib}.lib"
+        IMPORTED_LOCATION_RELWITHDEBINFO "${_bgfx_libdir_debug}/${_lib}.lib"
+    )
+endforeach()
+
 target_link_libraries(AYShader PUBLIC
     AYIO
     bgfx::bgfx
