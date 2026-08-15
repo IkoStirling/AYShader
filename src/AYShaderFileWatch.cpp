@@ -11,7 +11,7 @@
 
 #include "detail/AYShaderFileWatch.h"
 
-#include <ayio/File.h>
+#include <AYIO/File.h>
 
 #include <algorithm>
 #include <chrono>

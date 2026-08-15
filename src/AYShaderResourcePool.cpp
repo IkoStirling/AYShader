@@ -11,7 +11,7 @@
 #include "detail/AYShaderHandleTable.h"
 #include "AYIr.h"
 
-#include <ayio/File.h>
+#include <AYIO/File.h>
 
 #include <algorithm>
 #include <atomic>

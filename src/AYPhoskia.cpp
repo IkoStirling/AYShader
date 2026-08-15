@@ -4,7 +4,7 @@
 #include "AYBGFXConverter.h"
 #include "AYShaderResourcePool.h"
 
-#include <ayio/Env.h>
+#include <AYIO/Env.h>
 
 #include <cctype>
 #include <cstdlib>

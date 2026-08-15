@@ -17,9 +17,9 @@
 #include "AYType.h"
 #include "AYTypeInference.h"  // Phase 2: let stmt needs GLSL type prefix.
 
-#include <ayio/File.h>
-#include <ayio/Directory.h>
-#include <ayio/Path.h>
+#include <AYIO/File.h>
+#include <AYIO/Directory.h>
+#include <AYIO/Path.h>
 
 #include <cstdio>
 #include <limits>
