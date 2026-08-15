@@ -9,13 +9,13 @@
 // enabled, so we instantiate it explicitly here regardless of the
 // CompileOptions defaults.
 
-#include "AYSemanticAnalyzer.h"
-#include "AYType.h"
-#include "AYTypeInference.h"
-#include "AYAst.h"
-#include "AYLexer.h"
-#include "AYParser.h"
-#include "AYBuiltinFunctions.h"
+#include "AYShader/SemanticAnalyzer.h"
+#include "AYShader/Type.h"
+#include "AYShader/TypeInference.h"
+#include "AYShader/Ast.h"
+#include "AYShader/Lexer.h"
+#include "AYShader/Parser.h"
+#include "AYShader/BuiltinFunctions.h"
 #include "AYTest.h"
 
 #include <memory>

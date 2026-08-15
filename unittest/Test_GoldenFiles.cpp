@@ -18,10 +18,10 @@
 // converter change will produce a different one ??the env flag is the
 // single switch to accept the new baseline.
 
-#include "AYPhoskia.h"
-#include "AYShadercDriver.h"
+#include "AYShader/Phoskia.h"
+#include "AYShader/ShadercDriver.h"
 #include "AYTest.h"
-#include "detail/AYShaderSourceKeys.h"
+#include "AYShader/detail/ShaderSourceKeys.h"
 
 #include <cstdio>
 #include <cstdlib>

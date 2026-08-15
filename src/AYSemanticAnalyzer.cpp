@@ -1,12 +1,12 @@
 // AYSemanticAnalyzer.cpp - Semantic analysis implementation
 
-#include "AYSemanticAnalyzer.h"
-#include "AYTypeInference.h"  // Phase 2 Step 2: TypeInference + TypeVar for
+#include "AYShader/SemanticAnalyzer.h"
+#include "AYShader/TypeInference.h"  // Phase 2 Step 2: TypeInference + TypeVar for
                                // analyzePropertyDecl / analyzeExpr delegation.
-#include "AYBuiltinTypes.h"   // Phase 2 Step 5: isBuiltinType gate on
+#include "AYShader/BuiltinTypes.h"   // Phase 2 Step 5: isBuiltinType gate on
                                // uniform / property type lexemes.
-#include "AYBuiltinFunctions.h"
-#include "detail/AYPhoskiaFrameBuiltins.h"
+#include "AYShader/BuiltinFunctions.h"
+#include "AYShader/detail/PhoskiaFrameBuiltins.h"
 #include <iostream>
 
 namespace ayt::shader::phoskia
@@ -73,7 +73,7 @@ void AYSemanticAnalyzer::analyzePropertyDecl(const PropertyDecl& decl) {
     // Phase 2 Step 2: run the real type-inference engine on the initializer
     // so `property color = vec4(1.0, ...)` records a VectorType(4) entry
     // and `property tint = 1.0` records a Float. The engine handles
-    // constructor calls and member access — see AYTypeInference.h.
+    // constructor calls and member access — see AYShader/TypeInference.h.
     TypeInference inference(_env);
     auto type = inference.infer(*decl.initializer);
     _env.addVariable(decl.name, type);

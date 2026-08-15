@@ -1,6 +1,6 @@
 // AYShaderProgram.cpp - Shader program implementation
 
-#include "AYShaderProgram.h"
+#include "AYShader/ShaderProgram.h"
 
 namespace ayt::shader
 {

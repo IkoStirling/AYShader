@@ -1,12 +1,12 @@
-// Test_ShaderCacheIntegration.cpp â€?Phase 4-K (frontend header contract)
+// Test_ShaderCacheIntegration.cpp ï¿½?Phase 4-K (frontend header contract)
 //
 // This TU intentionally does NOT #include <bgfx/bgfx.h>.
 // If any frontend header pulls bgfx into this compilation unit, the
 // build breaks or we lose the Phase 4-E isolation guarantee.
 
-#include "AYPhoskia.h"
-#include "AYShaderResource.h"
-#include "AYShaderResourcePool.h"
+#include "AYShader/Phoskia.h"
+#include "AYShader/ShaderResource.h"
+#include "AYShader/ShaderResourcePool.h"
 #include "AYTest.h"
 
 using namespace ayt::shader;

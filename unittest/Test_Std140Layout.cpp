@@ -1,6 +1,6 @@
 // Test_Std140Layout.cpp �?Phase 4-D std140 layout calculator
 
-#include "detail/AYStd140Layout.h"
+#include "AYShader/detail/Std140Layout.h"
 #include "AYTest.h"
 
 using namespace ayt::shader::detail;

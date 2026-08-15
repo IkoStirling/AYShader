@@ -1,7 +1,7 @@
 // AYShaderResource.cpp - ShaderResource public API (Phase 4-O handle table)
 
-#include "AYShaderResource.h"
-#include "AYShaderResourcePool.h"
+#include "AYShader/ShaderResource.h"
+#include "AYShader/ShaderResourcePool.h"
 #include "ShaderResourceImpl.h"
 
 #include <cstdio>

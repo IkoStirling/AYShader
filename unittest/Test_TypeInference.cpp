@@ -6,12 +6,12 @@
 // AST by hand (or via the parser), wraps it in a TypeInference engine,
 // and asserts the resulting Type.
 
-#include "AYTypeInference.h"
-#include "AYType.h"
-#include "AYAst.h"
-#include "AYLexer.h"
-#include "AYParser.h"
-#include "AYBuiltinFunctions.h"
+#include "AYShader/TypeInference.h"
+#include "AYShader/Type.h"
+#include "AYShader/Ast.h"
+#include "AYShader/Lexer.h"
+#include "AYShader/Parser.h"
+#include "AYShader/BuiltinFunctions.h"
 #include "AYTest.h"
 
 #include <memory>
@@ -28,7 +28,7 @@ namespace {
 // dispatch_id) are intentionally NOT added to the env here. They are
 // exposed in Phoskia source as bare identifiers (`thread_id.x`), and
 // the inference engine's builtin-registry fallback returns the return
-// type directly (uvec3) when the env doesn't have the name â€?exactly
+// type directly (uvec3) when the env doesn't have the name ï¿½?exactly
 // the path the IRGenerator's populateBuiltinEnv also takes. Adding
 // them here as FunctionType would shadow that fallback and the
 // swizzle inference would see a FunctionType rather than uvec3.
@@ -47,7 +47,7 @@ struct InferenceEnv {
     }
 };
 
-// Convenience: cast helper â€?extract the concrete type a TypeVar points to.
+// Convenience: cast helper ï¿½?extract the concrete type a TypeVar points to.
 std::shared_ptr<Type> resolve(std::shared_ptr<Type> t) {
     while (auto tv = std::dynamic_pointer_cast<TypeVar>(t)) {
         if (tv->hasSolution()) t = tv->getSolution();
@@ -212,7 +212,7 @@ TEST_CASE(vec4_times_scalar_returns_vec4) {
 // broadcasts from the other side again.
 TEST_CASE(chained_scalar_vector_vector_returns_vector) {
     InferenceEnv e;
-    // ((float * vec3) * vec3) â€?left-assoc parse.
+    // ((float * vec3) * vec3) ï¿½?left-assoc parse.
     auto inner = std::make_unique<BinaryExpr>(
         mkFloat(2.0f), mkOp(TokenType::Star), mkVec3(1, 1, 1));
     BinaryExpr outer(std::move(inner), mkOp(TokenType::Star), mkVec3(3, 3, 3));
@@ -566,7 +566,7 @@ TEST_CASE(uvec3_constructor_three_args_via_uint_call) {
 }
 
 TEST_CASE(swizzle_x_of_ivec3_returns_int) {
-    // Pin the ivec branch too â€?same code path, different element
+    // Pin the ivec branch too ï¿½?same code path, different element
     // type. ivec3.x is int (not uint).
     InferenceEnv e;
     auto ivec3 = std::make_shared<VectorType>(PrimitiveType::Int, 3);

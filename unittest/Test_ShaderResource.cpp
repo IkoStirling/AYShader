@@ -4,10 +4,10 @@
 // Layer B: wire-up via ShaderResourcePool + bgfx::RendererType::Noop
 // (skips when shaderc or bgfx init unavailable).
 
-#include "AYPhoskia.h"
-#include "AYShaderResource.h"
-#include "AYShaderResourcePool.h"
-#include "AYShadercDriver.h"
+#include "AYShader/Phoskia.h"
+#include "AYShader/ShaderResource.h"
+#include "AYShader/ShaderResourcePool.h"
+#include "AYShader/ShadercDriver.h"
 #include "AYTest.h"
 
 #include <bgfx/bgfx.h>

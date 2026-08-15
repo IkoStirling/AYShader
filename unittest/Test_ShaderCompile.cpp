@@ -9,13 +9,13 @@
 //
 // This file used to own its own shaderc.exe path discovery, temp-dir
 // staging, and CreateProcessW / popen invocation (lines 46-285 in the
-// pre-Commit-4 file). Commit 4 retires all of that â€?the plumbing
+// pre-Commit-4 file). Commit 4 retires all of that ï¿½?the plumbing
 // now lives in `AYShadercDriver` and is driven by
 // `Compiler::compileToProgram`.
 //
 // Each test still needs shaderc to actually be installed somewhere
 // reachable (env AY_SHADER_SHADERC, CMake hint, or PATH). When it
-// is not, the test fails with a clear FATAL diagnostic â€?the Phase
+// is not, the test fails with a clear FATAL diagnostic ï¿½?the Phase
 // 1 e2e suite was mandatory, not "skip-if-no-shaderc". The harness
 // on every developer machine has shaderc reachable; the diagnostic
 // is there to surface it when something breaks the build setup.
@@ -24,8 +24,8 @@
 // `out.errors` and `out.warnings` verbatim (this is much clearer
 // than fishing the error out of a temp .bin file path).
 
-#include "AYPhoskia.h"
-#include "AYShadercDriver.h"
+#include "AYShader/Phoskia.h"
+#include "AYShader/ShadercDriver.h"
 #include "AYTest.h"
 
 #include <cstdlib>
@@ -51,7 +51,7 @@ namespace {
 #  endif
 #endif
 
-// bgfx include paths for shaderc â€?same trick Test_ShaderCompile.cpp
+// bgfx include paths for shaderc ï¿½?same trick Test_ShaderCompile.cpp
 // used pre-Phase-3.6; empty when bgfx source wasn't located at
 // configure time.
 #ifndef AY_SHADER_BGFX_COMMON_HINT
@@ -102,7 +102,7 @@ bool shadercReachable(std::string& diagOut) {
 }
 
 // Common FATAL preamble shared by every e2e test below. The `reason`
-// string comes straight from the probe above â€?it lists exactly
+// string comes straight from the probe above ï¿½?it lists exactly
 // which path was tried, so the user can tell whether the vendored
 // binary is missing vs mis-configured.
 void fatalNoShaderc(const char* testName, const std::string& reason) {
@@ -205,7 +205,7 @@ TEST_CASE(shaderc_compiles_material_with_texture) {
 //
 // We also re-verify binding metadata through CompiledShaderProgram
 // (textures + uniforms). This guards against future refactors that
-// drop the PropertyDecl â†?uniform registration path silently.
+// drop the PropertyDecl ï¿½?uniform registration path silently.
 TEST_CASE(shaderc_compiles_pbr_with_ggx_and_fresnel) {
     std::string shadercDiag; if (!shadercReachable(shadercDiag)) { fatalNoShaderc("pbr", shadercDiag); CHECK(false); return; }
 
@@ -415,7 +415,7 @@ TEST_CASE(shaderc_compiles_compute_with_storage_binding_to_bin) {
     CHECK(program.storageBuffers[0].name == "counters");
     CHECK(program.storageBuffers[0].binding == 1);
 
-    // .sc text check: explicit binding â†?layout(std430, binding = 1).
+    // .sc text check: explicit binding ï¿½?layout(std430, binding = 1).
     CHECK(program.sources.count("compute_stage_0") == 1);
     CHECK(program.sources.at("compute_stage_0").find("layout(std430, binding = 1) buffer counters {") != std::string::npos);
 }

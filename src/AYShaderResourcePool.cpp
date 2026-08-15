@@ -1,15 +1,15 @@
 // AYShaderResourcePool.cpp - wire-up, compile path, cache, pool lifetime
 
-#include "AYShaderResourcePool.h"
-#include "AYBGFXConverter.h"
-#include "AYPhoskia.h"
+#include "AYShader/ShaderResourcePool.h"
+#include "AYShader/BGFXConverter.h"
+#include "AYShader/Phoskia.h"
 #include "ShaderResourceImpl.h"
-#include "detail/AYShaderDigest.h"
-#include "detail/AYShaderDiskCache.h"
-#include "detail/AYShaderFileWatch.h"
-#include "detail/AYShaderHandleEncoding.h"
-#include "detail/AYShaderHandleTable.h"
-#include "AYIr.h"
+#include "AYShader/detail/ShaderDigest.h"
+#include "AYShader/detail/ShaderDiskCache.h"
+#include "AYShader/detail/ShaderFileWatch.h"
+#include "AYShader/detail/ShaderHandleEncoding.h"
+#include "AYShader/detail/ShaderHandleTable.h"
+#include "AYShader/Ir.h"
 
 #include <AYIO/File.h>
 

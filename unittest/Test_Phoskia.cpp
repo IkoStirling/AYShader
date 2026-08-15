@@ -1,6 +1,6 @@
 // ============================================================
 // AYShader Compiler (AYPhoskia) End-to-End Unit Tests
-// (Phase 1 closure â€?vertex/fragment syntax)
+// (Phase 1 closure ï¿½?vertex/fragment syntax)
 //
 // Phase 3.6 Commit 5: every assertion that used to read
 // `result.success.find(...)` or `result.success.empty()` now reads
@@ -10,9 +10,9 @@
 // (deprecated) but no unit test reads it directly anymore.
 // ============================================================
 
-#include "AYPhoskia.h"
-#include "AYBuiltinTypes.h"
-#include "AYShadercDriver.h"
+#include "AYShader/Phoskia.h"
+#include "AYShader/BuiltinTypes.h"
+#include "AYShader/ShadercDriver.h"
 #include "AYTest.h"
 
 #include <cstdlib>
@@ -78,13 +78,13 @@ bool ensureShadercDefault() {
 // `prog.sources.at(k).find(...)` for the same substring contract.
 //
 // We deliberately do NOT use the `Compiler::compile()` legacy API
-// (whose `result.success` is deprecated / empty by default) â€?// `compileToProgram` is the documented Phase 3.6 entry point and
+// (whose `result.success` is deprecated / empty by default) ï¿½?// `compileToProgram` is the documented Phase 3.6 entry point and
 // the thing future engine code will actually call.
 //
 // On hosts without a working shaderc binary, `success` will be
 // false (lazy-init fails, error lands in `prog.errors[0]`). The
 // sources map is still populated from `convertBGFX` regardless of
-// shaderc availability (Commit 5: pre-shaderc populate point) â€?// so substring assertions on `prog.sources[k]` succeed even when
+// shaderc availability (Commit 5: pre-shaderc populate point) ï¿½?// so substring assertions on `prog.sources[k]` succeed even when
 // the host has no shaderc. The legacy e2e suite
 // (Test_ShaderCompile.cpp) is the only one that hard-requires
 // shaderc to be installed.
@@ -107,7 +107,7 @@ CompiledShaderProgram compileWithSources(
     // it. Without this, the first test in this file (or any test run
     // before Test_ShadercDriver set the default) would fail with
     // "no default executable configured". SKIPPED silently when the
-    // vendored binary isn't on disk â€?see Test_ShaderCompile.cpp's
+    // vendored binary isn't on disk ï¿½?see Test_ShaderCompile.cpp's
     // shadercReachable() rationale for SKIP semantics.
     (void)ensureShadercDefault();
 
@@ -152,7 +152,7 @@ TEST_CASE(compile_minimal_unlit) {
 }
 
 TEST_CASE(compile_empty_material) {
-    // Must include both blocks now â€?the converter rejects otherwise.
+    // Must include both blocks now ï¿½?the converter rejects otherwise.
     CompiledShaderProgram prog = compileWithSourcesDefault(
         "material X { vertex { } fragment { } }");
     CHECK(prog.success || !prog.sources.empty());
@@ -255,7 +255,7 @@ TEST_CASE(parse_phase) {
 
 TEST_CASE(lex_error_propagated) {
     Compiler compiler;
-    // missing material name â†?parser reports a missing-identifier error.
+    // missing material name ï¿½?parser reports a missing-identifier error.
     CompileResult result{};
     compiler.compile("material { vertex { } fragment { } }", result);
     CHECK(!result.errors.empty());
@@ -337,7 +337,7 @@ TEST_CASE(compile_with_if_else) {
     )");
     // Frontend shape contract: `prog.sources` is a well-formed map.
     // Whether populate happens depends on `convertBGFX` succeeding
-    // (the legacy `.output != empty` check was overly permissive â€?    // we don't ship empty garbage to the frontend in 3.6).
+    // (the legacy `.output != empty` check was overly permissive ï¿½?    // we don't ship empty garbage to the frontend in 3.6).
     if (prog.success) {
         CHECK(!prog.sources.empty());
     }
@@ -504,9 +504,9 @@ TEST_CASE(compile_compute_without_numthreads_uses_default) {
 
 // ===== Phase 3.3 Block 3: uvec3 strict typing =====
 
-#include "AYIr.h"
-#include "AYLexer.h"
-#include "AYParser.h"
+#include "AYShader/Ir.h"
+#include "AYShader/Lexer.h"
+#include "AYShader/Parser.h"
 
 TEST_CASE(compile_thread_id_x_is_uint_in_ir) {
     const char* src = R"(

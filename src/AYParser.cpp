@@ -1,6 +1,6 @@
 // AYParser.cpp - Parser implementation
 
-#include "AYParser.h"
+#include "AYShader/Parser.h"
 #include <array>
 #include <iostream>
 
@@ -321,7 +321,7 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
     // the io keywords (in / out) are also valid identifiers in expression
     // context — e.g. `gl_FragColor * color`, `out = normal`. Builtin type
     // names like vec3 / float / mat4 are now plain Identifiers too (see
-    // AYToken.h / design.md §11.1 — "类型名降级重构"), so the previous
+    // AYShader\Token.h / design.md §11.1 — "类型名降级重构"), so the previous
     // 13-branch workaround for the legacy type keywords has been
     // removed.
     if (match(TokenType::Position) || match(TokenType::Normal) ||
@@ -750,7 +750,7 @@ std::unique_ptr<Stmt> Parser::parseShaderParam(ShaderParam::Direction dir) {
 
     // Phase 2 Step 5: the previous "peek at builtin type keyword"
     // branch has been removed because builtin type names are now plain
-    // Identifier tokens (see AYToken.h / design.md §11.1). The
+    // Identifier tokens (see AYShader\Token.h / design.md §11.1). The
     // converter maps PhoskiaSemantic → bgfx type, so an optional
     // explicit type prefix in the source is redundant — we simply
     // always treat the next identifier as the parameter name.
@@ -1069,7 +1069,7 @@ Token Parser::consume(TokenType type, const std::string& message) {
 
 Token Parser::consumeTypeName(const std::string& message) {
     // Phase 2 Step 5: builtin type names are now plain Identifier tokens
-    // (see AYToken.h / design.md §11.1). We just consume an Identifier
+    // (see AYShader\Token.h / design.md §11.1). We just consume an Identifier
     // and let the caller validate via AYBuiltinTypes::isBuiltinType.
     // The retained name `consumeTypeName` (rather than inlining a
     // consume(Identifier, ...)) keeps the call sites self-documenting.

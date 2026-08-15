@@ -1,7 +1,7 @@
 // AYTypeInference.cpp - Hindley-Milner type inference implementation
 
-#include "AYTypeInference.h"
-#include "AYBuiltinFunctions.h"
+#include "AYShader/TypeInference.h"
+#include "AYShader/BuiltinFunctions.h"
 #include <stdexcept>
 
 namespace ayt::shader::phoskia

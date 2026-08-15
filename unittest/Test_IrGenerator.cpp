@@ -21,12 +21,12 @@
 //   - ir_compute_decl_passes_through_faithfully
 //       compute Name { body } lowers to IRComputeDecl with the body intact.
 
-#include "AYIr.h"
-#include "AYLexer.h"
-#include "AYParser.h"
-#include "AYAst.h"
-#include "AYType.h"
-#include "AYBGFXConverter.h"
+#include "AYShader/Ir.h"
+#include "AYShader/Lexer.h"
+#include "AYShader/Parser.h"
+#include "AYShader/Ast.h"
+#include "AYShader/Type.h"
+#include "AYShader/BGFXConverter.h"
 #include "AYTest.h"
 #include <memory>
 #include <string>

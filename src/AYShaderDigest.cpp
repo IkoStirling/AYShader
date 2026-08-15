@@ -1,6 +1,6 @@
 // AYShaderDigest.cpp — SHA-256 for cache keys (Phase 4-I)
 
-#include "detail/AYShaderDigest.h"
+#include "AYShader/detail/ShaderDigest.h"
 
 #include <cstring>
 #include <iomanip>

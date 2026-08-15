@@ -6,15 +6,15 @@
 // output a frontend feeds to bgfx shaderc: vs_*.sc, fs_*.sc, and the
 // shared varying_definitions.
 
-#include "AYPhoskia.h"
-#include "AYBGFXConverter.h"
-#include "detail/AYPhoskiaFrameBuiltins.h"
-#include "detail/AYBGFXStageSources.h"
-#include "AYLexer.h"
-#include "AYParser.h"
-#include "AYAst.h"
-#include "AYIr.h"
-#include "AYShadercDriver.h"
+#include "AYShader/Phoskia.h"
+#include "AYShader/BGFXConverter.h"
+#include "AYShader/detail/PhoskiaFrameBuiltins.h"
+#include "AYShader/detail/BGFXStageSources.h"
+#include "AYShader/Lexer.h"
+#include "AYShader/Parser.h"
+#include "AYShader/Ast.h"
+#include "AYShader/Ir.h"
+#include "AYShader/ShadercDriver.h"
 #include "AYTest.h"
 #include <cstdio>
 #include <cstdlib>

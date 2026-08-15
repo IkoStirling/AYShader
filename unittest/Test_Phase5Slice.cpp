@@ -1,6 +1,6 @@
 // Test_Phase5Slice.cpp — Phase 5 small-step: derivatives + texturecube
 
-#include "AYPhoskia.h"
+#include "AYShader/Phoskia.h"
 #include "AYTest.h"
 
 using namespace ayt::shader;

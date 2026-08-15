@@ -1,7 +1,7 @@
 // AYShaderCache.cpp - Shader cache implementation
 
-#include "AYShaderCache.h"
-#include "IAYBackendConverter.h"
+#include "AYShader/ShaderCache.h"
+#include "AYShader/IBackendConverter.h"
 
 namespace ayt::shader
 {

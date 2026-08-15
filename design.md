@@ -4,7 +4,7 @@
 
 ## 0. API Stability Promise
 
-> **承诺范围**：`include/AYShader.h` / `include/AYShaderProgram.h` / `include/AYPhoskia.h` / `include/IAYBackendConverter.h` 这 4 个公开头文件的 C++ 符号。
+> **承诺范围**：`include/AYShader.h` / `include/AYShader/ShaderProgram.h` / `include/AYShader/Phoskia.h` / `include/AYShader/IBackendConverter.h` 这 4 个公开头文件的 C++ 符号。
 > **承诺生效日**：Phase 4 封顶后（即 §8.5 全部 Block 4-A..4-M 完成；2026-07-01 sign-off 起算）。
 > **承诺延展**：Phase 5/6/7 仅扩展 `CompileOptions` 字段，不重排已有字段，不删字段；Phase 8+ 后端替换零 frontend 改动（详见 §14.5）。
 
@@ -91,8 +91,8 @@ AYShader 是 AY Engine 的**着色器子系统**。它接受 Phoskia 源码（�
 
 | 命名空间 | 职责 | 文件 |
 |---|---|---|
-| `ayt::shader` | 引擎集成层：BGFX 后端、ShaderProgram、ShaderCache、Platform 枚举 | `IAYBackendConverter.h`、`AYBGFXConverter.h`、`AYShaderProgram.h`、`AYShaderCache.h` |
-| `ayt::shader::phoskia` | Phoskia 编译器核心：Token/Lexer/Parser/AST/Semantic/Compiler/BuiltinFunctions | `AYToken.h`、`AYLexer.h`、`AYParser.h`、`AYAst.h`、`AYType.h`、`AYTypeInference.h`、`AYSemanticAnalyzer.h`、`AYCompilerError.h`、`AYPhoskia.h`、`AYBuiltinFunctions.h` |
+| `ayt::shader` | 引擎集成层：BGFX 后端、ShaderProgram、ShaderCache、Platform 枚举 | `AYShader/IBackendConverter.h`、`AYShader/BGFXConverter.h`、`AYShader/ShaderProgram.h`、`AYShader/ShaderCache.h` |
+| `ayt::shader::phoskia` | Phoskia 编译器核心：Token/Lexer/Parser/AST/Semantic/Compiler/BuiltinFunctions | `AYShader\Token.h`、`AYShader\Lexer.h`、`AYShader\Parser.h`、`AYShader\Ast.h`、`AYShader/Type.h`、`AYShader/TypeInference.h`、`AYShader\SemanticAnalyzer.h`、`AYShader\CompilerError.h`、`AYShader/Phoskia.h`、`AYShader/BuiltinFunctions.h` |
 
 **为什么这样分层**：
 
@@ -142,36 +142,36 @@ AYShader 是 AY Engine 的**着色器子系统**。它接受 Phoskia 源码（�
 ┌────────────────────────────────────────────────────────────┐
 │  ayt::shader::phoskia                                      │
 │                                                            │
-│  AYToken.h         — Token / TokenType                     │
-│  AYLexer.h/.cpp    — 词法分析（关键字表、字符流、行号）    │
-│  AYParser.h/.cpp   — 递归下降语法分析（错误恢复）          │
-│  AYAst.h           — 表达式 + 语句 + 声明节点              │
-│  AYType.h/.cpp     — 类型系统（primitive/vector/matrix/    │
+│  AYShader\Token.h         — Token / TokenType                     │
+│  AYShader\Lexer.h/.cpp    — 词法分析（关键字表、字符流、行号）    │
+│  AYShader\Parser.h/.cpp   — 递归下降语法分析（错误恢复）          │
+│  AYShader\Ast.h           — 表达式 + 语句 + 声明节点              │
+│  AYShader/Type.h/.cpp     — 类型系统（primitive/vector/matrix/    │
 │                       array/function/struct）              │
-│  AYTypeInference.h — Hindley-Milner 风格类型推导           │
-│  AYSemanticAnalyzer.h/.cpp — 作用域/类型检查/标识符解析   │
-│  AYCompilerError.h — 错误聚合（Code/Message/Line/Column） │
-│  AYBuiltinFunctions.h/.cpp — 内置数学/PBR/纹理函数注册   │
-│  AYPhoskia.h/.cpp  — Compiler 流水线编排                   │
+│  AYShader/TypeInference.h — Hindley-Milner 风格类型推导           │
+│  AYShader\SemanticAnalyzer.h/.cpp — 作用域/类型检查/标识符解析   │
+│  AYShader\CompilerError.h — 错误聚合（Code/Message/Line/Column） │
+│  AYShader/BuiltinFunctions.h/.cpp — 内置数学/PBR/纹理函数注册   │
+│  AYShader/Phoskia.h/.cpp  — Compiler 流水线编排                   │
 │                                                            │
 └────────────────────────────────────────────────────────────┘
 ```
 
 ### 3.2 后端与引擎集成
 
-> **Phase 3.6 末现状 / Phase 4 目标**：当前 `AYShaderProgram.h` 仍持有 Phase 1 形态的 `class ShaderProgram`（内含 `bgfx::ShaderHandle`）。frontend 调用方目前**没**用这把（`ShaderCache` 还在草稿阶段），所以泄漏暂时不可见。**Phase 4 起就要把 bgfx 类型从这个头文件里全部挤出去**（pimpl 隔离）。详见 §8.5。
+> **Phase 3.6 末现状 / Phase 4 目标**：当前 `AYShader/ShaderProgram.h` 仍持有 Phase 1 形态的 `class ShaderProgram`（内含 `bgfx::ShaderHandle`）。frontend 调用方目前**没**用这把（`ShaderCache` 还在草稿阶段），所以泄漏暂时不可见。**Phase 4 起就要把 bgfx 类型从这个头文件里全部挤出去**（pimpl 隔离）。详见 §8.5。
 
 ```
 ┌────────────────────────────────────────────────────────────┐
 │  ayt::shader                                               │
 │                                                            │
-│  IAYBackendConverter.h    — 后端接口（抽象）               │
-│  AYBGFXConverter.h/.cpp   — BGFX 后端（Phoskia → .sc）     │
-│  AYShadercDriver.h/.cpp   — shaderc driver（Phase 3.6）    │
-│  AYShaderProgram.h        — CompiledShaderProgram（bytes） │
+│  AYShader/IBackendConverter.h    — 后端接口（抽象）               │
+│  AYShader/BGFXConverter.h/.cpp   — BGFX 后端（Phoskia → .sc）     │
+│  AYShader/ShadercDriver.h/.cpp   — shaderc driver（Phase 3.6）    │
+│  AYShader/ShaderProgram.h        — CompiledShaderProgram（bytes） │
 │                             + ShaderResource (Phase 4, opaque handle)│
 │                             + ShaderResourcePool (Phase 4) │
-│  AYShaderCache.h/.cpp     — 编译缓存（Phase 4 收编入 pool）│
+│  AYShader/ShaderCache.h/.cpp     — 编译缓存（Phase 4 收编入 pool）│
 │                                                            │
 └────────────────────────────────────────────────────────────┘
 ```
@@ -199,7 +199,7 @@ auto result = compiler.compileToBackend(source, "bgfx");
 
 > 状态：**未实现**。设计已记录，作为未来 Phase 3 的工作。
 
-原计划 Phoskia 拥有自己的 IR（Load/Store/Add/Mul/Phi/SSA 形式），位于 AST 和后端之间，用于跨后端优化和 SSA 转换。`AYPhoskia.h` 中以注释形式保留了原始设计草案。
+原计划 Phoskia 拥有自己的 IR（Load/Store/Add/Mul/Phi/SSA 形式），位于 AST 和后端之间，用于跨后端优化和 SSA 转换。`AYShader/Phoskia.h` 中以注释形式保留了原始设计草案。
 
 **当前策略**：Phase 1/2 直接从 AST 生成后端代码（仅 BGFX），不做 IR、不做 SSA、不做优化。这个决定的原因：
 
@@ -353,7 +353,7 @@ AYSerializer 中 `AYJsonTokenHandler` 的实现是一份反面教材——它用
 
 Phoskia 的 Lexer / Parser / 后端转换器在实现时**必须**遵守以下硬性约束，违反任何一条都视作必须重构：
 
-1. **Token 是词法工件，只携带 `type / lexeme / 位置`**。禁止任何语义层字段出现在 Token 上——`literal`（已解析的 float/int/string/bool）、类型、属性、名字绑定都**不属于**词法阶段。`AYToken.h` 中 `Token` 故意没有 `literal` 字段，Lexer 不调用 `std::stof`、不做转义、不判定 bool/null 形态。
+1. **Token 是词法工件，只携带 `type / lexeme / 位置`**。禁止任何语义层字段出现在 Token 上——`literal`（已解析的 float/int/string/bool）、类型、属性、名字绑定都**不属于**词法阶段。`AYShader\Token.h` 中 `Token` 故意没有 `literal` 字段，Lexer 不调用 `std::stof`、不做转义、不判定 bool/null 形态。
 
 2. **每条 token 在 Lexer 内立即定型**，不允许"延后到下一条 token 才决定要不要加分隔符/换行"的状态机。如果未来 BGFX writer 或其他后端出现类似需求，必须用一个**显式的、有名字的、单元测试可枚举的状态结构**（例如 `IndentWriter`），而不是 2-3 个互斥 `bool`。`AYJsonTokenHandler` 的三 bool 状态机已经证明这条路的代价远超收益。
 
@@ -483,7 +483,7 @@ The call-form (`thread_id()`) works because `inferCallExpr` already does `getFun
 
 **Motivation.** Before Phase 3.1, the BGFX backend consumed the Phoskia AST directly via manual `for`-loop + `dynamic_cast` (`src/AYBGFXConverter.cpp`, 891 lines). The next backend (HLSL / WGSL) would have had to duplicate that traversal. Phase 3.1 inserts a **target-neutral IR** between AST and backends so adding a backend is "implement one `IAYBackendConverter`" rather than "rewrite AST traversal from scratch".
 
-**Shape.** The IR lives in `namespace ayt::shader::phoskia::ir` (see `include/AYIr.h`). It is a **1:1 mirror of the AST** with one key addition: every `IRExpr` carries a `std::shared_ptr<Type> resolvedType` populated at IR-generation time. The discriminator wrapper `IRDeclaration` unifies `UniformDecl` / `PropertyDecl` / `TextureDecl` into a single tagged struct (kind: `Uniform | Property | Texture`), each with its target-neutral fields (no GLSL lexeme strings leaking out of the AST). `SamplerKind { Sampler2D, Sampler3D, SamplerCube }` is the IR-side counterpart of the future `texture3d` / `textureCube` lexer keywords.
+**Shape.** The IR lives in `namespace ayt::shader::phoskia::ir` (see `include/AYShader/Ir.h`). It is a **1:1 mirror of the AST** with one key addition: every `IRExpr` carries a `std::shared_ptr<Type> resolvedType` populated at IR-generation time. The discriminator wrapper `IRDeclaration` unifies `UniformDecl` / `PropertyDecl` / `TextureDecl` into a single tagged struct (kind: `Uniform | Property | Texture`), each with its target-neutral fields (no GLSL lexeme strings leaking out of the AST). `SamplerKind { Sampler2D, Sampler3D, SamplerCube }` is the IR-side counterpart of the future `texture3d` / `textureCube` lexer keywords.
 
 | AST (Phase 2) | IR (Phase 3.1) |
 |---|---|
@@ -504,7 +504,7 @@ The call-form (`thread_id()`) works because `inferCallExpr` already does `getFun
 
 This eliminates the previous pattern where the BGFX converter re-ran `TypeInference` per LetStmt at emission time (the bug history at `b9723a5` for `vec3` property initializers was rooted in this re-inference cost).
 
-**Why mirror, not SSA?** A previous TODO comment in `include/AYPhoskia.h` sketched an SSA-style instruction stream (`Load/Store/Add/Mul/Phi/BasicBlock`). SSA requires designing memory model, dominance frontiers, and phi placement — real work for an optimization pass. For backend emission, the mirror-IR with pre-resolved types is sufficient. If/when cross-backend optimization (constant folding, DCE, redundancy elimination) becomes a goal, an SSA layer can be added **on top of** this IR.
+**Why mirror, not SSA?** A previous TODO comment in `include/AYShader/Phoskia.h` sketched an SSA-style instruction stream (`Load/Store/Add/Mul/Phi/BasicBlock`). SSA requires designing memory model, dominance frontiers, and phi placement — real work for an optimization pass. For backend emission, the mirror-IR with pre-resolved types is sufficient. If/when cross-backend optimization (constant folding, DCE, redundancy elimination) becomes a goal, an SSA layer can be added **on top of** this IR.
 
 **What the IR does NOT do** (deferred to later phases):
 - No SSA-style instruction stream / dominance frontiers / phi nodes (Phase 3.x optimization)
@@ -541,7 +541,7 @@ CHECK(result.success);
 
 out 参数形式完全消除了"按值返回"路径：struct 构造在调用方栈帧上，调用方有稳定的栈地址（不是 SSO proxy carrier），pipeline 一边执行一边按字段填入。没有 NRVO 可言，没有跨 struct 的 SSO string 拷贝。
 
-同样的先例在多年前 `Compiler::tokenize` / `Lexer::tokenize` 上就出现过——`std::vector<Token>` 也用 out 参数避免同一个 MSVC 问题（`include/AYPhoskia.h:82-83` 注释）。
+同样的先例在多年前 `Compiler::tokenize` / `Lexer::tokenize` 上就出现过——`std::vector<Token>` 也用 out 参数避免同一个 MSVC 问题（`include/AYShader/Phoskia.h:82-83` 注释）。
 
 **Phase 3.2+ 加字段现在是安全的。** HLSL / WGSL 后端可以放心地往 `CompileResult` 加 `std::vector<uint32_t> dxil` / `std::string hlslSource` / `std::vector<uint8_t> spirv` 等，不会再踩到 SSO bug。代价仅是 `runPipeline` 入口处一次 `out = CompileResult{};` 复位，淹没在 lex/parse/IR-gen 后面。
 
@@ -749,21 +749,21 @@ Phoskia 的语法控制在以下 5 个文件里。**改一个语法特性需要�
 
 | 改什么 | 必改文件 | 可选改 |
 |---|---|---|
-| **重命名关键字** | `AYToken.h`（enum）、`AYLexer.cpp`（关键字表）、`AYParser.cpp`（分支） | `design.md` |
-| **加新关键字** | 同上 3 个 | `AYAst.h`（如果引入新节点） |
-| **加新语句**（while/break/continue） | `AYToken.h`、`AYLexer.cpp`、`AYAst.h`（新节点 + AstVisitor::visit 重载）、`AYParser.cpp`（parseXxx + 分支）、`AYBGFXConverter.cpp`（生成 .sc） | `design.md` |
-| **加新类型**（mat2x3 / half） | `AYToken.h`、`AYLexer.cpp`、`AYType.h/cpp`（BuiltinTypes）、`AYBGFXConverter.cpp`（类型映射到 GLSL） | `AYBuiltinFunctions.cpp`（如果新增类型相关的数学函数） |
-| **加新声明**（function/const） | `AYToken.h`、`AYLexer.cpp`、`AYAst.h`、`AYParser.cpp`、`AYBGFXConverter.cpp`、`design.md` | — |
-| **改 shading 语义**（加 vertex/fragment 区分） | `AYToken.h`、`AYLexer.cpp`、`AYAst.h`（ShadingFunc 拆分）、`AYParser.cpp`、`AYBGFXConverter.cpp`、`design.md` | `AYShaderProgram.h`（uniform binding） |
+| **重命名关键字** | `AYShader\Token.h`（enum）、`AYLexer.cpp`（关键字表）、`AYParser.cpp`（分支） | `design.md` |
+| **加新关键字** | 同上 3 个 | `AYShader\Ast.h`（如果引入新节点） |
+| **加新语句**（while/break/continue） | `AYShader\Token.h`、`AYLexer.cpp`、`AYShader\Ast.h`（新节点 + AstVisitor::visit 重载）、`AYParser.cpp`（parseXxx + 分支）、`AYBGFXConverter.cpp`（生成 .sc） | `design.md` |
+| **加新类型**（mat2x3 / half） | `AYShader\Token.h`、`AYLexer.cpp`、`AYShader/Type.h/cpp`（BuiltinTypes）、`AYBGFXConverter.cpp`（类型映射到 GLSL） | `AYBuiltinFunctions.cpp`（如果新增类型相关的数学函数） |
+| **加新声明**（function/const） | `AYShader\Token.h`、`AYLexer.cpp`、`AYShader\Ast.h`、`AYParser.cpp`、`AYBGFXConverter.cpp`、`design.md` | — |
+| **改 shading 语义**（加 vertex/fragment 区分） | `AYShader\Token.h`、`AYLexer.cpp`、`AYShader\Ast.h`（ShadingFunc 拆分）、`AYParser.cpp`、`AYBGFXConverter.cpp`、`design.md` | `AYShader/ShaderProgram.h`（uniform binding） |
 | **改运算符优先级** | `AYParser.cpp`（getPrecedence switch）、`design.md` | — |
-| **加新后端**（HLSL/WGSL） | 新建 `AYHLSLConverter.h/.cpp`（实现 `IAYBackendConverter`）、`AYPhoskia.cpp`（注册） | `IAYBackendConverter.h`（如果增加 Platform 枚举） |
+| **加新后端**（HLSL/WGSL） | 新建 `AYHLSLConverter.h/.cpp`（实现 `IAYBackendConverter`）、`AYPhoskia.cpp`（注册） | `AYShader/IBackendConverter.h`（如果增加 Platform 枚举） |
 
 **改语法的标准流程**（推荐）：
 
 1. **改 `design.md` 第 10 节 BNF** —— 先写人类可读定义
-2. **改 `AYToken.h` 的 `TokenType` enum** —— 加新关键字
+2. **改 `AYShader\Token.h` 的 `TokenType` enum** —— 加新关键字
 3. **改 `AYLexer.cpp` 的 `identifierType`** —— 加关键字到查表
-4. **改 `AYAst.h`** —— 加新节点 + 在 `AstVisitor` 加 `visit` 重载
+4. **改 `AYShader\Ast.h`** —— 加新节点 + 在 `AstVisitor` 加 `visit` 重载
 5. **改 `AYParser.cpp`** —— 加 `parseXxx` 方法 + 在 `parseStatement` 加分支
 6. **改 `AYBGFXConverter.cpp`** —— 加节点到 `.sc` 的生成分支
 7. **加单元测试**（Phase 2+）—— 确保 Lexer 识别新关键字、Parser 解析新语法
@@ -1347,7 +1347,7 @@ class ShaderResource {
 **Phase 4-O 目标**：
 
 ```cpp
-// include/AYShaderProgram.h
+// include/AYShader/ShaderProgram.h
 namespace ayt::shader {
 
 // 1) ShaderResource 是纯 opaque handle，**单一公开字段**
@@ -1711,7 +1711,7 @@ inline ShaderCapability operator|(ShaderCapability a, ShaderCapability b) { ... 
 **frontend-side `phoskia::CompileOptions` 重设计**——只保留真正 per-call 的字段：
 
 ```cpp
-// include/AYPhoskia.h::CompileOptions（Phase 4 后）
+// include/AYShader/Phoskia.h::CompileOptions（Phase 4 后）
 struct CompileOptions {
     // Variant definitions（per-shader，唯一真正属于 frontend 的字段）
     // 例：用户对某个材质定义了 [variant useEmission]，
@@ -1834,7 +1834,7 @@ pool.compile(src, {.defines={"BGFX_VARIANT_USE_EMISSION"},
 TEST_CASE(phase4_no_bgfx_header_in_frontend_tu) {
     // grep / static_assert:
     // - AYShader.h 不含 bgfx::* 类型
-    // - AYShaderProgram.h 不含 bgfx::* 类型
+    // - AYShader/ShaderProgram.h 不含 bgfx::* 类型
     // - 任何调用 ShaderResource API 的 TU 不含 #include <bgfx/bgfx.h>
 }
 
@@ -1950,7 +1950,7 @@ Frontend 拿到 error 想做 "跳到编辑器第 N 行第 M 列高亮" — **必
 **Phase 4-N 目标**：
 
 ```cpp
-// include/AYShaderProgram.h
+// include/AYShader/ShaderProgram.h
 namespace ayt::shader {
 
 enum class DiagnosticSeverity : uint8_t {
@@ -2387,12 +2387,12 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 - [x] Variant 宏在 BGFX 后端的 #ifdef 展开 (`[variant name]` → `#ifndef BGFX_VARIANT_<NAME_UPPER>` 包裹，默认 opt-in，详见 §6.3)
 - [x] 错误恢复与 panic-mode 验证（Step 4：`Parser::synchronize` 跳过到 statement boundary；`parseMaterialDecl` 内层循环也用 synchronize；EOF / 缺失闭合括号 / garbage token 都不再级联）
 - [x] 单元测试与 golden-file 验证（Test_GoldenFiles.cpp 6 个 fixture：5 个 material（unlit / pbr_minimal / pbr_with_emission / pbr_with_texture / empty）+ 1 个 compute_minimal (Phase 3.2)。golden baseline 自动生成 + AY_SHADER_REGEN_GOLDEN env 强制重生成 + 失败时 byte 级 diff 上下文）
-- [x] **类型名降级重构**（Step 5 完成：13 个 type keyword（Float/Vec2-4/Int/IVec2-4/Mat2-4/Quat/Bool）从 TokenType enum 删除，Lexer 关键字表清空对应 13 行，parsePrimary / parseShaderParam / consumeTypeName 的临时分支全部移除；新增 AYBuiltinTypes.h/.cpp 提供 string_view 查表 `isBuiltinType`；SemanticAnalyzer 在 analyzeUniformDecl 调用 isBuiltinType 校验非 builtin 名字并报 Go 风格错误"line N: 'hello' is not a builtin type (expected: ...)"）
+- [x] **类型名降级重构**（Step 5 完成：13 个 type keyword（Float/Vec2-4/Int/IVec2-4/Mat2-4/Quat/Bool）从 TokenType enum 删除，Lexer 关键字表清空对应 13 行，parsePrimary / parseShaderParam / consumeTypeName 的临时分支全部移除；新增 AYShader/BuiltinTypes.h/.cpp 提供 string_view 查表 `isBuiltinType`；SemanticAnalyzer 在 analyzeUniformDecl 调用 isBuiltinType 校验非 builtin 名字并报 Go 风格错误"line N: 'hello' is not a builtin type (expected: ...)"）
 - [x] **Compute shader 后端** — Phase 2.5 closes the parser / AST half (`compute Name { <body> }` is a top-level declaration, parser builds a `ComputeDecl`, `IRGenerator` lowers to `IRComputeDecl`). BGFX `.sc` does support compute via shaderc `--type compute` + `bgfx::createProgram(_csh)`; the Phase 2.5 placeholder "BGFX .sc does not support compute" error in `AYBGFXConverter.cpp:521` is **stale** and will be replaced by the real emission path in Phase 3.2. See §6.6.
 - [x] **Shader type 动态输出变量**（`gl_Position` / `gl_FragColor`，已完成 `_shadingOutputVar`）
 
 ### Phase 3: IR 与多后端
-- [x] **IR 层定义 + AST→IR 降级 + BGFX 后端 retarget**（Phase 3.1）：IR 是 AST 的 1:1 镜像（`include/AYIr.h`），每个 IR 表达式携带 `resolvedType` 在降级时由 IRGenerator 一次性 resolve；backends 读 `expr.resolvedType` 不再跑 TypeInference。BGFX 已 retarget 完毕，golden + shaderc e2e 全部通过。详见 §6.7。
+- [x] **IR 层定义 + AST→IR 降级 + BGFX 后端 retarget**（Phase 3.1）：IR 是 AST 的 1:1 镜像（`include/AYShader/Ir.h`），每个 IR 表达式携带 `resolvedType` 在降级时由 IRGenerator 一次性 resolve；backends 读 `expr.resolvedType` 不再跑 TypeInference。BGFX 已 retarget 完毕，golden + shaderc e2e 全部通过。详见 §6.7。
 - [x] **Compiler out-param 重构**（SSO NRVO 根因修复）：`Compiler::compile` / `compileToBackend` 改为 out 参数形式，根除 Phase 3.1 暴露的 MSVC SSO / NRVO 损坏（详见 §6.8）。删除死代码 `CompileResult::typeEnv` / `Compiler::errors()` / `hasErrors()` / 便捷自由函数；Phase 3.2+ 可以安全地往 `CompileResult` 加 per-target 字段。
 - [x] **Compute 端到端落地**（Phase 3.2 — BGFX `.sc` compute 路径，2026-06-29 完成）：移除 `AYBGFXConverter.cpp:521` 的 placeholder 报错；实现 `convertComputeDecl` emit 真实的 compute `.sc` 源（见 §6.6.1）；补 `storage NAME : structuredbuffer<T>` / `storage NAME : rwstructuredbuffer<T>` 语法（见 §6.6.2）；补 `thread_id` / `group_id` / `dispatch_id` 0-arg 内置（见 §6.6.3）；`shaderc --type compute` e2e 测试 + golden fixture (`compute_minimal`)。总测试 624 → 690（+66）。
 
@@ -2450,7 +2450,7 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 | 4-B | **`ShaderResourcePool` 工厂 + 拥有权 + 引擎配置中心**（friend 限定 ShaderResource 构造；shutdown 释放所有 handle；hot-reload dev-only hook；cache 收编；**新增**：`setDefaultBackend` / `setShadercExecutable` / `setBgfxIncludeDirs` / `setPlatform` / `setGLSLProfile` / `setAutoProbeFromRendererType` / `bindRendererType` 等 startup 配置；详见 §8.5.10） | 2 天 | — |
 | 4-C | **`Compiler::compileToShaderResource(src[, opts])`**（一次拿 opaque handle；内部 compileToProgram + bgfx::createShader + bgfx::createProgram + cache lookup） | 1 天 | 4-A, 4-B |
 | 4-D | **binding name → opaque ID 映射**（含 type 推断 + std140 layout 计算，把 Phase 3 的 `BGFXUniform` / `BGFXTexture` 等"前端元数据"完全收入 AYShader 内部） | 1.5 天 | 4-A |
-| 4-E | **header 隔离**（确认 `include/AYShader.h` / `AYShaderProgram.h` 不再包含 `<bgfx/bgfx.h>`；改 pimpl 后只剩 `AYShaderImpl.cpp` 引用 bgfx） | 0.5 天 | 4-A |
+| 4-E | **header 隔离**（确认 `include/AYShader.h` / `AYShader/ShaderProgram.h` 不再包含 `<bgfx/bgfx.h>`；改 pimpl 后只剩 `AYShaderImpl.cpp` 引用 bgfx） | 0.5 天 | 4-A |
 | 4-F | **`ShaderResource::submit(DrawCallContext)` 帧期整合**（与 AYRenderer draw call 配套；包含 batch uniform upload） | 1 天 | 4-C |
 | 4-G | **退役 `class ShaderProgram`**（Phase 1 老接口，Phase 4 后只作 `ShaderResourceImpl` 内部使用；frontend 不见） | 0.25 天 | 4-E |
 | 4-H | **删 `.sc` 公开字段**（`BGFXShaderFiles.{vs,fs,varyingDef}` + `BGFXComputeFile::cs` + `CompileResult::output` + `ConvertResult::output`）— 原本是 Phase 3.7 的待办，并入 Phase 4 | 0.5-1 天 | 4-E |
@@ -2462,7 +2462,7 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 | **总计** | — | **10-11 天** | — |
 
 **验收 contract**（见 §8.5.7 + §8.5.10）：
-1. `AYShader.h` / `AYShaderProgram.h` 不出现 bgfx::* 类型
+1. `AYShader.h` / `AYShader/ShaderProgram.h` 不出现 bgfx::* 类型
 2. `BindingId` = `uint32_t`，opaque
 3. frontend 一次 `pool.compile(src)` 完成 byte-compile + bgfx wire + cache
 4. frontend 调用代码不出现 backend / platform / profile / include 任何一词（编译期 grep 验证）
@@ -2524,10 +2524,10 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 
 **Frontend API 形态**：
 - ✅ Phase 3.6：`.sc` 从 frontend API 完全消失；`compileToProgram(src[, opts])` 返回 `CompiledShaderProgram`（raw bytes + binding metadata + debug sources）
-- ✅ **Phase 4-A**：`ShaderResource` + 最小 `ShaderResourcePool::acquire(CompiledShaderProgram)` — bgfx wire-up 内化；公开头 `AYShaderResource.h` 不含 bgfx
+- ✅ **Phase 4-A**：`ShaderResource` + 最小 `ShaderResourcePool::acquire(CompiledShaderProgram)` — bgfx wire-up 内化；公开头 `AYShader/ShaderResource.h` 不含 bgfx
 - ✅ **Phase 4-B**：`ShaderResourcePool` 引擎配置 + `compile()` / `acquire(src)` + 内存 cache + `release()`
 - ✅ **Phase 4-C**：`Compiler::compileToShaderResource(src[, opts], pool)` 一站式 compile + wire-up
-- ✅ **Phase 4-E**：`AYShaderProgram.h` 不含 bgfx；legacy `ShaderProgram` 迁至 `detail/AYShaderProgramLegacy.h`
+- ✅ **Phase 4-E**：`AYShader/ShaderProgram.h` 不含 bgfx；legacy `ShaderProgram` 迁至 `detail/AYShader/detail/AYShader/detail/AYShader/detail/AYShader/detail/ShaderProgramLegacy.h`
 - ✅ **Phase 4-G**：`AYShader.h` 不再 include `AYShaderCache` / `AYBGFXConverter`（frontend 零 bgfx 泄漏）
 - ✅ **Phase 4-K（contract）**：`Test_ShaderCacheIntegration` — frontend TU 不含 `<bgfx/bgfx.h>`
 - ✅ **Phase 4-D**：std140 layout 从 Phoskia AST 字段类型计算；`ShaderResource::getUniformBlockSize` / field offset + `setUniformBlock`
@@ -2606,7 +2606,7 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 | 4-B | **`ShaderResourcePool`**（工厂 + 拥有权 + cache 收编） | 1.5 天 | — |
 | 4-C | **`Compiler::compileToShaderResource(src[, opts])`**（一站式 compile + bgfx wire + cache） | 1 天 | 4-A, 4-B |
 | 4-D | **binding name → opaque ID 映射**（含 type 推断 + std140 layout） | 1.5 天 | 4-A |
-| 4-E | **header 隔离**（`AYShader.h` / `AYShaderProgram.h` 不再 include `<bgfx/bgfx.h>`；pimpl 唯一下沉到 `AYShaderImpl.cpp`） | 0.5 天 | 4-A |
+| 4-E | **header 隔离**（`AYShader.h` / `AYShader/ShaderProgram.h` 不再 include `<bgfx/bgfx.h>`；pimpl 唯一下沉到 `AYShaderImpl.cpp`） | 0.5 天 | 4-A |
 | 4-F | **`ShaderResource::submit(DrawCallContext)` 整合**（与 AYRenderer draw call 配套；batch upload） | 1 天 | 4-C |
 | 4-G | **退役 `class ShaderProgram`**（Phase 1 老接口；frontend 永不见） | 0.25 天 | 4-E |
 | 4-H | **删 `.sc` 公开字段**（`BGFXShaderFiles.{vs,fs,varyingDef}` + `BGFXComputeFile::cs` + `CompileResult::output` + `ConvertResult::output`；原本属 Phase 3.7） | 0.5-1 天 | 4-E |
@@ -2693,11 +2693,11 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 
 **改语法的标准流程**（设计在 `design.md` §7）：
 1. 改 `design.md` §10 BNF
-2. 改 `AYToken.h` enum（加关键字）
+2. 改 `AYShader\Token.h` enum（加关键字）
 3. 改 `AYLexer.cpp` 关键字表
-4. 改 `AYAst.h`（加节点 + AstVisitor::visit 重载）
+4. 改 `AYShader\Ast.h`（加节点 + AstVisitor::visit 重载）
 5. 改 `AYParser.cpp`（parseXxx + dispatcher）
-6. 改 `AYIr.h` / `AYIr.cpp`（IR 镜像 + lowerDecl）
+6. 改 `AYShader/Ir.h` / `AYIr.cpp`（IR 镜像 + lowerDecl）
 7. 改 `AYBGFXConverter.cpp`（emit）
 8. 加测试：parser / IR / e2e Phoskia / golden fixture
 9. 跑 `cmake --build` + `AYShader_Test.exe` 验证
@@ -2707,7 +2707,7 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 - **MSVC SSO/NRVO bug**：所有返回大 struct 的函数必须 out-param 形式
 - **AYTest 全局静态注册**：每个 TEST_CASE 是新 global symbol；CMakeLists 用 `file(GLOB ... CONFIGURE_DEPENDS)`（**两条都改了**：主 lib `CMakeLists.txt` + unittest）
 - **黄金 baseline 重生成**：`AY_SHADER_REGEN_GOLDEN=1 ./AYShader_Test.exe`（写到 build-dir，**记得拷回源 dir**）
-- **bgfx 头文件隔离（Phase 4 起）**：所有 bgfx handles 必须 pimpl 隔离，详见 §8.5。Frontend 头文件（`AYShader.h` / `AYShaderProgram.h`）**禁止**直接 `#include <bgfx/bgfx.h>`——编译单元验证见 `Test_ShaderCacheIntegration`。
+- **bgfx 头文件隔离（Phase 4 起）**：所有 bgfx handles 必须 pimpl 隔离，详见 §8.5。Frontend 头文件（`AYShader.h` / `AYShader/ShaderProgram.h`）**禁止**直接 `#include <bgfx/bgfx.h>`——编译单元验证见 `Test_ShaderCacheIntegration`。
 
 ### 14.5 Phase 4 起路线图（移交用，一页摘要）
 
@@ -2761,7 +2761,7 @@ res.submit(drawCtx);
 **这意味着**：Phase 4 是 frontend API 的"封顶 commit" — 通过之后，每加 backend / feature 都属于"扩展"而非"破坏"。
 
 **Phase 4 是否成功验收（§8.5.7）复述**：
-1. `AYShader.h` / `AYShaderProgram.h` 不出现 bgfx::* 类型
+1. `AYShader.h` / `AYShader/ShaderProgram.h` 不出现 bgfx::* 类型
 2. `BindingId = uint32_t` opaque
 3. frontend 一次 `compileToShaderResource(src)` 完成 byte-compile + bgfx wire + cache
 4. 换 WGSL backend 时 frontend 代码零改动（Phase 8+ 验证）
@@ -2777,11 +2777,11 @@ res.submit(drawCtx);
 
 #### 14.6.1 API surface（lock-in 类）
 
-- [ ] **Frontend header 不出现 bgfx**：`grep -rn 'bgfx/' include/AYShader.h include/AYShaderProgram.h include/AYPhoskia.h` 应为空（4-E 之后永久成立）
-- [ ] **`ShaderResource` 不含 `bgfx::*Handle` 字段**：`grep -rn 'bgfx::' include/AYShaderProgram.h` 应为空（4-O 之后）
+- [ ] **Frontend header 不出现 bgfx**：`grep -rn 'bgfx/' include/AYShader.h include/AYShader/ShaderProgram.h include/AYShader/Phoskia.h` 应为空（4-E 之后永久成立）
+- [ ] **`ShaderResource` 不含 `bgfx::*Handle` 字段**：`grep -rn 'bgfx::' include/AYShader/ShaderProgram.h` 应为空（4-O 之后）
 - [ ] **`phoskia::CompileOptions` 不出现 backend / platform / profile / include / targetBackend 等 backend-internal 字段**（4-R 之后）：
   ```bash
-  grep -E '(targetBackend|targetPlatform|glslProfile|includeDir)' include/AYPhoskia.h
+  grep -E '(targetBackend|targetPlatform|glslProfile|includeDir)' include/AYShader/Phoskia.h
   ```
 - [ ] **新加字段是 default-constructed 类型**（`std::optional` / `std::vector` / default 值），**不**重排已有字段
 - [ ] **新增函数是 overload**，不改已有签名
@@ -3051,10 +3051,10 @@ frontend 想做"只改了一个 material → 只重编这一个"。当前 cache 
 
 **目标方案（Phase 2）**——按 Go / Swift / Rust 的工业做法：
 
-1. **`AYToken.h::TokenType` enum** 删除 `Float / Vec2 / Vec3 / Vec4 / Int / IVec2 / IVec3 / IVec4 / Mat2 / Mat3 / Mat4 / Quat / Bool` 共 13 个类型 token。它们**不是**词法概念——字母开头的标识符就是 `Identifier`。
+1. **`AYShader\Token.h::TokenType` enum** 删除 `Float / Vec2 / Vec3 / Vec4 / Int / IVec2 / IVec3 / IVec4 / Mat2 / Mat3 / Mat4 / Quat / Bool` 共 13 个类型 token。它们**不是**词法概念——字母开头的标识符就是 `Identifier`。
 2. **`AYLexer.cpp` 关键字表**对应删除 13 行。
 3. **`unittest/Test_Lexer.cpp`** line 36 + line 81–93 改写：类型名断言改成 `tokens[i].type == Identifier && tokens[i].lexeme == "vec3"` 之类。
-4. **新增 `AYBuiltinTypes.h/.cpp`**：维护一张 `static const std::unordered_set<std::string_view> builtinTypes = {"float", "vec2", "vec3", ..., "bool"}`，按 `design.md §6.5.10` 用 `string_view` 查表零分配。提供 `bool isBuiltinType(std::string_view)` 接口。
+4. **新增 `AYShader/BuiltinTypes.h/.cpp`**：维护一张 `static const std::unordered_set<std::string_view> builtinTypes = {"float", "vec2", "vec3", ..., "bool"}`，按 `design.md §6.5.10` 用 `string_view` 查表零分配。提供 `bool isBuiltinType(std::string_view)` 接口。
 5. **`AYSemanticAnalyzer::analyzeUniformDecl` / `analyzePropertyDecl`** 等"期望类型"的入口，先 match `Identifier` 拿 lexeme，然后调用 `AYBuiltinTypes::isBuiltinType(lexeme)` 判定；不是则报清晰错误"line N: 'hello' is not a builtin type (expected: float, vec2, vec3, ...)"。
 6. **`parsePrimary`** 移除方案 C 加的 13 个临时分支，回到只有 `Identifier / FloatLiteral / StringLiteral / True / False / LeftParen` 的干净状态。
 7. **`tokenTypeName` debug 函数** 移除对应 13 个 case。

@@ -14,8 +14,8 @@
 // The e2e (verify bytes are real bgfx binaries) checks live in
 // Test_CompileToBinary.cpp; here we test the Compiler-level glue.
 
-#include "AYPhoskia.h"
-#include "AYShadercDriver.h"  // for AYShadercDriver::clearDefaultExecutable()
+#include "AYShader/Phoskia.h"
+#include "AYShader/ShadercDriver.h"  // for AYShadercDriver::clearDefaultExecutable()
 #include "AYTest.h"
 
 #include <cstdio>

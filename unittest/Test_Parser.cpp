@@ -2,9 +2,9 @@
 // AYShader Parser Unit Tests (Phase 1 closure ?vertex/fragment syntax)
 // ============================================================
 
-#include "AYLexer.h"
-#include "AYParser.h"
-#include "AYAst.h"
+#include "AYShader/Lexer.h"
+#include "AYShader/Parser.h"
+#include "AYShader/Ast.h"
 #include "AYTest.h"
 
 using namespace ayt::shader::phoskia;

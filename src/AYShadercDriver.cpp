@@ -1,6 +1,6 @@
 // AYShadercDriver.cpp — Phase 3.6 + AYIO migration
 //
-// See AYShadercDriver.h. Implementation lifted from
+// See AYShader/ShadercDriver.h. Implementation lifted from
 // unittest/Test_ShaderCompile.cpp shaderc plumbing (lines 46-285).
 // Same plumbing, just promoted to production code with a few small
 // hardening changes:
@@ -24,7 +24,7 @@
 //     API, not file I/O. AYIO does not (yet) expose a Process module.
 //     See design.md §16.3 Future Work.
 
-#include "AYShadercDriver.h"
+#include "AYShader/ShadercDriver.h"
 
 #include <AYIO/File.h>
 #include <AYIO/Path.h>

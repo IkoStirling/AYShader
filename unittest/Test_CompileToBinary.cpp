@@ -12,13 +12,13 @@
 // Test_ShaderCompile.cpp e2e tests and deletes the old helper
 // functions there.
 
-#include "AYPhoskia.h"
-#include "AYBGFXConverter.h"
-#include "AYLexer.h"
-#include "AYParser.h"
-#include "AYAst.h"
-#include "AYIr.h"
-#include "AYShadercDriver.h"  // for AYShadercDriver probe in shadercAvailable()
+#include "AYShader/Phoskia.h"
+#include "AYShader/BGFXConverter.h"
+#include "AYShader/Lexer.h"
+#include "AYShader/Parser.h"
+#include "AYShader/Ast.h"
+#include "AYShader/Ir.h"
+#include "AYShader/ShadercDriver.h"  // for AYShadercDriver probe in shadercAvailable()
 #include "AYTest.h"
 
 #include <cstdio>

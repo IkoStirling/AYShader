@@ -1,8 +1,8 @@
 // AYPhoskia.cpp - Phoskia compiler implementation
 
-#include "AYPhoskia.h"
-#include "AYBGFXConverter.h"
-#include "AYShaderResourcePool.h"
+#include "AYShader/Phoskia.h"
+#include "AYShader/BGFXConverter.h"
+#include "AYShader/ShaderResourcePool.h"
 
 #include <AYIO/Env.h>
 

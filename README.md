@@ -33,7 +33,7 @@ AYShader 是 AY Engine 的着色器子系统：接受 **Phoskia** DSL 源码，�
 | Phase 4-A | `ShaderResource` opaque handle + 最小 `ShaderResourcePool` wire-up | ✅ |
 | Phase 4-B | Pool 引擎配置 + `compile()` / `acquire(src)` + 内存 cache + `release()` | ✅ |
 | Phase 4-C | `Compiler::compileToShaderResource(src[, opts], pool)` 一站式 compile | ✅ |
-| Phase 4-E | `AYShaderProgram.h` 剥离 bgfx；legacy `ShaderProgram` → `detail/` | ✅ |
+| Phase 4-E | `AYShader/ShaderProgram.h` 剥离 bgfx；legacy `ShaderProgram` → `detail/` | ✅ |
 | Phase 4-G | `AYShader.h` 不再 include legacy cache/converter（frontend 零 bgfx） | ✅ |
 | Phase 4-D | std140 layout 内化 + `getUniformBlockSize` / field offset API | ✅ |
 | Phase 4-I | 磁盘 cache tier（`.aysc`）收编进 `ShaderResourcePool`；key = SHA256 | ✅ |
@@ -227,24 +227,24 @@ AYShader/
 ├── design.md           # 完整设计文档（含类型推导规则、语法 BNF、错误码表）
 ├── CMakeLists.txt
 ├── include/
-│   ├── AYToken.h
-│   ├── AYLexer.h
-│   ├── AYParser.h
-│   ├── AYAst.h
-│   ├── AYType.h
-│   ├── AYTypeInference.h
-│   ├── AYSemanticAnalyzer.h
-│   ├── AYBuiltinTypes.h
-│   ├── AYBuiltinFunctions.h
-│   ├── AYCompilerError.h
-│   ├── AYPhoskia.h
-│   ├── AYIr.h
-│   ├── IAYBackendConverter.h
-│   ├── AYBGFXConverter.h
-│   ├── AYShaderProgram.h
-│   ├── AYShaderResource.h
-│   ├── AYShaderResourcePool.h
-│   └── AYShaderCache.h
+│   ├── AYShader\Token.h
+│   ├── AYShader\Lexer.h
+│   ├── AYShader\Parser.h
+│   ├── AYShader\Ast.h
+│   ├── AYShader/Type.h
+│   ├── AYShader/TypeInference.h
+│   ├── AYShader\SemanticAnalyzer.h
+│   ├── AYShader/BuiltinTypes.h
+│   ├── AYShader/BuiltinFunctions.h
+│   ├── AYShader\CompilerError.h
+│   ├── AYShader/Phoskia.h
+│   ├── AYShader/Ir.h
+│   ├── AYShader/IBackendConverter.h
+│   ├── AYShader/BGFXConverter.h
+│   ├── AYShader/ShaderProgram.h
+│   ├── AYShader/ShaderResource.h
+│   ├── AYShader/ShaderResourcePool.h
+│   └── AYShader/ShaderCache.h
 ├── src/                # 一一对应实现
 ├── unittest/
 │   ├── CMakeLists.txt

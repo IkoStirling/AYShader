@@ -9,7 +9,7 @@
 // st_mtimespec when available. AYIO whole-second fallback is used only when
 // platform stat APIs are unavailable.
 
-#include "detail/AYShaderFileWatch.h"
+#include "AYShader/detail/ShaderFileWatch.h"
 
 #include <AYIO/File.h>
 

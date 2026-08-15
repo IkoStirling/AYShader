@@ -2,11 +2,11 @@
 // AYShader BuiltinTypes Unit Tests (Phase 2 Step 5)
 // ============================================================
 //
-// Exercises AYBuiltinTypes::isBuiltinType / all() / expectedList â€?// the lookup table that the parser / semantic analyzer consult after
+// Exercises AYBuiltinTypes::isBuiltinType / all() / expectedList ï¿½?// the lookup table that the parser / semantic analyzer consult after
 // the Step 5 token-demotion refactor to decide whether an Identifier
 // token carries a builtin-type name.
 
-#include "AYBuiltinTypes.h"
+#include "AYShader/BuiltinTypes.h"
 #include "AYTest.h"
 
 #include <string_view>
@@ -55,7 +55,7 @@ TEST_CASE(non_builtin_user_name_rejected) {
 
 TEST_CASE(non_builtin_reserved_keyword_rejected) {
     // Phoskia semantic keywords look like type names but are NOT
-    // builtin types â€?they're for in/out parameter declarations only.
+    // builtin types ï¿½?they're for in/out parameter declarations only.
     CHECK_FALSE(AYBuiltinTypes::isBuiltinType("position"));
     CHECK_FALSE(AYBuiltinTypes::isBuiltinType("normal"));
     CHECK_FALSE(AYBuiltinTypes::isBuiltinType("color"));

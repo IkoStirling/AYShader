@@ -11,10 +11,10 @@
 //     graceful-degradation path: the IRGenerator always produces types,
 //     even when the user did not enable Phase 2's analyzeSemantics step.
 
-#include "AYIr.h"
-#include "AYTypeInference.h"
-#include "AYBuiltinFunctions.h"
-#include "detail/AYPhoskiaFrameBuiltins.h"
+#include "AYShader/Ir.h"
+#include "AYShader/TypeInference.h"
+#include "AYShader/BuiltinFunctions.h"
+#include "AYShader/detail/PhoskiaFrameBuiltins.h"
 #include <unordered_map>
 
 namespace ayt::shader::phoskia::ir

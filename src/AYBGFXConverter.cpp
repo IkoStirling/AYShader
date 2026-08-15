@@ -9,13 +9,13 @@
 // with --type vertex for vs_, once with --type fragment --varyingdef for
 // fs_) to produce the binary shader programs bgfx::createProgram consumes.
 
-#include "AYBGFXConverter.h"
-#include "detail/AYPhoskiaFrameBuiltins.h"
-#include "detail/AYShaderSourceKeys.h"
-#include "detail/AYStd140Layout.h"
-#include "AYAst.h"
-#include "AYType.h"
-#include "AYTypeInference.h"  // Phase 2: let stmt needs GLSL type prefix.
+#include "AYShader/BGFXConverter.h"
+#include "AYShader/detail/PhoskiaFrameBuiltins.h"
+#include "AYShader/detail/ShaderSourceKeys.h"
+#include "AYShader/detail/Std140Layout.h"
+#include "AYShader/Ast.h"
+#include "AYShader/Type.h"
+#include "AYShader/TypeInference.h"  // Phase 2: let stmt needs GLSL type prefix.
 
 #include <AYIO/File.h>
 #include <AYIO/Directory.h>
@@ -1108,7 +1108,7 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
     out.storageBuffers = _storageBuffers;
 }
 
-// Phase 3.6 productization entry point. See AYBGFXConverter.h for the
+// Phase 3.6 productization entry point. See AYShader/BGFXConverter.h for the
 // full contract. Implementation flow:
 //   1. Run convertBGFX() to populate out.materialStages / .computeStages
 //      and the binding metadata. Bail with success=false on any

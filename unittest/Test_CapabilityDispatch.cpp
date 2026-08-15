@@ -1,8 +1,8 @@
-// Test_CapabilityDispatch.cpp â€?Phase 4-L capability selection
+// Test_CapabilityDispatch.cpp ï¿½?Phase 4-L capability selection
 
-#include "AYShaderResourcePool.h"
+#include "AYShader/ShaderResourcePool.h"
 #include "AYTest.h"
-#include "detail/AYShaderCapability.h"
+#include "AYShader/detail/ShaderCapability.h"
 
 using namespace ayt::shader;
 

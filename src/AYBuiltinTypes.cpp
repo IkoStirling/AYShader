@@ -1,6 +1,6 @@
 // AYBuiltinTypes.cpp - Phoskia builtin type table implementation
 
-#include "AYBuiltinTypes.h"
+#include "AYShader/BuiltinTypes.h"
 #include <string>
 
 namespace ayt::shader::phoskia

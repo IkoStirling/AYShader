@@ -5,13 +5,13 @@
 // Fragment `out` targets (declaration order) lower to gl_FragData[0..N-1].
 // Legacy single-color path keeps return → gl_FragColor when no outs.
 
-#include "AYPhoskia.h"
-#include "AYBGFXConverter.h"
-#include "AYLexer.h"
-#include "AYParser.h"
-#include "AYAst.h"
-#include "AYIr.h"
-#include "AYSemanticAnalyzer.h"
+#include "AYShader/Phoskia.h"
+#include "AYShader/BGFXConverter.h"
+#include "AYShader/Lexer.h"
+#include "AYShader/Parser.h"
+#include "AYShader/Ast.h"
+#include "AYShader/Ir.h"
+#include "AYShader/SemanticAnalyzer.h"
 #include "AYTest.h"
 
 #include <stdexcept>

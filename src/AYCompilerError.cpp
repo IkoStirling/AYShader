@@ -1,6 +1,6 @@
 // AYCompilerError.cpp - Compiler error implementation
 
-#include "AYCompilerError.h"
+#include "AYShader/CompilerError.h"
 #include <sstream>
 
 namespace ayt::shader::phoskia

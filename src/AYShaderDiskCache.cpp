@@ -4,7 +4,7 @@
 // file-IO migration plan. The on-disk binary format is unchanged; only
 // the read/write open/close plumbing moved.
 
-#include "detail/AYShaderDiskCache.h"
+#include "AYShader/detail/ShaderDiskCache.h"
 
 #include <AYIO/File.h>
 #include <AYIO/Directory.h>

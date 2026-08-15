@@ -1,8 +1,8 @@
-// Test_CacheStats.cpp â€?Phase 4-Q two-tier cache stats
+// Test_CacheStats.cpp ï¿½?Phase 4-Q two-tier cache stats
 
-#include "AYPhoskia.h"
-#include "AYShaderResourcePool.h"
-#include "AYShadercDriver.h"
+#include "AYShader/Phoskia.h"
+#include "AYShader/ShaderResourcePool.h"
+#include "AYShader/ShadercDriver.h"
 #include "AYTest.h"
 
 #include <bgfx/bgfx.h>

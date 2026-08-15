@@ -6,7 +6,7 @@
 // For mat4 that's 64 (no padding needed); for mat3 we'd pad each element
 // to 64 bytes (48 + 16 tail padding) so subsequent elements stay aligned.
 
-#include "detail/AYStd140Layout.h"
+#include "AYShader/detail/Std140Layout.h"
 
 namespace ayt::shader::detail
 {

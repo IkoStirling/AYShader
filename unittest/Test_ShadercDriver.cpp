@@ -1,17 +1,17 @@
-// Test_ShadercDriver.cpp â€?Phase 3.6 (revised Commit 4)
+// Test_ShadercDriver.cpp ï¿½?Phase 3.6 (revised Commit 4)
 //
 // Tests AYShadercDriver's explicit-path policy (sign-off 2026-07-01):
 //   * setDefaultExecutable / clearDefaultExecutable process-wide state
 //   * Default ctor uses the global default; throws on unset / missing
 //   * Explicit-path ctor takes its own path; throws on empty / missing
-//   * In-memory .sc â†?.bin bytes round-trip (skips when shaderc missing)
+//   * In-memory .sc ï¿½?.bin bytes round-trip (skips when shaderc missing)
 //
 // The pre-Commit-4 "auto-discovery" tests (env var, PATH search,
-// CMake hint) are gone â€?the driver no longer does any of that.
+// CMake hint) are gone ï¿½?the driver no longer does any of that.
 // The host engine is responsible for resolving the shaderc path
 // from its own config and calling setDefaultExecutable at startup.
 
-#include "AYShadercDriver.h"
+#include "AYShader/ShadercDriver.h"
 #include "AYTest.h"
 
 #include <cstdlib>
@@ -103,7 +103,7 @@ TEST_CASE(set_default_then_default_ctor_uses_it) {
     }
 
     AYShadercDriver::setDefaultExecutable(path);
-    AYShadercDriver drv;  // default ctor â€?should pick up the default
+    AYShadercDriver drv;  // default ctor ï¿½?should pick up the default
     CHECK(drv.shadercPath() == path);
     AYShadercDriver::clearDefaultExecutable();
 }
@@ -215,7 +215,7 @@ TEST_CASE(shaderc_driver_in_memory_to_bytes_round_trip) {
     const std::string path = AY_SHADER_SHADERC_HINT;
     if (!fileExists(path)) {
         std::cerr << "[shaderc test] SKIP: vendored shaderc not at '"
-                  << path << "' â€?round-trip test requires shaderc.\n";
+                  << path << "' ï¿½?round-trip test requires shaderc.\n";
         return;
     }
 

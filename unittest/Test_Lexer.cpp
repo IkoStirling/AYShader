@@ -2,8 +2,8 @@
 // AYShader Lexer Unit Tests
 // ============================================================
 
-#include "AYLexer.h"
-#include "AYToken.h"
+#include "AYShader/Lexer.h"
+#include "AYShader/Token.h"
 #include "AYTest.h"
 
 using namespace ayt::shader::phoskia;
@@ -425,7 +425,7 @@ TEST_CASE(type_names_are_plain_identifiers) {
     // Round-trip every builtin type name through the lexer and assert
     // each one is a TokenType::Identifier carrying the literal name as
     // its lexeme. No more TokenType::Vec3 / Float / Mat4 / Bool / ...
-    // �?those enum values have been removed from AYToken.h.
+    // �?those enum values have been removed from AYShader\Token.h.
     const char* names[] = {
         "float", "vec2", "vec3", "vec4",
         "int", "ivec2", "ivec3", "ivec4",

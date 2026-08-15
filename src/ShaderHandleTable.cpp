@@ -1,7 +1,7 @@
 // ShaderHandleTable.cpp — opaque handle registry (Phase 4-O)
 
-#include "detail/AYShaderHandleTable.h"
-#include "AYShaderResource.h"
+#include "AYShader/detail/ShaderHandleTable.h"
+#include "AYShader/ShaderResource.h"
 #include "ShaderResourceImpl.h"
 
 namespace ayt::shader::detail

@@ -1,10 +1,10 @@
 // Test_ShaderHotReload.cpp �?Phase 4-J hot-reload watch + debounce
 
-#include "AYPhoskia.h"
-#include "AYShaderResourcePool.h"
-#include "AYShadercDriver.h"
+#include "AYShader/Phoskia.h"
+#include "AYShader/ShaderResourcePool.h"
+#include "AYShader/ShadercDriver.h"
 #include "AYTest.h"
-#include "detail/AYShaderFileWatch.h"
+#include "AYShader/detail/ShaderFileWatch.h"
 
 #include <bgfx/bgfx.h>
 

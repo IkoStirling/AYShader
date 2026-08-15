@@ -1,11 +1,11 @@
 // Test_ShaderDiskCache.cpp ??Phase 4-I disk cache tier
 
-#include "AYPhoskia.h"
-#include "AYShaderResourcePool.h"
-#include "AYShadercDriver.h"
+#include "AYShader/Phoskia.h"
+#include "AYShader/ShaderResourcePool.h"
+#include "AYShader/ShadercDriver.h"
 #include "AYTest.h"
-#include "detail/AYShaderDigest.h"
-#include "detail/AYShaderDiskCache.h"
+#include "AYShader/detail/ShaderDigest.h"
+#include "AYShader/detail/ShaderDiskCache.h"
 
 #include <bgfx/bgfx.h>
 

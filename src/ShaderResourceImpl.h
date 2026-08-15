@@ -1,7 +1,7 @@
 #pragma once
 // ShaderResourceImpl.h - internal pimpl (not installed in include/)
 
-#include "AYShaderProgram.h"
+#include "AYShader/ShaderProgram.h"
 
 #include <bgfx/bgfx.h>
 

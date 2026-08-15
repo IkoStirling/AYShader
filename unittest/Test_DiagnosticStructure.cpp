@@ -1,6 +1,6 @@
-// Test_DiagnosticStructure.cpp â€?Phase 4-N structured diagnostics
+// Test_DiagnosticStructure.cpp ï¿½?Phase 4-N structured diagnostics
 
-#include "AYCompilerError.h"
+#include "AYShader/CompilerError.h"
 #include "AYTest.h"
 
 using namespace ayt::shader::phoskia;
