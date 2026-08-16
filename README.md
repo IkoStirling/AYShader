@@ -221,48 +221,32 @@ layout(std140, binding = 1) uniform Lighting { vec3 ambient; float sunIntensity;
 
 ## 项目结构
 
-```
+```text
 AYShader/
-├── README.md           # 本文件
-├── design.md           # 完整设计文档（含类型推导规则、语法 BNF、错误码表）
-├── CMakeLists.txt
-├── include/
-│   ├── AYShader\Token.h
-│   ├── AYShader\Lexer.h
-│   ├── AYShader\Parser.h
-│   ├── AYShader\Ast.h
-│   ├── AYShader/Type.h
-│   ├── AYShader/TypeInference.h
-│   ├── AYShader\SemanticAnalyzer.h
-│   ├── AYShader/BuiltinTypes.h
-│   ├── AYShader/BuiltinFunctions.h
-│   ├── AYShader\CompilerError.h
-│   ├── AYShader/Phoskia.h
-│   ├── AYShader/Ir.h
-│   ├── AYShader/IBackendConverter.h
-│   ├── AYShader/BGFXConverter.h
-│   ├── AYShader/ShaderProgram.h
-│   ├── AYShader/ShaderResource.h
-│   ├── AYShader/ShaderResourcePool.h
-│   └── AYShader/ShaderCache.h
-├── src/                # 一一对应实现
-├── unittest/
-│   ├── CMakeLists.txt
-│   ├── main.cpp
-│   ├── Test_*.cpp
-│   └── golden/         # Phoskia fixture + expected .sc baseline
-└── thirdParty/
-    └── bgfx-install/   # vendored bgfx（用于 shaderc）
+├── AYShader.h                       # 模块入口
+├── interface/AYShader/
+│   └── IBackendConverter.h
+├── include/AYShader/
+│   ├── Lexer.h
+│   ├── Parser.h
+│   ├── Ast.h
+│   ├── SemanticAnalyzer.h
+│   ├── CompilerError.h
+│   ├── Phoskia.h
+│   ├── Ir.h
+│   ├── BGFXConverter.h
+│   ├── ShaderProgram.h
+│   ├── ShaderResource.h
+│   └── ShaderCache.h
+├── src/
+└── unittest/
 ```
-
----
 
 ## 依赖
 
-- **bgfx**（vendored，第三方）—— 仅用于 `shaderc.exe` 路径，AYShader 本身不链接 bgfx
-- **AYTest**（同 repo `AYFoundation/AYTest`）—— 极简单元测试框架
-
----
+- AYIO
+- bgfx（编译与运行时后端）
+- AYTest（仅单元测试）
 
 ## License
 
