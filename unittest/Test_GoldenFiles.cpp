@@ -47,11 +47,7 @@ namespace {
 // is order-independent from Test_ShadercDriver.cpp /
 // Test_CompileToBinary.cpp.
 #ifndef AY_SHADER_SHADERC_HINT
-#  ifdef _WIN32
-#    define AY_SHADER_SHADERC_HINT "thirdParty/bgfx-install/debug/bin/shaderc.exe"
-#  else
-#    define AY_SHADER_SHADERC_HINT "thirdParty/bgfx-install/debug/bin/shaderc"
-#  endif
+#  define AY_SHADER_SHADERC_HINT ""
 #endif
 
 inline bool fileExistsGolden(const std::string& p) {

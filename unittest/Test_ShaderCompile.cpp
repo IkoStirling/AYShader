@@ -38,17 +38,13 @@ using namespace ayt::shader::phoskia;
 
 namespace {
 
-// Vendored shaderc path injected at CMake configure time. Same
+// vcpkg shaderc path injected at CMake configure time. Same
 // convention Test_ShadercDriver.cpp / Test_CompileToBinary.cpp use.
 // (sign-off 2026-07-01: shaderc must be configured explicitly; we
 // point the explicit-path ctor at the vendored binary. The test
 // fails fast when the file isn't there, with a clear diagnostic.)
 #ifndef AY_SHADER_SHADERC_HINT
-#  ifdef _WIN32
-#    define AY_SHADER_SHADERC_HINT "thirdParty/bgfx-install/debug/bin/shaderc.exe"
-#  else
-#    define AY_SHADER_SHADERC_HINT "thirdParty/bgfx-install/debug/bin/shaderc"
-#  endif
+#  define AY_SHADER_SHADERC_HINT ""
 #endif
 
 // bgfx include paths for shaderc �?same trick Test_ShaderCompile.cpp
@@ -82,7 +78,7 @@ inline bool fileExists(const std::string& p) {
 bool shadercReachable(std::string& diagOut) {
     const std::string path = AY_SHADER_SHADERC_HINT;
     if (!fileExists(path)) {
-        diagOut = "vendored shaderc not found at '" + path + "'";
+        diagOut = "configured shaderc not found at '" + path + "'";
         return false;
     }
     try {

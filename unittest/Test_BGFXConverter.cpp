@@ -53,17 +53,13 @@ static ayt::shader::detail::BGFXMaterialStages compileFirstMaterial(const std::s
 }
 
 #ifndef AY_SHADER_SHADERC_HINT
-#  ifdef _WIN32
-#    define AY_SHADER_SHADERC_HINT "thirdParty/bgfx-install/debug/bin/shaderc.exe"
-#  else
-#    define AY_SHADER_SHADERC_HINT "thirdParty/bgfx-install/debug/bin/shaderc"
-#  endif
+#  define AY_SHADER_SHADERC_HINT ""
 #endif
 #ifndef AY_SHADER_BGFX_COMMON_HINT
-#  define AY_SHADER_BGFX_COMMON_HINT "../../../thirdparty/bgfx/examples/common"
+#  define AY_SHADER_BGFX_COMMON_HINT ""
 #endif
 #ifndef AY_SHADER_BGFX_SRC_HINT
-#  define AY_SHADER_BGFX_SRC_HINT "../../../thirdparty/bgfx/src"
+#  define AY_SHADER_BGFX_SRC_HINT ""
 #endif
 
 static bool fileExists(const std::string& path)

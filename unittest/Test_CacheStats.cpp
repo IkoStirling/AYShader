@@ -9,7 +9,7 @@
 #include <sys/stat.h>
 
 #ifndef AY_SHADER_SHADERC_HINT
-#  define AY_SHADER_SHADERC_HINT "thirdParty/bgfx-install/debug/bin/shaderc.exe"
+#  define AY_SHADER_SHADERC_HINT ""
 #endif
 #ifndef AY_SHADER_BGFX_COMMON_HINT
 #  define AY_SHADER_BGFX_COMMON_HINT ""

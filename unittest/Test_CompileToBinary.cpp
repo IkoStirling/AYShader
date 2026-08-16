@@ -47,11 +47,7 @@ namespace {
 // invocation is missing the -i flag for bgfx's `common.sh` and any
 // test that needs an actual compile will SKIP rather than fail.
 #ifndef AY_SHADER_SHADERC_HINT
-#  ifdef _WIN32
-#    define AY_SHADER_SHADERC_HINT "thirdParty/bgfx-install/debug/bin/shaderc.exe"
-#  else
-#    define AY_SHADER_SHADERC_HINT "thirdParty/bgfx-install/debug/bin/shaderc"
-#  endif
+#  define AY_SHADER_SHADERC_HINT ""
 #endif
 #ifndef AY_SHADER_BGFX_COMMON_HINT
 #  define AY_SHADER_BGFX_COMMON_HINT ""

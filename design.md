@@ -836,10 +836,10 @@ Phase 3.2 之前（Phase 2.5 时代）的 `BGFX .sc does not support compute` pl
 
 **路线 A — 外部 shaderc.exe（Phase 1 采用）**
 
-`bgfx` 发布的独立 CLI 工具（`thirdParty/bgfx-install/<config>/bin/shaderc.exe`）。调用方（游戏构建脚本 / CI / 工具）spawn 进程传 `--type` / `--platform` / `-p` 等参数。
+由 vcpkg `bgfx[tools]` 提供的独立 CLI 工具（`installed/<triplet>/tools/bgfx/shaderc.exe`）。调用方（游戏构建脚本 / CI / 工具）spawn 进程传 `--type` / `--platform` / `-p` 等参数。
 
 - ✅ 解耦：AYShader 不依赖 shaderc 工具链，shader 编译可以独立升级 bgfx 版本
-- ✅ 零额外链接：shaderc.exe 单独 vendored ~2 MB
+- ✅ 零额外链接：shaderc.exe 作为 vcpkg host tool 独立运行
 - ✅ bgfx 官方分发，已处理所有 transitive deps（DXC、glslang、glsl-optimizer、Metal tools）
 - ❌ spawn 进程开销（通常仅 build / load time，不在 hot path）
 - ❌ Windows 上 Windows ↔ POSIX 路径转换坑
@@ -888,7 +888,7 @@ bgfx::compileGLSLShader(opts, /*version*/0, codeString, &writer, &msgWriter);
 **Phase 1 决策与未来迁移**
 
 - Phase 1 / Phase 2 走路线 A。`Test_ShaderCompile` 已用 `_popen` 验证跨平台矩阵（windows / linux / osx / android / ios / asm.js / orbis × GLSL 1.20 / ESSL 3.20 / Metal / SPIR-V 大部分组合）。
-- 路线 B 升级门槛低（仅需把 `thirdParty/bgfx/tools/shaderc/` + `bx/` 纳入 CMake），适合"想脱 spawn 但仍用 bgfx 编译栈"的中间阶段。
+- 路线 B 可直接复用 vcpkg 安装的 bgfx/bx 工具链，适合“想脱 spawn 但仍用 bgfx 编译栈”的中间阶段。
 - 路线 C 是 Phase 3 长期目标。
 
 ### 8.4 Binary 输出 API — `.sc` 作为内部中间产物（Phase 3.6 提案）
@@ -1750,7 +1750,7 @@ class ShaderResourcePool {
 //   bgfx::RendererType::OpenGL        → platform="linux"     profile="430"
 //   bgfx::RendererType::Vulkan        → platform="linux"     profile="430"
 //   bgfx::RendererType::Metal         → platform="osx"       profile="metal"
-//   bgfx::RendererType::WebGPU        → platform="wasm"      profile="wgsl"
+//   WebGPU 不属于 bgfx renderer enum；未来切换 Dawn/wgpu-native 时单独映射
 //
 // 这把 "platform 选择" 的责任完全从 frontend 拿开。
 // Engine 启动顺序自然保证：
@@ -2944,13 +2944,13 @@ res.submit(drawCtx);
 ### 15.4 shaderc e2e 测试
 
 **前置条件**：
-- bgfx vendored under `thirdParty/bgfx-install/{debug,release}/bin/shaderc.exe`
-- bgfx source tree at `<sibling>/thirdparty/bgfx/` (for `common.sh` / `bgfx_shader.sh` / `bgfx_compute.sh` includes)
+- vcpkg 已安装 `bgfx[tools]`，提供 bgfx 库、头文件及 `installed/<triplet>/tools/bgfx/shaderc.exe`
+- `common.sh` / `shaderlib.sh` 固定存放于模块内 `shaderinclude/bgfx`；`bgfx_shader.sh` / `bgfx_compute.sh` 来自 vcpkg bgfx include
 
 **CMake 变量**：
-- `AY_SHADER_SHADERC_PATH` — shaderc 绝对路径（默认 `thirdParty/bgfx-install/debug/bin/shaderc.exe`）
-- `AY_SHADER_BGFX_COMMON_DIR` — bgfx `examples/common` 路径（自动搜索）
-- `AY_SHADER_BGFX_SRC_DIR` — bgfx `src` 路径（默认从 common 推）
+- `AY_SHADER_SHADERC_PATH` — shaderc 绝对路径（默认由 `AYBgfx.cmake` 从 vcpkg tools 目录解析）
+- `AY_SHADER_BGFX_COMMON_DIR` — 模块内 `shaderinclude/bgfx` 路径
+- `AY_SHADER_BGFX_SRC_DIR` — vcpkg bgfx shader include 路径
 
 **profile**：当前全部 `-p 430`（UBO `binding = N` 要求 GLSL 4.30+）
 

@@ -23,6 +23,10 @@ build.ninja
 .ninja_*
 *.cmake
 !CMakeLists.txt
+!cmake/
+!cmake/*.cmake
+!cmake/
+!cmake/*.cmake
 
 # IDE
 *.user

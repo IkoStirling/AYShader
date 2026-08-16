@@ -40,17 +40,13 @@ inline bool fileExists(const std::string& p) {
     return ::stat(p.c_str(), &st) == 0;
 }
 
-// CMake-injected absolute path to the vendored shaderc binary.
+// CMake-injected absolute path to the vcpkg shaderc binary.
 // Same convention the pre-Phase-3.6 Test_ShaderCompile.cpp used.
 // Tests use this to call setDefaultExecutable() so the round-trip
 // test can run end-to-end. When the vendored binary doesn't exist
 // (CI without bgfx) the round-trip test SKIPs gracefully.
 #ifndef AY_SHADER_SHADERC_HINT
-#  ifdef _WIN32
-#    define AY_SHADER_SHADERC_HINT "thirdParty/bgfx-install/debug/bin/shaderc.exe"
-#  else
-#    define AY_SHADER_SHADERC_HINT "thirdParty/bgfx-install/debug/bin/shaderc"
-#  endif
+#  define AY_SHADER_SHADERC_HINT ""
 #endif
 
 // bgfx include paths for shaderc. Same trick Test_ShaderCompile.cpp
@@ -97,7 +93,7 @@ TEST_CASE(set_default_then_default_ctor_uses_it) {
 
     const std::string path = AY_SHADER_SHADERC_HINT;
     if (!fileExists(path)) {
-        std::cerr << "[shaderc test] SKIP: vendored shaderc not at '"
+        std::cerr << "[shaderc test] SKIP: configured shaderc not at '"
                   << path << "'.\n";
         return;
     }
@@ -178,7 +174,7 @@ TEST_CASE(explicit_path_ctor_uses_given_path) {
     clearPhase36Env();
     const std::string path = AY_SHADER_SHADERC_HINT;
     if (!fileExists(path)) {
-        std::cerr << "[shaderc test] SKIP: vendored shaderc not at '"
+        std::cerr << "[shaderc test] SKIP: configured shaderc not at '"
                   << path << "'.\n";
         return;
     }
@@ -214,7 +210,7 @@ TEST_CASE(shaderc_driver_in_memory_to_bytes_round_trip) {
 
     const std::string path = AY_SHADER_SHADERC_HINT;
     if (!fileExists(path)) {
-        std::cerr << "[shaderc test] SKIP: vendored shaderc not at '"
+        std::cerr << "[shaderc test] SKIP: configured shaderc not at '"
                   << path << "' �?round-trip test requires shaderc.\n";
         return;
     }

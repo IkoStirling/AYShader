@@ -303,10 +303,6 @@ void mapRendererTypeToPlatformProfile(bgfx::RendererType::Enum type,
         platform = "android";
         profile = "100_es";
         break;
-    case bgfx::RendererType::WebGPU:
-        platform = "linux";
-        profile = "wgsl";
-        break;
     case bgfx::RendererType::Noop:
     default:
         platform = "linux";

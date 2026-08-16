@@ -53,7 +53,7 @@ namespace {
 // the usual POSITION/NORMAL/TEXCOORD0 bindings. Interpolated varyings use
 // bgfx/shaderc dedicated semantics where available (NORMAL, COLOR0) and
 // sequential TEXCOORDn for generic vec outputs — same pattern as
-// thirdparty/bgfx/examples/44-sss and examples/49-hextile/varying.def.sc.
+// Upstream bgfx examples/44-sss and examples/49-hextile/varying.def.sc.
 // shaderc maps these to the correct interpolator registers on D3D11/12, GL,
 // Metal, Vulkan, etc.; the invariant we enforce is unique semantics per
 // varying, not a platform-specific slot hack.

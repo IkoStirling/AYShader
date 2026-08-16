@@ -35,11 +35,7 @@ namespace {
 // Test_ShadercDriver.cpp / Test_CompileToBinary.cpp /
 // Test_CompileToProgram.cpp use. CMake-injected at build time.
 #ifndef AY_SHADER_SHADERC_HINT
-#  ifdef _WIN32
-#    define AY_SHADER_SHADERC_HINT "thirdParty/bgfx-install/debug/bin/shaderc.exe"
-#  else
-#    define AY_SHADER_SHADERC_HINT "thirdParty/bgfx-install/debug/bin/shaderc"
-#  endif
+#  define AY_SHADER_SHADERC_HINT ""
 #endif
 
 inline bool fileExists(const std::string& p) {
@@ -48,7 +44,7 @@ inline bool fileExists(const std::string& p) {
     return ::stat(p.c_str(), &st) == 0;
 }
 
-// Probe the vendored shaderc and lock it as the process-wide
+// Probe the configured vcpkg shaderc and lock it as the process-wide
 // default for this test run. compileWithSources() needs shaderc
 // available because `compileToProgram` lazily instantiates the
 // driver from the global default when the per-call BGFXCompileOptions
