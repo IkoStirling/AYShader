@@ -604,13 +604,13 @@ void emitExpr(std::ostringstream& out, const phoskia::ir::IRExpr& e,
                     if (c > 0) out << " + ";
                     out << "(";
                     emitExpr(out, *call->args[1], ctx);  // weights
-                    out << "." << weightChannels[c] << ") * (";
+                    out << "." << weightChannels[c] << ") * (mul(";
                     emitExpr(out, *call->args[2], ctx);  // bones
                     out << "[int(";
                     emitExpr(out, *call->args[0], ctx);  // indices
-                    out << "." << weightChannels[c] << ")] * ";
+                    out << "." << weightChannels[c] << ")], ";
                     emitExpr(out, *call->args[3], ctx);  // pos
-                    out << ")";
+                    out << "))";
                 }
                 out << ")";
                 return;

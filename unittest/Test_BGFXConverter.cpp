@@ -1121,7 +1121,7 @@ TEST_CASE(bone_semantics_emit_blendindices_blendweight_attrs) {
 TEST_CASE(skinning_matrix_call_expands_to_weighted_sum) {
     // Phase 1 RD-03: `skinningMatrix(indices, weights, bones, pos)` is
     // a builtin that must inline-expand to a 4-term linear-blend sum:
-    //   w.x * bones[i.x] * pos + w.y * bones[i.y] * pos + ...
+    //   w.x * mul(bones[i.x], pos) + w.y * mul(bones[i.y], pos) + ...
     // The BGFX backend renames the in-params to the bgfx attribute
     // names (boneindices → a_indices, boneweights → a_weight) before
     // emit, so the expansion references a_indices.x..w and a_weight.x..w.
@@ -1145,6 +1145,11 @@ TEST_CASE(skinning_matrix_call_expands_to_weighted_sum) {
     CHECK(files.vertex.find("Skeleton.bones[int(a_indices.y)]") != std::string::npos);
     CHECK(files.vertex.find("Skeleton.bones[int(a_indices.z)]") != std::string::npos);
     CHECK(files.vertex.find("Skeleton.bones[int(a_indices.w)]") != std::string::npos);
+    // Matrix-vector products must use bgfx's backend-neutral mul() helper.
+    // Emitting HLSL-style `matrix * vector` here compiles on neither the
+    // D3D11 shaderc profile nor the GLSL path used by bgfx's common headers.
+    CHECK(files.vertex.find("mul(Skeleton.bones[int(a_indices.x)]") != std::string::npos);
+    CHECK(files.vertex.find("Skeleton.bones[int(a_indices.x)] *") == std::string::npos);
     // All four weight components must multiply their terms.
     CHECK(files.vertex.find("a_weight.x") != std::string::npos);
     CHECK(files.vertex.find("a_weight.y") != std::string::npos);
