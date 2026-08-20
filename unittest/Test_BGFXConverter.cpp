@@ -234,6 +234,34 @@ TEST_CASE(fragment_emits_input_textures) {
     CHECK(files.fragment.find("texture2D(albedoMap, v_texcoord0)") != std::string::npos);
 }
 
+TEST_CASE(fragment_escapes_bgfx_sampler_suffix_collisions) {
+    const char* src = R"(
+        material PBR {
+            texture2d baseColorTexture
+            property baseColor = vec4(1.0, 1.0, 1.0, 1.0)
+            vertex {
+                in pos : position
+                in uv  : texcoord
+                out uvOut : texcoord = uv
+                return vec4(pos, 1.0)
+            }
+            fragment {
+                in uvOut : texcoord
+                return sample(baseColorTexture, uvOut) * baseColor
+            }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    const std::string backendName =
+        ayt::shader::detail::bgfxTextureSymbolName("baseColorTexture");
+    CHECK(backendName.find("Texture") == std::string::npos);
+    CHECK(backendName.find("Sampler") == std::string::npos);
+    CHECK(files.fragment.find("SAMPLER2D(" + backendName + ", 0)")
+          != std::string::npos);
+    CHECK(files.fragment.find("texture2D(" + backendName + ", v_texcoord0)")
+          != std::string::npos);
+}
+
 // ===== varying_definitions content =====
 
 TEST_CASE(varying_def_emits_all_bindings) {

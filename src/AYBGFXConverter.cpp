@@ -1478,16 +1478,18 @@ detail::BGFXMaterialStages AYBGFXConverter::convertMaterial(const phoskia::ir::I
             }
             case phoskia::ir::IRDeclaration::Kind::Texture: {
                 uint8_t slot = static_cast<uint8_t>(_textures.size());
+                const std::string backendName =
+                    detail::bgfxTextureSymbolName(decl->name);
                 std::string macro;
                 std::string glslType;
                 switch (decl->samplerKind) {
                 case phoskia::ir::SamplerKind::SamplerCube:
-                    macro = "SAMPLERCUBE(" + decl->name + ", " + std::to_string(slot) + ");\n";
+                    macro = "SAMPLERCUBE(" + backendName + ", " + std::to_string(slot) + ");\n";
                     glslType = "samplerCube";
                     break;
                 case phoskia::ir::SamplerKind::Sampler2D:
                 default:
-                    macro = "SAMPLER2D(" + decl->name + ", " + std::to_string(slot) + ");\n";
+                    macro = "SAMPLER2D(" + backendName + ", " + std::to_string(slot) + ");\n";
                     glslType = "sampler2D";
                     break;
                 }
@@ -1499,6 +1501,10 @@ detail::BGFXMaterialStages AYBGFXConverter::convertMaterial(const phoskia::ir::I
                 _textures.push_back(std::move(bt));
                 vsCtx.textureKinds[decl->name] = decl->samplerKind;
                 fsCtx.textureKinds[decl->name] = decl->samplerKind;
+                if (backendName != decl->name) {
+                    vsCtx.map[decl->name] = backendName;
+                    fsCtx.map[decl->name] = backendName;
+                }
                 // Textures are opaque to the type system (Phase 2 Step 2
                 // deferred TextureType); register as Dynamic so lookup
                 // succeeds even though sample() body-side checks pass

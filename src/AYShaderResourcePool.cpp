@@ -34,6 +34,7 @@ namespace ayt::shader
 namespace {
 
 constexpr int64_t kHotReloadDebounceMs = 100;
+constexpr const char* kCompiledShaderCacheSchema = "aybgfx-v3";
 
 struct HotReloadWatch {
     std::string sourcePath;
@@ -464,8 +465,10 @@ bool buildBindingTable(ShaderResourceImpl& impl, const CompiledShaderProgram& pr
         entry.kind = BindingKind::Texture;
         entry.name = texture.name;
         entry.textureBinding = texture.binding;
+        const std::string backendName =
+            detail::bgfxTextureSymbolName(texture.name);
         entry.uniformHandle = bgfx::createUniform(
-            texture.name.c_str(), bgfx::UniformType::Sampler);
+            backendName.c_str(), bgfx::UniformType::Sampler);
 
         const BindingId id = allocateBinding(nextId, impl, entry);
         impl.textureBindings.emplace(texture.name, id);
@@ -834,6 +837,7 @@ struct ShaderResourcePool::Impl {
                                      const phoskia::CompileOptions& opts) const
     {
         std::ostringstream oss;
+        oss << kCompiledShaderCacheSchema << '|';
         if (!keyOverride.empty()) {
             oss << keyOverride << '|';
         }
