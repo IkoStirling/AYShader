@@ -18,6 +18,10 @@ struct TextureHandle {
 
 struct DrawCallContext {
     uint8_t viewId = 0;
+    // A non-zero value is applied for this draw. Zero means the owning
+    // RenderPass already configured bgfx state through its adapter; submit()
+    // preserves that state across consecutive draws in the same pass while
+    // still discarding per-draw bindings, buffers and transforms.
     uint64_t state = 0;
 };
 

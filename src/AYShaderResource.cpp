@@ -263,11 +263,21 @@ void ShaderResource::submit(const DrawCallContext& ctx) const
         bgfx::setTexture(pending.stage, entry->uniformHandle, pending.texture);
     }
 
+    uint8_t discardFlags = BGFX_DISCARD_ALL;
     if (ctx.state != 0) {
         bgfx::setState(ctx.state);
+    } else {
+        // Render passes commonly set one shared state before a multi-draw
+        // loop and pass state==0 here. bgfx::submit defaults to DISCARD_ALL;
+        // using that default made only the first submesh retain WRITE/CULL/
+        // DEPTH state. Preserve only render state between those submissions;
+        // all per-draw bindings, buffers and transforms remain discarded and
+        // are explicitly rebound by the next item.
+        discardFlags = static_cast<uint8_t>(BGFX_DISCARD_ALL
+                                           & ~BGFX_DISCARD_STATE);
     }
 
-    bgfx::submit(ctx.viewId, impl->programHandle);
+    bgfx::submit(ctx.viewId, impl->programHandle, 0, discardFlags);
 
     impl->pendingUniforms.clear();
     impl->pendingTextures.clear();
