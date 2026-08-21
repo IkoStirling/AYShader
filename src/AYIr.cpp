@@ -359,6 +359,7 @@ std::unique_ptr<IRVertexFunc> IRGenerator::lowerVertexFuncWithEnv(const phoskia:
                     {phoskia::PhoskiaSemantic::Normal,    BuiltinTypes::Vec3()},
                     {phoskia::PhoskiaSemantic::Color,     BuiltinTypes::Vec4()},
                     {phoskia::PhoskiaSemantic::Texcoord,  BuiltinTypes::Vec2()},
+                    {phoskia::PhoskiaSemantic::Tangent,   BuiltinTypes::Vec4()},
                 };
                 auto it = semType.find(p->semantic);
                 if (it != semType.end()) env.addVariable(p->name, it->second);
@@ -386,6 +387,7 @@ std::unique_ptr<IRFragmentFunc> IRGenerator::lowerFragmentFuncWithEnv(const phos
         {phoskia::PhoskiaSemantic::Texcoord,  BuiltinTypes::Vec2()},
         {phoskia::PhoskiaSemantic::BoneIndices, BuiltinTypes::Vec4()},
         {phoskia::PhoskiaSemantic::BoneWeights, BuiltinTypes::Vec4()},
+        {phoskia::PhoskiaSemantic::Tangent, BuiltinTypes::Vec4()},
     };
     for (const auto& s : ff.inputs) {
         if (auto p = dynamic_cast<const phoskia::ShaderParam*>(s.get())) {

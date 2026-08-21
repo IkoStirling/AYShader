@@ -14,7 +14,12 @@
 namespace ayt::shader::phoskia
 {
 
-// Token types
+// Token types.
+//
+// IMPORTANT: TokenType values cross translation-unit boundaries through the
+// AST.  Keep the existing ordinal values stable and append new entries only;
+// inserting an entry in the middle can make a stale incremental-build object
+// interpret an operator as a different token.
 enum class TokenType : uint8_t {
     // Keywords
     Material,
@@ -54,6 +59,7 @@ enum class TokenType : uint8_t {
     // bgfx::Attrib::Weight (4x f32) via the BGFX converter.
     BoneIndices,
     BoneWeights,
+    Tangent,
 
     // Operators
     Plus,
@@ -96,6 +102,12 @@ enum class TokenType : uint8_t {
     // the lexer silently consumes it (see `case '#'` in AYLexer.cpp).
     Unknown
 };
+
+// ABI sentinels for the AST/operator boundary.  These deliberately fail the
+// build if a future token is inserted before the existing operator or tail
+// ranges. Append new tokens after Unknown.
+static_assert(static_cast<uint8_t>(TokenType::Plus) == 30);
+static_assert(static_cast<uint8_t>(TokenType::Unknown) == 60);
 
 struct Token {
     TokenType type = TokenType::Unknown;

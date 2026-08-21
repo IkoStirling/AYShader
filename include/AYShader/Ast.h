@@ -66,6 +66,7 @@ enum class PhoskiaSemantic : uint8_t {
     Texcoord,
     BoneIndices,
     BoneWeights,
+    Tangent,
 };
 
 // (2) AstNode base — must come BEFORE any class derives from it.

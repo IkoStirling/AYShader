@@ -166,6 +166,7 @@ void AYSemanticAnalyzer::analyzeShaderParam(const ShaderParam& param) {
         // repack path into bgfx's normalized u8 channel.
         case PhoskiaSemantic::BoneIndices: type = BuiltinTypes::Vec4(); break;
         case PhoskiaSemantic::BoneWeights: type = BuiltinTypes::Vec4(); break;
+        case PhoskiaSemantic::Tangent: type = BuiltinTypes::Vec4(); break;
     }
     _env.addVariable(param.name, type);
     _symbols[param.name] = type;

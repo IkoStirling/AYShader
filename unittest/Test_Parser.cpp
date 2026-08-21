@@ -909,6 +909,35 @@ TEST_CASE(parse_material_accepts_boneweights_semantic) {
     CHECK(p->semantic == PhoskiaSemantic::BoneWeights);
 }
 
+TEST_CASE(parse_material_accepts_tangent_semantic) {
+    const char* src = R"(
+        material P {
+            vertex {
+                in tan : tangent
+                out worldTan : tangent = tan
+                return vec4(0.0)
+            }
+            fragment {
+                in worldTan : tangent
+                return worldTan
+            }
+        }
+    )";
+    auto prog = parseSource(src);
+    CHECK(prog != nullptr);
+    auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
+    CHECK(mat != nullptr);
+    auto* vs = dynamic_cast<VertexFunc*>(mat->declarations[0].get());
+    CHECK(vs != nullptr);
+    CHECK(vs->params.size() == 2);
+    auto* input = dynamic_cast<ShaderParam*>(vs->params[0].get());
+    auto* output = dynamic_cast<ShaderParam*>(vs->params[1].get());
+    CHECK(input != nullptr);
+    CHECK(output != nullptr);
+    CHECK(input->semantic == PhoskiaSemantic::Tangent);
+    CHECK(output->semantic == PhoskiaSemantic::Tangent);
+}
+
 TEST_CASE(parse_uniformblock_accepts_array_field) {
     // Phase 1 RD-03: `uniformblock` parser consumes `[ N ]` after a
     // field. The result is recorded as `arrayLength > 0` on the

@@ -182,6 +182,7 @@ TokenType Lexer::identifierType(const std::string& lexeme) {
         // bgfx::Attrib::Weight (4x f32) in the BGFX converter.
         {"boneindices", TokenType::BoneIndices},
         {"boneweights", TokenType::BoneWeights},
+        {"tangent", TokenType::Tangent},
         // GLSL type names are intentionally NOT keywords — they are
         // emitted as plain Identifier tokens (lexeme = "vec3", "float",
         // ...). Whether a given Identifier is a builtin type is decided

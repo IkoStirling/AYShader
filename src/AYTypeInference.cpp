@@ -8,6 +8,20 @@ namespace ayt::shader::phoskia
 {
 
 namespace {
+// Keep operator classification in one freshly compiled translation unit.  A
+// regression test below the converter boundary pins the resulting let types.
+bool isArithmeticOperator(TokenType type) noexcept {
+    switch (type) {
+    case TokenType::Plus:
+    case TokenType::Minus:
+    case TokenType::Star:
+    case TokenType::Slash:
+        return true;
+    default:
+        return false;
+    }
+}
+
 // Follow a TypeVar chain to its root (the last TypeVar, or a concrete
 // type, or null). Detects cycles: if the chain loops back to a TypeVar
 // we've already visited, return that visited TypeVar's solution as a
@@ -77,8 +91,7 @@ std::shared_ptr<Type> TypeInference::inferBinaryExpr(const BinaryExpr& expr) {
     //      unresolved, the result is left as a fresh TypeVar (the
     //      BGFX converter's let-stmt inference then defaults to
     //      float for GLSL emission).
-    if (expr.op.type == TokenType::Plus || expr.op.type == TokenType::Minus ||
-        expr.op.type == TokenType::Star || expr.op.type == TokenType::Slash) {
+    if (isArithmeticOperator(expr.op.type)) {
         // Scalar×vector broadcasting (GLSL): `vec3 * float` → vec3.
         // CRITICAL: do NOT unify(TypeVar, Float) first — that poisons a
         // still-unresolved left operand (e.g. `Lights.dirs[0].xyz` when

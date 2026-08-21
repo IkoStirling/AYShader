@@ -468,4 +468,13 @@ TEST_CASE(keyword_boneweights) {
     CHECK(tokens[0].lexeme == "boneweights");
 }
 
+TEST_CASE(keyword_tangent) {
+    Lexer lexer("tangent");
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    CHECK(tokens.size() == 2);
+    CHECK(tokens[0].type == TokenType::Tangent);
+    CHECK(tokens[0].lexeme == "tangent");
+}
+
 TEST_SUITE_END

@@ -70,6 +70,7 @@ struct VaryingLayoutPlan {
     bool hasTexcoordVarying  = false;
     bool hasColorVarying     = false;
     bool hasPositionVarying  = false;
+    bool hasTangentVarying   = false;
 };
 
 VaryingLayoutPlan computeVaryingLayout(const phoskia::ir::IRVertexFunc* vf,
@@ -97,6 +98,8 @@ VaryingLayoutPlan computeVaryingLayout(const phoskia::ir::IRVertexFunc* vf,
              phoskia::PhoskiaSemantic::Color, plan.hasColorVarying);
         scan(vf->params, phoskia::ir::IRShaderParam::Direction::Out,
              phoskia::PhoskiaSemantic::Position, plan.hasPositionVarying);
+        scan(vf->params, phoskia::ir::IRShaderParam::Direction::Out,
+             phoskia::PhoskiaSemantic::Tangent, plan.hasTangentVarying);
     }
     if (ff != nullptr) {
         scan(ff->inputs, phoskia::ir::IRShaderParam::Direction::In,
@@ -107,6 +110,8 @@ VaryingLayoutPlan computeVaryingLayout(const phoskia::ir::IRVertexFunc* vf,
              phoskia::PhoskiaSemantic::Color, plan.hasColorVarying);
         scan(ff->inputs, phoskia::ir::IRShaderParam::Direction::In,
              phoskia::PhoskiaSemantic::Position, plan.hasPositionVarying);
+        scan(ff->inputs, phoskia::ir::IRShaderParam::Direction::In,
+             phoskia::PhoskiaSemantic::Tangent, plan.hasTangentVarying);
     }
     return plan;
 }
@@ -129,6 +134,9 @@ public:
         }
         if (plan.hasPositionVarying) {
             assignNextTexCoord(phoskia::PhoskiaSemantic::Position);
+        }
+        if (plan.hasTangentVarying) {
+            assignNextTexCoord(phoskia::PhoskiaSemantic::Tangent);
         }
     }
 
@@ -163,6 +171,7 @@ semanticTable() {
         // the per-component byte packing for the Indices channel.
         {phoskia::PhoskiaSemantic::BoneIndices, {"BLENDINDICES", "a_indices", "", "vec4", "vec4(0.0, 0.0, 0.0, 0.0)"}},
         {phoskia::PhoskiaSemantic::BoneWeights, {"BLENDWEIGHT",  "a_weight", "", "vec4", "vec4(0.0, 0.0, 0.0, 0.0)"}},
+        {phoskia::PhoskiaSemantic::Tangent, {"TANGENT", "a_tangent", "v_tangent", "vec4", "vec4(1.0, 0.0, 0.0, 1.0)"}},
     };
     return table;
 }

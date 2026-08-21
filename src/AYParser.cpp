@@ -765,8 +765,9 @@ std::unique_ptr<Stmt> Parser::parseShaderParam(ShaderParam::Direction dir) {
     else if (match(TokenType::Texcoord)) semantic = PhoskiaSemantic::Texcoord;
     else if (match(TokenType::BoneIndices)) semantic = PhoskiaSemantic::BoneIndices;
     else if (match(TokenType::BoneWeights)) semantic = PhoskiaSemantic::BoneWeights;
+    else if (match(TokenType::Tangent)) semantic = PhoskiaSemantic::Tangent;
     else {
-        error("Expected Phoskia semantic type (position/normal/color/texcoord/boneindices/boneweights)");
+        error("Expected Phoskia semantic type (position/normal/color/texcoord/tangent/boneindices/boneweights)");
         return nullptr;
     }
 

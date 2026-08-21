@@ -156,6 +156,61 @@ static bool compileMaterialStagesForProfile(const ayt::shader::detail::BGFXMater
         && compileStage("fragment", files.fragment);
 }
 
+TEST_CASE(let_division_preserves_scalar_and_vector_result_types)
+{
+    const char* src = R"(
+        material DivisionTypes {
+            vertex {
+                in pos : position
+                out worldPos : position = pos
+                return vec4(pos, 1.0)
+            }
+            fragment {
+                in worldPos : position
+                let clipPos = vec4(worldPos, 2.0)
+                let invW = 1.0 / clipPos.w
+                let ndc0 = clipPos.xyz / max(clipPos.w, 0.0001)
+                return vec4(ndc0 * invW, 1.0)
+            }
+        }
+    )";
+
+    Lexer lexer(src);
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    auto ast = parser.parse();
+    ir::IRGenerator generator;
+    auto program = generator.generate(*ast);
+    CHECK(program.materials.size() == 1u);
+    CHECK(program.materials[0]->fragment != nullptr);
+    CHECK(program.materials[0]->fragment->body.size() >= 3u);
+    auto* invW = dynamic_cast<ir::IRLetStmt*>(
+        program.materials[0]->fragment->body[1].get());
+    auto* ndc0 = dynamic_cast<ir::IRLetStmt*>(
+        program.materials[0]->fragment->body[2].get());
+    CHECK(invW != nullptr);
+    CHECK(ndc0 != nullptr);
+    CHECK(invW && invW->initializer && invW->initializer->resolvedType
+          && invW->initializer->resolvedType->toString() == "float");
+    CHECK(ndc0 && ndc0->initializer && ndc0->initializer->resolvedType
+          && ndc0->initializer->resolvedType->toString() == "vec3");
+
+    AYBGFXConverter converter;
+    BGFXConvertResult result;
+    converter.convertBGFX(program, result);
+    CHECK(result.success);
+    CHECK(result.materialStages.size() == 1u);
+    const auto& files = result.materialStages.front();
+    CHECK(files.fragment.find("float invW =") != std::string::npos);
+    CHECK(files.fragment.find("vec3 ndc0 =") != std::string::npos);
+    CHECK(files.fragment.find("\n    invW =") == std::string::npos);
+    CHECK(files.fragment.find("\n    ndc0 =") == std::string::npos);
+    if (shadercEnvironmentAvailable()) {
+        CHECK(compileMaterialStagesForProfile(files, "windows", "s_5_0"));
+    }
+}
+
 static std::unique_ptr<Program> parseProgram(const std::string& src) {
     Lexer lexer(src);
     std::vector<Token> tokens;
@@ -1116,6 +1171,31 @@ TEST_CASE(bone_semantics_emit_blendindices_blendweight_attrs) {
     // And the $input line in the vertex stage must list both attrs.
     CHECK(files.vertex.find("a_indices") != std::string::npos);
     CHECK(files.vertex.find("a_weight") != std::string::npos);
+}
+
+TEST_CASE(tangent_semantic_emits_vertex_attribute_and_varying) {
+    const char* src = R"(
+        material P {
+            vertex {
+                in tan : tangent
+                out worldTan : tangent = tan
+                return vec4(0.0)
+            }
+            fragment {
+                in worldTan : tangent
+                return worldTan
+            }
+        }
+    )";
+    auto files = compileFirstMaterial(src);
+    CHECK(files.varyingDefinitions.find("a_tangent") != std::string::npos);
+    CHECK(files.varyingDefinitions.find("TANGENT") != std::string::npos);
+    CHECK(files.varyingDefinitions.find("v_tangent") != std::string::npos);
+    CHECK(files.vertex.find("a_tangent") != std::string::npos);
+    CHECK(files.vertex.find("v_tangent") != std::string::npos);
+    CHECK(files.fragment.find("v_tangent") != std::string::npos);
+    CHECK(compileMaterialStagesForProfile(files, "windows", "s_5_0"));
+    CHECK(compileMaterialStagesForProfile(files, "linux", "430"));
 }
 
 TEST_CASE(skinning_matrix_call_expands_to_weighted_sum) {
