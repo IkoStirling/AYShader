@@ -456,6 +456,64 @@ TEST_CASE(set_uniform_and_submit_no_crash)
     pool.shutdown();
 }
 
+TEST_CASE(partial_mat4_array_uniform_submit_no_overread)
+{
+    if (!wireUpEnvironmentAvailable()) {
+        std::cerr << "[ShaderResource test] SKIP: shaderc/bgfx common not available.\n";
+        return;
+    }
+
+    clearPhase36Env();
+    AYShadercDriver::clearDefaultExecutable();
+    if (!shadercAvailable()) {
+        return;
+    }
+
+    BgfxNoopScope bgfxScope;
+    if (!bgfxScope.active) {
+        return;
+    }
+
+    CompiledShaderProgram prog = compileMinimalUnlit();
+    if (!prog.success) {
+        return;
+    }
+
+    BGFXUniform bones;
+    bones.name = "testPartialBones";
+    bones.type = "mat4";
+    bones.count = 128;
+    prog.uniforms.push_back(bones);
+
+    ShaderResourcePool pool;
+    ShaderResource res = pool.acquire(prog);
+    CHECK(res.isValid());
+
+    const BindingId bonesId = res.getUniformBinding("testPartialBones");
+    CHECK(bonesId != InvalidBinding);
+
+    // The binding reserves 128 matrices, while this draw uses only two. The
+    // backend must receive count=2; asking it to copy the reflected count=128
+    // from this 128-byte payload is the access violation this test guards.
+    std::vector<float> compactPalette(2u * 16u, 0.0f);
+    compactPalette[0] = 1.0f;
+    compactPalette[5] = 1.0f;
+    compactPalette[10] = 1.0f;
+    compactPalette[15] = 1.0f;
+    compactPalette[16] = 1.0f;
+    compactPalette[21] = 1.0f;
+    compactPalette[26] = 1.0f;
+    compactPalette[31] = 1.0f;
+    res.setUniform(bonesId, compactPalette.data(),
+                   compactPalette.size() * sizeof(float));
+
+    DrawCallContext ctx;
+    ctx.viewId = 0;
+    res.submit(ctx);
+
+    pool.shutdown();
+}
+
 TEST_CASE(submit_with_render_state_no_crash)
 {
     if (!wireUpEnvironmentAvailable()) {

@@ -416,10 +416,12 @@ bool buildBindingTable(ShaderResourceImpl& impl, const CompiledShaderProgram& pr
                 bgfx::UniformType::Mat4,
                 mat4Count);
             entry.uniformSubmitCount = mat4Count;
+            entry.uniformElementSizeBytes = 64u;
         } else {
             entry.uniformHandle = bgfx::createUniform(
                 block.name.c_str(), bgfx::UniformType::Vec4, numVec4);
             entry.uniformSubmitCount = numVec4;
+            entry.uniformElementSizeBytes = 16u;
         }
 
         const BindingId id = allocateBinding(nextId, impl, entry);
@@ -451,6 +453,9 @@ bool buildBindingTable(ShaderResourceImpl& impl, const CompiledShaderProgram& pr
         entry.name = uniform.name;
         const uint16_t count = uniformElementCount(uniform.type, uniform.count);
         entry.uniformSubmitCount = count;
+        entry.uniformElementSizeBytes = *bgfxType == bgfx::UniformType::Mat4
+            ? 64u
+            : (*bgfxType == bgfx::UniformType::Mat3 ? 36u : 16u);
         entry.uniformHandle = bgfx::createUniform(
             uniform.name.c_str(),
             *bgfxType,

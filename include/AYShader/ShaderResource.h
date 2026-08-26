@@ -55,7 +55,12 @@ public:
     size_t getUniformBlockFieldSize(BindingId blockId,
                                     const std::string& fieldName) const;
 
+    // Copies the value immediately. Array bindings accept a prefix of the
+    // reflected capacity and submit only the supplied elements; short scalar
+    // values are padded to one backend Vec4 slot.
     void setUniform(BindingId id, const void* data, size_t sizeBytes) const;
+    // General blocks require their complete std140 payload. A block containing
+    // only mat4[N] additionally accepts a compact prefix (used by skin palettes).
     void setUniformBlock(BindingId blockId, const void* data, size_t sizeBytes) const;
     // Binds `tex` to this sampler. The texture unit is taken from the
     // shader's SAMPLER2D(name, slot) — the `stage` argument is ignored

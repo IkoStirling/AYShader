@@ -174,7 +174,25 @@ void ShaderResource::setUniform(BindingId id, const void* data, size_t sizeBytes
 
     PendingUniform pending;
     pending.id = id;
-    pending.data.resize(sizeBytes);
+    const size_t elementBytes = entry->uniformElementSizeBytes != 0u
+        ? entry->uniformElementSizeBytes
+        : 16u;
+    const size_t capacityBytes =
+        elementBytes * static_cast<size_t>(entry->uniformSubmitCount);
+    if (sizeBytes > capacityBytes) {
+        std::fprintf(stderr,
+                     "[ShaderResource] setUniform('%s') overflow: "
+                     "got %zu bytes, capacity %zu — upload skipped\n",
+                     entry->name.c_str(), sizeBytes, capacityBytes);
+        return;
+    }
+
+    const size_t requestedCount = (sizeBytes + elementBytes - 1u) / elementBytes;
+    pending.submitCount = static_cast<uint16_t>(requestedCount);
+    // bgfx consumes complete Vec4/Mat3/Mat4 elements.  Zero-fill the tail for
+    // scalar values represented by a Vec4 slot instead of allowing bgfx to
+    // read past a short caller buffer.
+    pending.data.resize(requestedCount * elementBytes, uint8_t{0});
     std::memcpy(pending.data.data(), data, sizeBytes);
     impl->pendingUniforms.push_back(std::move(pending));
 }
@@ -192,7 +210,13 @@ void ShaderResource::setUniformBlock(BindingId blockId,
     if (entry == nullptr || entry->kind != BindingKind::UniformBlock) {
         return;
     }
-    if (entry->uniformBlockSizeBytes != 0 && sizeBytes != entry->uniformBlockSizeBytes) {
+    const bool compactMat4ArrayWrite =
+        entry->uniformElementSizeBytes == 64u
+        && sizeBytes <= entry->uniformBlockSizeBytes
+        && (sizeBytes % 64u) == 0u;
+    if (entry->uniformBlockSizeBytes != 0
+        && sizeBytes != entry->uniformBlockSizeBytes
+        && !compactMat4ArrayWrite) {
         std::fprintf(stderr,
                      "[ShaderResource] setUniformBlock('%s') size mismatch: "
                      "got %zu bytes, expected %zu — upload skipped\n",
@@ -248,8 +272,12 @@ void ShaderResource::submit(const DrawCallContext& ctx) const
         if (pending.data.empty()) {
             continue;
         }
+        if (pending.submitCount == 0u
+            || pending.submitCount > entry->uniformSubmitCount) {
+            continue;
+        }
         bgfx::setUniform(entry->uniformHandle, pending.data.data(),
-                         entry->uniformSubmitCount);
+                         pending.submitCount);
     }
 
     for (const PendingTexture& pending : impl->pendingTextures) {

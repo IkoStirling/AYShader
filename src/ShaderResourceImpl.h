@@ -29,6 +29,10 @@ struct BindingEntry {
 
     size_t uniformBlockSizeBytes = 0;
     uint16_t uniformSubmitCount = 1;
+    // Number of source bytes consumed by one bgfx uniform element.  Pending
+    // writes may intentionally provide fewer elements than the reflected
+    // array capacity (for example a compact skin palette in bones[128]).
+    size_t uniformElementSizeBytes = 16;
     std::unordered_map<std::string, size_t> uniformBlockFieldOffsets;
     std::unordered_map<std::string, size_t> uniformBlockFieldSizes;
 };
@@ -36,6 +40,7 @@ struct BindingEntry {
 struct PendingUniform {
     BindingId              id = InvalidBinding;
     std::vector<uint8_t>   data;
+    uint16_t               submitCount = 0;
 };
 
 struct PendingTexture {
