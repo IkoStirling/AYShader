@@ -2,10 +2,31 @@
 
 #include "AYShader/Parser.h"
 #include <array>
+#include <cctype>
+#include <cerrno>
+#include <cstdlib>
+#include <functional>
 #include <iostream>
+#include <limits>
 
 namespace ayt::shader::phoskia
 {
+
+// ----- Audit 2026-08-26 P-M-01..04: forward declarations for the
+// robust integer literal parsers. They're defined further down the
+// file (after Parser's other method implementations). Putting the
+// declarations at the top of the file means the binding / array-size
+// call sites in parseUniformDecl / parseSharedDecl / parseStorageDecl
+// / parseUniformBlockDecl can reference them without needing the
+// inline definitions to be lexically prior to the use site.
+enum class IntParseFailure;
+struct IntParseResult;
+static int parseNonNegativeInt(const std::string& lexeme, int maxInclusive,
+        std::function<void(const std::string&)> reporter,
+        const std::string& fieldLabel, bool& failed);
+static int parsePositiveInt(const std::string& lexeme, int maxInclusive,
+        std::function<void(const std::string&)> reporter,
+        const std::string& fieldLabel, bool& failed);
 
 static const char* tokenTypeName(TokenType t) {
     switch (t) {
@@ -182,10 +203,30 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
         return parseTextureDecl(TextureSamplerKind::SamplerCube);
     }
     if (match(TokenType::Vertex)) {
-        return parseVertexFunc();
+        // IR-H-01: snapshot the `vertex` keyword's source location so
+        // VertexFunc carries the source line of the shader-block open.
+        Token vTok = previous();
+        auto vf = parseVertexFunc();
+        if (vf) {
+            if (auto* vfp = dynamic_cast<VertexFunc*>(vf.get())) {
+                vfp->line = vTok.line;
+                vfp->column = vTok.column;
+            }
+        }
+        return vf;
     }
     if (match(TokenType::Fragment)) {
-        return parseFragmentFunc();
+        // IR-H-01: mirror vertex — stamp FragmentFunc with the `fragment`
+        // keyword's location so shader-block-scoped errors carry source info.
+        Token fTok = previous();
+        auto ff = parseFragmentFunc();
+        if (ff) {
+            if (auto* ffp = dynamic_cast<FragmentFunc*>(ff.get())) {
+                ffp->line = fTok.line;
+                ffp->column = fTok.column;
+            }
+        }
+        return ff;
     }
     if (match(TokenType::Let)) {
         return parseLetStmt();
@@ -233,7 +274,13 @@ std::unique_ptr<Expr> Parser::parseBinary(int precedence) {
         Token opTok = current();
         advance();
         auto right = parseBinary(nextPrecedence);
-        left = std::make_unique<BinaryExpr>(std::move(left), opTok, std::move(right));
+        // IR-H-01 / IR-M-01: stamp the binary operator's source line/column
+        // so the analyzer's matrix-mismatch / type-error diagnostics can
+        // point at the operator location rather than the program origin.
+        auto binExpr = std::make_unique<BinaryExpr>(std::move(left), opTok, std::move(right));
+        binExpr->line = opTok.line;
+        binExpr->column = opTok.column;
+        left = std::move(binExpr);
     }
 
     return left;
@@ -260,10 +307,22 @@ std::unique_ptr<Expr> Parser::parseCall() {
                 } while (match(TokenType::Comma));
             }
             consume(TokenType::RightParen, "Expected ')' after arguments");
-            expr = std::make_unique<CallExpr>(std::move(expr), std::move(args));
+            // IR-H-03: stamp the call site at the LEFT-paren location so
+            // arity-mismatch / unknown-callable diagnostics point at the
+            // callee's `(` rather than the program origin.
+            Token lparen = previous();
+            auto callExpr = std::make_unique<CallExpr>(std::move(expr), std::move(args));
+            callExpr->line = lparen.line;
+            callExpr->column = lparen.column;
+            expr = std::move(callExpr);
         } else if (match(TokenType::Dot)) {
             Token name = consumeName("Expected property name after '.'");
-            expr = std::make_unique<MemberExpr>(std::move(expr), name.lexeme);
+            // IR-M-02: stamp the member-access location for out-of-range
+            // swizzle / unknown-member diagnostics.
+            auto memExpr = std::make_unique<MemberExpr>(std::move(expr), name.lexeme);
+            memExpr->line = name.line;
+            memExpr->column = name.column;
+            expr = std::move(memExpr);
         } else if (check(TokenType::LeftBracket)) {
             // Lookahead: a `[` immediately followed by `variant` is the
             // start of a `[variant name]` attribute, NOT array indexing.
@@ -424,14 +483,27 @@ std::unique_ptr<ComputeDecl> Parser::parseComputeDeclWithAttributes(
             consume(TokenType::Comma, "Expected ',' after numthreads Y");
             Token zTok = consume(TokenType::IntLiteral, "Expected int literal for numthreads Z");
             consume(TokenType::RightParen, "Expected ')' after numthreads Z");
-            try {
-                outNumThreads[0] = static_cast<uint32_t>(std::stoul(xTok.lexeme));
-                outNumThreads[1] = static_cast<uint32_t>(std::stoul(yTok.lexeme));
-                outNumThreads[2] = static_cast<uint32_t>(std::stoul(zTok.lexeme));
-                outHasNumThreads = true;
-            } catch (const std::exception&) {
-                error("numthreads components must be non-negative integers");
+            bool failed = false;
+            bool componentFailed = false;
+            outNumThreads[0] = static_cast<uint32_t>(parsePositiveInt(
+                xTok.lexeme, std::numeric_limits<int>::max(),
+                [this](const std::string& m) { error(m); },
+                "numthreads X", componentFailed));
+            failed = failed || componentFailed;
+            outNumThreads[1] = static_cast<uint32_t>(parsePositiveInt(
+                yTok.lexeme, std::numeric_limits<int>::max(),
+                [this](const std::string& m) { error(m); },
+                "numthreads Y", componentFailed));
+            failed = failed || componentFailed;
+            outNumThreads[2] = static_cast<uint32_t>(parsePositiveInt(
+                zTok.lexeme, std::numeric_limits<int>::max(),
+                [this](const std::string& m) { error(m); },
+                "numthreads Z", componentFailed));
+            failed = failed || componentFailed;
+            if (failed) {
+                return nullptr;
             }
+            outHasNumThreads = true;
         } else {
             // Unknown attribute — skip the bracketed expression. We
             // consume the closing ']' and move on. A more strict parser
@@ -476,20 +548,49 @@ std::unique_ptr<ComputeDecl> Parser::parseComputeDeclWithAttributes(
 // can continue with the next token. The closing ']' is consumed by the
 // caller.
 void Parser::skipBracketedAttributeBody() {
-    // Conservative: count bracket depth and skip until the matching
-    // ']' at depth 0. Attributes in Phoskia today only nest via parens
-    // in their args, not brackets, so this is sufficient for the
-    // current attribute grammar.
+    // We track depth for BOTH parens AND brackets. The original
+    // implementation only counted parens, which is sufficient for the
+    // current attribute grammar (numthreads's args are nested only
+    // through `()`). But a future attribute like `[foo([...])]` would
+    // have nested `[...]` and the old code would stop at the FIRST
+    // `]` it found, dropping content. Audit 2026-08-26 P-H-01
+    // promoted this to a High-severity correctness fix: the helper
+    // must skip over any nested bracketed sub-expression and only
+    // return when we see the `]` that closes the attribute at depth
+    // zero.
+    //
+    // Note: the closing ']' of the OUTERMOST attribute is consumed by
+    // the caller (parseComputeDeclWithAttributes via
+    // `consume(TokenType::RightBracket, ...)`), so we stop at the
+    // first `]` that brings our bracket depth back to zero. That is
+    // precisely the inner closing `]` of the outermost attribute's
+    // level-0 entry, and the caller pairs it with the opening `[` it
+    // already consumed.
     int parenDepth = 0;
+    int bracketDepth = 0;
     while (!isAtEnd()) {
-        if (parenDepth == 0 && check(TokenType::RightBracket)) {
+        if (parenDepth == 0 && bracketDepth == 0 &&
+            check(TokenType::RightBracket)) {
             return;
         }
         if (check(TokenType::LeftParen)) {
             ++parenDepth;
             advance();
         } else if (check(TokenType::RightParen)) {
+            // Tolerate unbalanced `)` (best-effort recovery). Only
+            // decrement if we previously saw a matching `(`.
             if (parenDepth > 0) --parenDepth;
+            advance();
+        } else if (check(TokenType::LeftBracket)) {
+            ++bracketDepth;
+            advance();
+        } else if (check(TokenType::RightBracket)) {
+            // Tolerate unbalanced `]`. Only decrement if we previously
+            // saw a matching `[`.
+            if (bracketDepth > 0) --bracketDepth;
+            // If bracketDepth just dropped to zero, the OUTER loop
+            // guard at the top of the next iteration handles it
+            // correctly — we just stop on the next iteration.
             advance();
         } else {
             advance();
@@ -521,17 +622,19 @@ std::unique_ptr<Stmt> Parser::parseUniformDecl() {
     if (match(TokenType::LeftBracket)) {
         Token sizeTok = consume(TokenType::IntLiteral,
                                 "Expected integer literal for uniform array size");
-        try {
-            arrayLength = static_cast<int>(std::stol(sizeTok.lexeme));
-        } catch (const std::exception&) {
-            error("uniform array size must be a positive integer");
-            return nullptr;
-        }
-        if (arrayLength <= 0) {
-            error("uniform array size must be positive (got "
-                  + std::to_string(arrayLength) + ")");
-            return nullptr;
-        }
+        // Audit 2026-08-26 P-M-01..P-M-02: routed through the
+        // parsePositiveInt helper so `0xFF` and other base-prefixed
+        // literals work, and so an out-of-range value is reported
+        // with a clear bound (vs the silent truncation the pre-fix
+        // std::stol path produced). We use INT16_MAX as the upper
+        // bound; anything larger is a nonsense uniform array.
+        bool failed = false;
+        arrayLength = parsePositiveInt(sizeTok.lexeme,
+                                       std::numeric_limits<int>::max(),
+                                       [this](const std::string& m) { error(m); },
+                                       "uniform array size",
+                                       failed);
+        if (failed) return nullptr;
         consume(TokenType::RightBracket,
                 "Expected ']' after uniform array size");
     }
@@ -584,6 +687,19 @@ std::unique_ptr<Stmt> Parser::parseStorageDecl() {
     Token elementType = consumeName("Expected storage buffer element type name");
     consume(TokenType::Greater, "Expected '>' after storage buffer element type");
 
+    // Audit 2026-08-26 P-H-02: accept an optional trailing ';' between
+    // the closing '>' and the `binding` suffix. Users naturally write
+    // either form:
+    //
+    //   storage x : rwstructuredbuffer<vec4> binding 5;   (compact)
+    //   storage x : rwstructuredbuffer<vec4>; binding 5;   (mirrors C-style)
+    //
+    // Without this, the second form would consume `;` first, then see a
+    // free `binding` keyword at the top level and fail to pair it with
+    // this declaration. We eat any semicolons defensively here so the
+    // match(Binding) below sees the binding keyword instead.
+    while (match(TokenType::Semicolon)) { /* drain stray terminators */ }
+
     // Phase 3.5-A: optional `binding <int>` suffix. When the user
     // writes `binding N;`, the parser records N as an explicit GLSL
     // binding slot; the BGFX backend emits
@@ -595,18 +711,17 @@ std::unique_ptr<Stmt> Parser::parseStorageDecl() {
     if (match(TokenType::Binding)) {
         Token bTok = consume(TokenType::IntLiteral,
             "Expected integer literal after 'binding'");
-        try {
-            binding = static_cast<int>(std::stol(bTok.lexeme));
-        } catch (const std::exception&) {
-            error("storage binding must be a non-negative integer, got '"
-                  + bTok.lexeme + "'");
-            return nullptr;
-        }
-        if (binding < 0) {
-            error("storage binding must be non-negative (got "
-                  + std::to_string(binding) + ")");
-            return nullptr;
-        }
+        // Audit 2026-08-26 P-M-01..P-M-02: route through parseNonNegativeInt.
+        // GLSL `binding = N` accepts any 32-bit non-negative value;
+        // we clamp the upper bound at INT16_MAX for sanity but the
+        // range is generous.
+        bool bindFailed = false;
+        binding = parseNonNegativeInt(bTok.lexeme,
+                                      65535,  // GL_MAX_*_BINDINGS in practice is < 32k
+                                      [this](const std::string& m) { error(m); },
+                                      "storage binding",
+                                      bindFailed);
+        if (bindFailed) return nullptr;
     }
 
     match(TokenType::Semicolon);  // ';' is optional (Python-like)
@@ -636,16 +751,16 @@ std::unique_ptr<Stmt> Parser::parseSharedDecl() {
     Token sizeTok = consume(TokenType::IntLiteral, "Expected integer literal for shared array size");
     consume(TokenType::RightBracket, "Expected ']' after shared array size");
     int size = 0;
-    try {
-        size = static_cast<int>(std::stol(sizeTok.lexeme));
-    } catch (const std::exception&) {
-        error("shared array size must be a non-negative integer");
-        return nullptr;
-    }
-    if (size <= 0) {
-        error("shared array size must be positive (got " + std::to_string(size) + ")");
-        return nullptr;
-    }
+    // Audit 2026-08-26 P-M-01..P-M-02: routed through parsePositiveInt
+    // so `0x40` and friends parse correctly and out-of-range literals
+    // report a clean diagnostic.
+    bool sizeFailed = false;
+    size = parsePositiveInt(sizeTok.lexeme,
+                            std::numeric_limits<int>::max(),
+                            [this](const std::string& m) { error(m); },
+                            "shared array size",
+                            sizeFailed);
+    if (sizeFailed) return nullptr;
     match(TokenType::Semicolon);  // ';' is optional (Python-like)
     return std::make_unique<SharedDecl>(elementType.lexeme, name.lexeme, size);
 }
@@ -689,17 +804,17 @@ std::unique_ptr<Stmt> Parser::parseUniformBlockDecl() {
         if (match(TokenType::LeftBracket)) {
             Token sizeTok = consume(TokenType::IntLiteral,
                                     "Expected integer literal for array size");
-            try {
-                arrayLength = static_cast<int>(std::stol(sizeTok.lexeme));
-            } catch (const std::exception&) {
-                error("uniform block array size must be a non-negative integer");
-                return nullptr;
-            }
-            if (arrayLength <= 0) {
-                error("uniform block array size must be positive (got "
-                      + std::to_string(arrayLength) + ")");
-                return nullptr;
-            }
+            // Audit 2026-08-26 P-M-01..P-M-02: route through parsePositiveInt.
+            // std140 layout caps at std140-practical limits; we
+            // accept the full int range here and the IR layer
+            // applies std140 validation later.
+            bool fieldSizeFailed = false;
+            arrayLength = parsePositiveInt(sizeTok.lexeme,
+                                           std::numeric_limits<int>::max(),
+                                           [this](const std::string& m) { error(m); },
+                                           "uniform block array size",
+                                           fieldSizeFailed);
+            if (fieldSizeFailed) return nullptr;
             consume(TokenType::RightBracket,
                     "Expected ']' after array size");
         }
@@ -707,7 +822,29 @@ std::unique_ptr<Stmt> Parser::parseUniformBlockDecl() {
         match(TokenType::Semicolon);  // ';' is optional (Python-like)
     }
     consume(TokenType::RightBrace, "Expected '}' after uniform block body");
-    match(TokenType::Semicolon);  // Phase 3.5-B: optional trailing ';' after '}'
+
+    // Audit 2026-08-26 P-H-03: accept an optional trailing ';' between
+    // the closing '}' and the `binding` suffix. Users naturally write
+    // either form:
+    //
+    //   uniformblock Camera { ... } binding 5;   (compact)
+    //   uniformblock Camera { ... }; binding 5;   (mirrors C-style struct)
+    //
+    // The pre-fix code unconditionally called match(Semicolon) BEFORE
+    // match(Binding), so the second form would silently eat the
+    // trailing ';' and leave `binding` as a stranded identifier at
+    // the top level. The fix: defer the ';' consumption until AFTER
+    // we've handled (or skipped) the binding suffix. The match(Binding)
+    // path then has a chance to pair itself with this declaration even
+    // when the user put a ';' between them.
+    //
+    // (We allow unbounded trailing semicolons here for robustness —
+    // `uniformblock X {};;;` is a stylistic atrocity but legally
+    // equivalent. Drain any leading semicolons BEFORE checking for
+    // `binding` so that the `binding` keyword is the one we actually
+    // see. The remaining `;` after `binding N` is consumed inside the
+    // match(Binding) block below.)
+    while (match(TokenType::Semicolon)) { /* drain stray terminators */ }
 
     // Phase 3.5-B: optional `binding <int>;` suffix.
     //
@@ -721,19 +858,24 @@ std::unique_ptr<Stmt> Parser::parseUniformBlockDecl() {
     if (match(TokenType::Binding)) {
         Token bTok = consume(TokenType::IntLiteral,
                              "Expected integer literal after 'binding'");
-        try {
-            binding = static_cast<int>(std::stol(bTok.lexeme));
-        } catch (const std::exception&) {
-            error("uniformblock binding must be a non-negative integer");
-            return nullptr;
-        }
-        if (binding < 0) {
-            error("uniformblock binding must be non-negative (got "
-                  + std::to_string(binding) + ")");
-            return nullptr;
-        }
+        // Audit 2026-08-26 P-M-01..P-M-02: route through parseNonNegativeInt
+        // for consistency with parseStorageDecl's binding block.
+        bool bindFailed = false;
+        binding = parseNonNegativeInt(bTok.lexeme,
+                                      65535,
+                                      [this](const std::string& m) { error(m); },
+                                      "uniformblock binding",
+                                      bindFailed);
+        if (bindFailed) return nullptr;
         match(TokenType::Semicolon);  // optional trailing ';'
     }
+    // Audit 2026-08-26 P-H-03 (continued): if there was no `binding`
+    // suffix but the user wrote a trailing ';' (or `;;;` for some
+    // reason), drain those here so the outer parseStatement loop
+    // doesn't see them as the start of a fresh top-level statement.
+    // Bound with the matching drain above (before the match(Binding))
+    // so users can write either form interchangeably.
+    while (match(TokenType::Semicolon)) { /* drain stray terminators */ }
     return std::make_unique<UniformBlockDecl>(name.lexeme,
                                               std::move(fields), binding);
 }
@@ -922,19 +1064,38 @@ std::unique_ptr<Stmt> Parser::parseLetStmt() {
     consume(TokenType::Equal, "Expected '=' after let");
     auto initializer = parseExpression();
     match(TokenType::Semicolon);  // ';' is optional (Python-like)
-    return std::make_unique<LetStmt>(name.lexeme, std::move(initializer));
+    // IR-H-01: stamp the let-binding's source location from the variable
+    // name token. The analyzer falls back to its current-location hint
+    // when this is 0 (e.g. hand-built AST in unit tests).
+    auto letStmt = std::make_unique<LetStmt>(name.lexeme, std::move(initializer));
+    letStmt->line = name.line;
+    letStmt->column = name.column;
+    return std::move(letStmt);
 }
 
 std::unique_ptr<Stmt> Parser::parseReturnStmt() {
+    // IR-H-02: snapshot the `return` keyword's location BEFORE consuming
+    // the optional value expression — once we recurse into parseExpression,
+    // _current advances past the value and the keyword location is lost.
+    int retLine = previous().line;
+    int retCol = previous().column;
     std::unique_ptr<Expr> value = nullptr;
     if (!check(TokenType::Semicolon)) {
         value = parseExpression();
     }
     match(TokenType::Semicolon);  // ';' is optional (Python-like)
-    return std::make_unique<ReturnStmt>(std::move(value));
+    auto retStmt = std::make_unique<ReturnStmt>(std::move(value));
+    retStmt->line = retLine;
+    retStmt->column = retCol;
+    return std::move(retStmt);
 }
 
 std::unique_ptr<Stmt> Parser::parseIfStmt() {
+    // IR-H-04: snapshot the `if` keyword's location before recursing into
+    // the condition so we can stamp the IfStmt for source-location-aware
+    // diagnostics.
+    int ifLine = previous().line;
+    int ifCol = previous().column;
     consume(TokenType::LeftParen, "Expected '(' after if");
     auto condition = parseExpression();
     consume(TokenType::RightParen, "Expected ')' after condition");
@@ -983,12 +1144,21 @@ std::unique_ptr<Stmt> Parser::parseIfStmt() {
         consume(TokenType::RightBrace, "Expected '}' after else branch");
     }
 
-    return std::make_unique<IfStmt>(std::move(condition), std::move(thenBranch), std::move(elseBranch));
+    auto ifStmt = std::make_unique<IfStmt>(std::move(condition), std::move(thenBranch), std::move(elseBranch));
+    ifStmt->line = ifLine;
+    ifStmt->column = ifCol;
+    return std::move(ifStmt);
 }
 
 std::unique_ptr<Stmt> Parser::parseForStmt() {
     consume(TokenType::LeftParen, "Expected '(' after for");
+    // IR-H-01: stamp for-stmt location at the loop variable token for
+    // iterable-type errors (when e.g. `for (x in 1)` is written with a
+    // scalar where a vector is expected — the analyzer reports the
+    // problem with the loop-var's location).
     Token variable = consumeName("Expected loop variable");
+    int forLine = variable.line;
+    int forCol = variable.column;
     consume(TokenType::In, "Expected 'in' after for variable");
     auto iterable = parseExpression();
     consume(TokenType::RightParen, "Expected ')' after iterable");
@@ -1014,7 +1184,10 @@ std::unique_ptr<Stmt> Parser::parseForStmt() {
     }
     consume(TokenType::RightBrace, "Expected '}' after for body");
 
-    return std::make_unique<ForStmt>(variable.lexeme, std::move(iterable), std::move(body));
+    auto forStmt = std::make_unique<ForStmt>(variable.lexeme, std::move(iterable), std::move(body));
+    forStmt->line = forLine;
+    forStmt->column = forCol;
+    return std::move(forStmt);
 }
 
 const Token& Parser::current() const {
@@ -1079,6 +1252,221 @@ Token Parser::consumeTypeName(const std::string& message) {
     // Force-advance so the loop doesn't spin (see also the safety net
     // in parse()).
     return advance();
+}
+
+// ----- Audit 2026-08-26 P-M-01..03: robust integer literal parsing -----
+//
+// The pre-fix parser used `std::stol(...)` directly on the literal
+// lexeme. Two robustness problems resulted:
+//
+//   1. (P-M-02) std::stol defaults to base-10, so a hex/octal/binary
+//      literal like `0xFF` or `0b1010` would throw std::invalid_argument
+//      and the downstream parser would emit a confusing
+//      "must be a non-negative integer" error. Lexer 2026-08-26 keeps
+//      these prefixes verbatim in the IntLiteral lexeme.
+//
+//   2. (P-M-01) std::stol silently accepts negative values and numbers
+//      larger than 32 bits, leaving the parser to do defensive checks
+//      scattered across parseUniformDecl / parseSharedDecl /
+//      parseStorageDecl / parseUniformBlockDecl. Some call sites
+//      didn't even check — for example, parseStorageDecl's binding
+//      silently truncated a user-written `99999999999` to int.
+//
+// The fix is one helper, parseIntLiteral(), that:
+//   - handles signed leading +/-
+//   - dispatches to the right base via the 0x / 0b / 0o prefix
+//   - clamps on overflow but flags it as out-of-range via the return
+//     tuple (parsedOutOfRange=true)
+//   - returns a (value, ok, parsedOutOfRange) triple so call sites
+//     produce their own context-appropriate error messages via the
+//     existing Parser::error() path
+namespace {
+
+struct IntLiteralResult {
+    long long value;
+    bool ok;                  // false → lexeme wasn't a valid int
+    bool parsedOutOfRange;    // true → overflow or clamp
+};
+
+static IntLiteralResult parseIntLiteral(const std::string& lexeme) {
+    IntLiteralResult r{0, false, false};
+    if (lexeme.empty()) return r;
+    const char* p = lexeme.c_str();
+    bool hadSign = false;
+    if (*p == '+') {
+        ++p; hadSign = true;
+    } else if (*p == '-') {
+        ++p; hadSign = true;
+    }
+    int base = 10;
+    // Prefix detection — only when the leading char is '0' AND there's
+    // another char AND that char isn't a digit (so plain `0` / `01`
+    // pass through). Phoskia today does not let the user write negative
+    // int literals at statement position (the lexer doesn't synthesize
+    // `-1` into a single IntLiteral); the sign handling above only
+    // guards against future change and unusual sources.
+    if (*p == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        base = 16;
+        p += 2;
+    } else if (*p == '0' && (p[1] == 'b' || p[1] == 'B')) {
+        base = 2;
+        p += 2;
+    } else if (*p == '0' && (p[1] == 'o' || p[1] == 'O')) {
+        base = 8;
+        p += 2;
+    } else if (*p == '0' && (p[1] == '\0')) {
+        // Literal "0" → value 0, no error.
+        r.value = 0;
+        r.ok = true;
+        return r;
+    }
+    // Empty after prefix → invalid (e.g. "0x" with no digits). Fall
+    // through to strtoll which will set end==p, indicating no digits.
+    errno = 0;
+    char* end = nullptr;
+    long long v = std::strtoll(p, &end, base);
+    if (end == p) {
+        // No digits consumed. Lexer shouldn't have produced this
+        // for an IntLiteral, but we guard anyway.
+        return r;
+    }
+    // Reject trailing junk like "12abc" — strtoll silently stops at
+    // the first non-digit. We strictly require end==string-end.
+    if (*end != '\0') return r;
+    if (errno == ERANGE) {
+        r.value = (v < 0) ? std::numeric_limits<long long>::min()
+                          : std::numeric_limits<long long>::max();
+        r.parsedOutOfRange = true;
+        r.ok = true;
+        return r;
+    }
+    r.value = v;
+    r.ok = true;
+    return r;
+}
+
+}  // namespace
+
+// Wrapper exposed for the call sites to use. Validates that the
+// parsed value is non-negative and within `[minInclusive,
+// maxInclusive]`. On failure: returns the failure kind so the
+// caller can decide whether to error() and bail or to error() and
+// keep parsing.
+enum class IntParseFailure {
+    None,
+    InvalidLexeme,
+    Overflow,
+    OutOfRange,
+    Negative,
+};
+
+struct IntParseResult {
+    int value;
+    IntParseFailure failure;
+};
+
+namespace {
+
+// (kept anon for `parseIntLiteral`.)
+
+}  // namespace
+
+IntParseResult parseSignedIntInRange(
+        const std::string& lexeme,
+        int minInclusive,
+        int maxInclusive,
+        bool requireNonNegative) {
+    IntParseResult out{0, IntParseFailure::None};
+    IntLiteralResult pi = parseIntLiteral(lexeme);
+    if (!pi.ok) {
+        out.failure = IntParseFailure::InvalidLexeme;
+        return out;
+    }
+    if (pi.parsedOutOfRange) {
+        out.failure = IntParseFailure::Overflow;
+        return out;
+    }
+    long long v = pi.value;
+    if (requireNonNegative && v < 0) {
+        out.failure = IntParseFailure::Negative;
+        return out;
+    }
+    if (v < static_cast<long long>(minInclusive) ||
+        v > static_cast<long long>(maxInclusive)) {
+        out.failure = IntParseFailure::OutOfRange;
+        return out;
+    }
+    out.value = static_cast<int>(v);
+    return out;
+}
+
+static int parseNonNegativeInt(
+        const std::string& lexeme,
+        int maxInclusive,
+        std::function<void(const std::string&)> reporter,
+        const std::string& fieldLabel,
+        bool& failed) {
+    IntParseResult r = parseSignedIntInRange(lexeme, 0, maxInclusive, true);
+    if (r.failure != IntParseFailure::None) {
+        switch (r.failure) {
+            case IntParseFailure::InvalidLexeme:
+                reporter(fieldLabel + " must be a non-negative integer, got '"
+                         + lexeme + "'");
+                break;
+            case IntParseFailure::Overflow:
+                reporter(fieldLabel + " value is out of representable range (got '"
+                         + lexeme + "')");
+                break;
+            case IntParseFailure::Negative:
+                reporter(fieldLabel + " must be non-negative (got '"
+                         + lexeme + "')");
+                break;
+            case IntParseFailure::OutOfRange:
+                reporter(fieldLabel + " out of [0.." + std::to_string(maxInclusive)
+                         + "] range (got '" + lexeme + "')");
+                break;
+            default: break;
+        }
+        failed = true;
+        return 0;
+    }
+    failed = false;
+    return r.value;
+}
+
+static int parsePositiveInt(
+        const std::string& lexeme,
+        int maxInclusive,
+        std::function<void(const std::string&)> reporter,
+        const std::string& fieldLabel,
+        bool& failed) {
+    IntParseResult r = parseSignedIntInRange(lexeme, 1, maxInclusive, true);
+    if (r.failure != IntParseFailure::None) {
+        switch (r.failure) {
+            case IntParseFailure::InvalidLexeme:
+                reporter(fieldLabel + " must be a positive integer, got '"
+                         + lexeme + "'");
+                break;
+            case IntParseFailure::Overflow:
+                reporter(fieldLabel + " value is out of representable range (got '"
+                         + lexeme + "')");
+                break;
+            case IntParseFailure::Negative:
+                // Treat negative as "must be positive" too.
+                reporter(fieldLabel + " must be positive (got '"
+                         + lexeme + "')");
+                break;
+            case IntParseFailure::OutOfRange:
+                reporter(fieldLabel + " out of [1.." + std::to_string(maxInclusive)
+                         + "] range (got '" + lexeme + "')");
+                break;
+            default: break;
+        }
+        failed = true;
+        return 0;
+    }
+    failed = false;
+    return r.value;
 }
 
 Token Parser::consumeName(const std::string& message) {

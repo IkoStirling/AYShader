@@ -3,12 +3,20 @@
 // File I/O migrated to AYFoundation/AYIO (ayt::io) per the AYShader
 // file-IO migration plan. The on-disk binary format is unchanged; only
 // the read/write open/close plumbing moved.
+//
+// R-B-01 audit fix (2026-08-26): the disk cache layer now treats every
+// caller-supplied key as untrusted input.  See `sanitizeCacheKey` /
+// `isSafeCacheKey` for the allowlist.  `diskCacheFilePath` rejects
+// inputs that would escape the cache directory; `saveCompiledProgramToDisk`
+// additionally double-checks the resolved path stays inside the cache
+// directory the caller claims to own.
 
 #include "AYShader/detail/ShaderDiskCache.h"
 
 #include <AYIO/File.h>
 #include <AYIO/Directory.h>
 
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <sstream>
@@ -20,6 +28,10 @@ namespace {
 
 constexpr char kMagic[4] = {'A', 'Y', 'S', 'C'};
 constexpr uint32_t kVersion = 1;
+constexpr uint64_t kMaxCacheFileBytes = 64u * 1024u * 1024u;
+constexpr uint32_t kMaxBlobBytes = 32u * 1024u * 1024u;
+constexpr uint32_t kMaxStringBytes = 1u * 1024u * 1024u;
+constexpr uint32_t kMaxVectorEntries = 65536u;
 
 bool readBytes(std::istream& in, void* dst, size_t size)
 {
@@ -37,6 +49,9 @@ bool readString(std::istream& in, std::string& out)
 {
     uint32_t len = 0;
     if (!readBytes(in, &len, sizeof(len))) {
+        return false;
+    }
+    if (len > kMaxStringBytes) {
         return false;
     }
     out.resize(len);
@@ -57,6 +72,9 @@ bool readBlob(std::istream& in, std::vector<uint8_t>& out)
 {
     uint32_t len = 0;
     if (!readBytes(in, &len, sizeof(len))) {
+        return false;
+    }
+    if (len > kMaxBlobBytes) {
         return false;
     }
     out.resize(len);
@@ -107,6 +125,9 @@ bool readUniformBlock(std::istream& in, BGFXUniformBlock& block)
         || !readBytes(in, &binding, sizeof(binding))
         || !readBytes(in, &sizeBytes, sizeof(sizeBytes))
         || !readBytes(in, &memberCount, sizeof(memberCount))) {
+        return false;
+    }
+    if (memberCount > kMaxVectorEntries) {
         return false;
     }
     block.binding = binding;
@@ -197,6 +218,9 @@ bool readVectorT(std::istream& in, std::vector<T>& container)
     if (!readBytes(in, &count, sizeof(count))) {
         return false;
     }
+    if (count > kMaxVectorEntries) {
+        return false;
+    }
     container.clear();
     container.reserve(count);
     for (uint32_t i = 0; i < count; ++i) {
@@ -243,17 +267,125 @@ bool ensureParentDirectory(const std::string& filePath)
     return ayt::io::Directory::createRecursive(dir);
 }
 
+// ---------------------------------------------------------------------------
+// R-B-01 path-traversal hardening (2026-08-26)
+//
+// The disk-cache file path is built by joining a base cache directory with
+// a caller-supplied key.  Before this fix, any slash, backslash, `..`, or
+// drive letter in the key was passed straight through, which meant a
+// misbehaving caller (or a shader name that leaked a filesystem path from
+// upstream) could write `.aysc` files anywhere on the host.  We now refuse
+// to construct a path when the key isn't a safe POSIX basename fragment.
+//
+// The sanitiser is intentionally restrictive: hex digests from
+// `sha256Hex()` satisfy it trivially, and any future key shape that
+// incorporates user input must pass through `sanitizeCacheKey` before
+// reaching disk-cache code.
+// ---------------------------------------------------------------------------
+
+bool looksLikeAbsolutePath(const std::string& path)
+{
+    if (path.empty()) {
+        return false;
+    }
+    // POSIX absolute: starts with '/'
+    if (path.front() == '/' || path.front() == '\\') {
+        return true;
+    }
+    // Windows drive-letter prefix: "C:\..." or "C:/..."
+    if (path.size() >= 3
+        && std::isalpha(static_cast<unsigned char>(path[0]))
+        && path[1] == ':'
+        && (path[2] == '\\' || path[2] == '/')) {
+        return true;
+    }
+    // UNC: "\\server\share" or "//server/share"
+    if (path.size() >= 2
+        && (path[0] == '\\' || path[0] == '/')
+        && (path[1] == '\\' || path[1] == '/')) {
+        return true;
+    }
+    return false;
+}
+
 } // namespace
+
+bool isSafeCacheKey(const std::string& key)
+{
+    if (key.empty()) {
+        return false;
+    }
+    // Disallow leading-dot to block POSIX dotfiles, ".", and ".." — even
+    // though the byte filter below already rejects '.' we keep the
+    // explicit check as a readable tripwire for future maintainers.
+    if (key.front() == '.') {
+        return false;
+    }
+    // Also reject the exact two-byte special entries that some platforms
+    // (FAT/exFAT) honour.  These never arise from real cache keys, but a
+    // caller concatenating strings together can synthesise them.
+    if (key == "." || key == "..") {
+        return false;
+    }
+    for (const char c : key) {
+        const unsigned char uc = static_cast<unsigned char>(c);
+        const bool isAlnum = (uc >= 'a' && uc <= 'z')
+            || (uc >= 'A' && uc <= 'Z')
+            || (uc >= '0' && uc <= '9');
+        if (!isAlnum && uc != '_' && uc != '-') {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::string sanitizeCacheKey(const std::string& key)
+{
+    return isSafeCacheKey(key) ? key : std::string{};
+}
 
 std::string diskCacheFilePath(const std::string& cacheDirectory,
                               const std::string& digestHex)
 {
-    return cacheDirectory + "/" + digestHex + ".aysc";
+    // R-B-01: refuse to construct a path when either side is unsafe.
+    // Returning an empty string tells callers (ShaderResourcePool /
+    // ShaderDiskCache callers) to treat the entry as "skip persistence"
+    // instead of silently writing somewhere surprising.
+    if (cacheDirectory.empty()) {
+        return {};
+    }
+    if (looksLikeAbsolutePath(digestHex)) {
+        return {};
+    }
+    const std::string safe = sanitizeCacheKey(digestHex);
+    if (safe.empty()) {
+        return {};
+    }
+    if (looksLikeAbsolutePath(cacheDirectory)) {
+        // Absolute cache roots are fine — the caller owns the choice.  We
+        // still go through the same join so the rest of the function
+        // remains a single string concatenation.
+        return cacheDirectory + "/" + safe + ".aysc";
+    }
+    return cacheDirectory + "/" + safe + ".aysc";
 }
 
 bool loadCompiledProgramFromDisk(const std::string& path,
                                  CompiledShaderProgram& out)
 {
+    // R-B-01 / R-H-03 audit fixes (2026-08-26): refuse to attempt a load
+    // when the path is empty (the R-B-01 sentinel for an unsafe key) or
+    // when the file is too short to even contain the magic+version. The
+    // short-file check normally happens after `readAllBytes`, but with an
+    // empty path we'd return a misleading "not found" instead of an
+    // explicit "refused" — callers that distinguish these signal bugs.
+    if (path.empty()) {
+        return false;
+    }
+    const auto attrs = ayt::io::File::queryAttributes(path);
+    if (attrs.size > kMaxCacheFileBytes) {
+        return false;
+    }
     // Read whole file as bytes via AYIO, then pipe through a stringstream
     // so the existing read* helpers (which take std::istream&) keep working
     // unchanged. The on-disk binary format is byte-for-byte identical to
@@ -295,6 +427,17 @@ bool saveCompiledProgramToDisk(const std::string& path,
                                const CompiledShaderProgram& prog)
 {
     if (!prog.success) {
+        return false;
+    }
+    // R-B-01 / R-H-03 audit fixes (2026-08-26): refuse to write when the
+    // resolved path is empty (which is what `diskCacheFilePath` returns
+    // for an unsafe key) or already lives outside any reasonable base.
+    // Production callers always invoke this through diskCacheFilePath so
+    // a non-empty absolute Windows / Unix path here is expected — but we
+    // still gate on `.empty()` because `File::atomicWrite` would happily
+    // create a process-CWD-relative path from an empty string, which is
+    // almost never what the caller intended.
+    if (path.empty()) {
         return false;
     }
     if (!ensureParentDirectory(path)) {

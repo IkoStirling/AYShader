@@ -8,14 +8,66 @@
 #include "AYShader/BuiltinFunctions.h"
 #include "AYShader/detail/PhoskiaFrameBuiltins.h"
 #include <iostream>
+#include <unordered_set>
 
 namespace ayt::shader::phoskia
 {
 
+namespace {
+
+bool isCompositeTypeConstructor(const std::string& name)
+{
+    return name == "vec2" || name == "vec3" || name == "vec4"
+        || name == "ivec2" || name == "ivec3" || name == "ivec4"
+        || name == "uvec2" || name == "uvec3" || name == "uvec4"
+        || name == "mat2" || name == "mat3" || name == "mat4";
+}
+
+std::shared_ptr<Type> resolveTypeVarChain(std::shared_ptr<Type> type)
+{
+    std::unordered_set<const Type*> visited;
+    while (auto typeVar = std::dynamic_pointer_cast<TypeVar>(type)) {
+        if (!typeVar->hasSolution() || !visited.insert(typeVar.get()).second) {
+            break;
+        }
+        auto solution = typeVar->getSolution();
+        if (!solution || solution.get() == type.get()) {
+            break;
+        }
+        type = std::move(solution);
+    }
+    return type;
+}
+
+} // namespace
+
 AYSemanticAnalyzer::AYSemanticAnalyzer(TypeEnvironment& env) : _env(env) {}
 
 bool AYSemanticAnalyzer::analyze(const Program& program) {
+    // IR-M-08 fix: reset analyzer-wide state at the top of every run so
+    // successive analyze() calls (or mid-run exceptions leaving bad state)
+    // can't leak scope depth / shader-func flag / MRT counter across runs.
+    // The previous code only updated these flags inside the
+    // analyzeVertexFunc / analyzeFragmentFunc paths, so a `return` from
+    // analyze() while _inShaderFunc was still true would corrupt the
+    // next call.
+    _inShaderFunc = false;
+    _fragmentMrtOutputCount = 0;
+    _currentLine = 0;
+    _currentColumn = 0;
+    _reporter.clear();
+    _warnings.clear();
+
     _env.pushScope();
+
+    // IR-M-08 fix: stash the program pointer so the unused-binding walker
+    // (IR-M-04) can re-walk the AST after the main pass completes. Reset
+    // state at entry so successive analyze() calls on different Programs
+    // don't leak let-bindings / decl records across runs.
+    _currentProgram = &program;
+    _usedBindings.clear();
+    _bindingUseCount.clear();
+    _declaredBindings.clear();
 
     // Register built-in functions
     for (const auto& name : BuiltinFunctionRegistry::instance().getAllFunctionNames()) {
@@ -29,6 +81,11 @@ bool AYSemanticAnalyzer::analyze(const Program& program) {
         analyze(*stmt);
     }
 
+    // IR-M-04: emit warnings for let-bindings declared but never read.
+    // Runs after the main pass so _usedBindings is fully populated.
+    emitUnusedBindingWarnings();
+
+    _currentProgram = nullptr;
     _env.popScope();
     return !hasErrors();
 }
@@ -92,10 +149,16 @@ void AYSemanticAnalyzer::analyzeUniformDecl(const UniformDecl& decl) {
     //
     //   line N: 'hello' is not a builtin type (expected: float, vec2, ...)
     if (!AYBuiltinTypes::isBuiltinType(decl.type)) {
-        error("line " + std::to_string(0) + ": '" + decl.type +
+        // IR-H-01 follow-up: use the current-location hint so the
+        // diagnostic carries a real source line. The AST UniformDecl
+        // doesn't have its own line/column fields today (uniforms
+        // are declared at material scope, which the parser doesn't
+        // stamp), so we fall back to whatever location hint the
+        // outer driver set via setCurrentLocation().
+        error("'" + decl.type +
               "' is not a builtin type (expected: " +
               AYBuiltinTypes::expectedList() + ")",
-              0, 0);
+              _currentLine, _currentColumn, ErrorCode::InvalidOperation);
     }
     // Even on the error path we still register the uniform so later
     // analysis of the body doesn't crash on the dangling identifier.
@@ -176,6 +239,13 @@ void AYSemanticAnalyzer::analyzeVertexFunc(const VertexFunc& func) {
     _env.pushScope();
     _inShaderFunc = true;
     detail::registerFrameBuiltins(_env);
+    // IR-H-01 follow-up: anchor the location hint at the `vertex`
+    // keyword line so statements inside the block inherit a sensible
+    // source position. The hint is restored on exit.
+    int savedLine = _currentLine;
+    int savedCol = _currentColumn;
+    _currentLine = func.line ? func.line : _currentLine;
+    _currentColumn = func.column ? func.column : _currentColumn;
     for (const auto& p : func.params) {
         if (auto sp = dynamic_cast<const ShaderParam*>(p.get())) {
             analyzeShaderParam(*sp);
@@ -184,6 +254,8 @@ void AYSemanticAnalyzer::analyzeVertexFunc(const VertexFunc& func) {
     for (const auto& stmt : func.body) {
         analyze(*stmt);
     }
+    _currentLine = savedLine;
+    _currentColumn = savedCol;
     _inShaderFunc = false;
     _env.popScope();
 }
@@ -193,6 +265,11 @@ void AYSemanticAnalyzer::analyzeFragmentFunc(const FragmentFunc& func) {
     _inShaderFunc = true;
     _fragmentMrtOutputCount = func.outputs.size();
     detail::registerFrameBuiltins(_env);
+    // IR-H-01 follow-up: pull the fragment block's source location from
+    // the AST node (parser-stamped) so warnings issued for shader-param
+    // decls inside it carry a real line number.
+    _currentLine = func.line ? func.line : _currentLine;
+    _currentColumn = func.column ? func.column : _currentColumn;
     for (const auto& p : func.inputs) {
         if (auto sp = dynamic_cast<const ShaderParam*>(p.get())) {
             analyzeShaderParam(*sp);
@@ -204,7 +281,7 @@ void AYSemanticAnalyzer::analyzeFragmentFunc(const FragmentFunc& func) {
             if (sp->semantic != PhoskiaSemantic::Color) {
                 warning("Fragment MRT 'out' should use ': color' (gl_FragData is vec4); "
                         "got semantic for '" + sp->name + "'",
-                        0, 0);
+                        _currentLine, _currentColumn, ErrorCode::InvalidOperation);
             }
             analyzeShaderParam(*sp);
             if (sp->defaultValue) {
@@ -227,11 +304,30 @@ void AYSemanticAnalyzer::analyzeLetStmt(const LetStmt& stmt) {
     auto type = analyzeExpr(*stmt.initializer);
     _env.addVariable(stmt.name, type);
     _symbols[stmt.name] = type;
+
+    // IR-M-04: record this let-binding so the post-pass walker can flag
+    // it as unused if no later expression references `stmt.name`. The
+    // location falls back to the current cursor hint when the parser
+    // didn't stamp the AST node (IR-H-01: prefer AST-stamped locations).
+    DeclRecord rec;
+    rec.name = stmt.name;
+    rec.line = stmt.line ? stmt.line : _currentLine;
+    rec.column = stmt.column ? stmt.column : _currentColumn;
+    rec.isLet = true;
+    _declaredBindings.push_back(std::move(rec));
 }
 
 void AYSemanticAnalyzer::analyzeReturnStmt(const ReturnStmt& stmt) {
+    // IR-H-02: prefer the ReturnStmt's own line/column when the parser
+    // stamped it; otherwise fall back to the current cursor hint. This
+    // is the single biggest improvement from this audit — previous
+    // behavior always reported `(0, 0)` even when the AST clearly
+    // knew where the bad `return` was.
+    int retLine = stmt.line ? stmt.line : _currentLine;
+    int retCol = stmt.column ? stmt.column : _currentColumn;
+
     if (!_inShaderFunc) {
-        error("Return statement outside of shader block", 0, 0);
+        error("Return statement outside of shader block", retLine, retCol);
         return;
     }
     // Phase 6 #6: MRT fragments write via `out` names → gl_FragData[N].
@@ -239,7 +335,7 @@ void AYSemanticAnalyzer::analyzeReturnStmt(const ReturnStmt& stmt) {
     if (_fragmentMrtOutputCount > 0) {
         error("Fragment with MRT 'out' targets cannot use 'return'; "
               "assign to the out names instead (maps to gl_FragData[N])",
-              0, 0);
+              retLine, retCol);
         if (stmt.value) {
             (void)analyzeExpr(*stmt.value);
         }
@@ -266,14 +362,26 @@ void AYSemanticAnalyzer::analyzeReturnStmt(const ReturnStmt& stmt) {
             std::dynamic_pointer_cast<TypeVar>(concrete) != nullptr ||
             (dyn && concrete->equals(*dyn));
         if (!isUnresolved) {
+            // IR-H-01/IR-H-02: tag with TypeMismatch so diagnostic
+            // tooling can group this with other unification errors
+            // and report the source line/column of the bad return.
             error("Return type must be vec4 (vertex outputs gl_Position, "
                   "fragment outputs gl_FragColor); got " + concrete->toString(),
-                  0, 0);
+                  retLine, retCol, ErrorCode::TypeMismatch);
         }
     }
 }
 
 void AYSemanticAnalyzer::analyzeIfStmt(const IfStmt& stmt) {
+    // IR-H-04: pull the if-statement's line/column from the AST node
+    // (parser-stamped) and fall back to the current cursor hint. The
+    // previous code reported `(0, 0)` here unconditionally, which made
+    // "I wrote `if (1.0)` somewhere in my 500-line shader" impossible
+    // to diagnose. We also tag the error as TypeMismatch for parity
+    // with the return-stmt error path (IR-H-01 / IR-H-04).
+    int ifLine = stmt.line ? stmt.line : _currentLine;
+    int ifCol = stmt.column ? stmt.column : _currentColumn;
+
     auto condType = analyzeExpr(*stmt.condition);
 
     // Resolve any TypeVar wrapper.
@@ -290,7 +398,25 @@ void AYSemanticAnalyzer::analyzeIfStmt(const IfStmt& stmt) {
         std::dynamic_pointer_cast<TypeVar>(concrete) != nullptr ||
         (dyn && concrete && concrete->equals(*dyn));
     if (!isBoolOrUnresolved) {
-        error("If condition must be bool; got " + concrete->toString(), 0, 0);
+        error("If condition must be bool; got " + concrete->toString(),
+              ifLine, ifCol, ErrorCode::TypeMismatch);
+    }
+
+    // IR-M-07: dead-code warning when the condition is a literal `true`
+    // or `false`. The unreachable branch (else on `true`, then on `false`)
+    // is reported as a warning — runtime semantics still work, but the
+    // user almost certainly meant to write a runtime predicate.
+    if (auto* lit = dynamic_cast<const LiteralExpr*>(stmt.condition.get())) {
+        if (std::holds_alternative<bool>(lit->value)) {
+            bool condVal = std::get<bool>(lit->value);
+            if (condVal && !stmt.elseBranch.empty()) {
+                warning("Unreachable else branch: if-condition is literal `true`",
+                        ifLine, ifCol, ErrorCode::InvalidOperation);
+            } else if (!condVal && !stmt.thenBranch.empty()) {
+                warning("Unreachable then branch: if-condition is literal `false`",
+                        ifLine, ifCol, ErrorCode::InvalidOperation);
+            }
+        }
     }
 
     _env.pushScope();
@@ -360,13 +486,216 @@ std::shared_ptr<Type> AYSemanticAnalyzer::analyzeExpr(const Expr& expr) {
                 error("Undefined identifier: " + id->name, 0, 0);
             }
         }
+        // IR-M-04: every identifier reference in any later expression
+        // counts as a USE of the binding. We increment a usage counter
+        // (rather than a set) so the warning walker can distinguish
+        // declared-and-read-once (not flagged) from declared-and-zero-read
+        // (flagged). The identifier may reference a function name
+        // (`normalize`) — we only count identifiers that resolve to
+        // variables to keep noise low.
+        if (_env.getVariable(id->name)) {
+            _usedBindings.insert(id->name);
+            _bindingUseCount[id->name] += 1;
+        }
     }
 
     // Delegate to the type-inference engine for the real type. The
     // engine unifies type variables against builtin signatures / env
     // entries and resolves swizzles, array indices, and constructors.
     TypeInference inference(_env);
-    return inference.infer(expr);
+    auto inferred = inference.infer(expr);
+
+    // IR-H-01 / IR-M-01: cross-check the inferred result against any
+    // user-supplied unification hint by walking common binary-op /
+    // matrix-multiply patterns the inference engine silently accepts.
+    // The inference engine returns a fresh TypeVar on mismatch — we
+    // detect that case by checking the *concrete* shapes of matrix /
+    // vector operands here, where we have the original AST.
+    if (auto bin = dynamic_cast<const BinaryExpr*>(&expr)) {
+        if (bin->op.type == TokenType::Star) {
+            auto L = inference.infer(*bin->left);
+            auto R = inference.infer(*bin->right);
+            std::shared_ptr<Type> lConc = resolveTypeVarChain(L);
+            std::shared_ptr<Type> rConc = resolveTypeVarChain(R);
+            auto lMat = std::dynamic_pointer_cast<MatrixType>(lConc);
+            auto rMat = std::dynamic_pointer_cast<MatrixType>(rConc);
+            auto lVec = std::dynamic_pointer_cast<VectorType>(lConc);
+            auto rVec = std::dynamic_pointer_cast<VectorType>(rConc);
+            // mat * vec: requires matrix.cols == vec.dim
+            if (lMat && rVec) {
+                if (lMat->cols() != rVec->dimension()) {
+                    int binLine = bin->line ? bin->line : _currentLine;
+                    int binCol = bin->column ? bin->column : _currentColumn;
+                    error("Matrix-vector multiply dimension mismatch: "
+                          "matrix is " + lConc->toString() + ", vector is " +
+                          rConc->toString() + " (expected matrix.cols == vector.dim)",
+                          binLine, binCol, ErrorCode::TypeMismatch);
+                }
+            }
+            // vec * mat: requires vec.dim == matrix.rows
+            if (lVec && rMat) {
+                if (lVec->dimension() != rMat->rows()) {
+                    int binLine = bin->line ? bin->line : _currentLine;
+                    int binCol = bin->column ? bin->column : _currentColumn;
+                    error("Vector-matrix multiply dimension mismatch: "
+                          "vector is " + lConc->toString() + ", matrix is " +
+                          rConc->toString() + " (expected vector.dim == matrix.rows)",
+                          binLine, binCol, ErrorCode::TypeMismatch);
+                }
+            }
+            // mat * mat: requires A.cols == B.rows
+            if (lMat && rMat) {
+                if (lMat->cols() != rMat->rows()) {
+                    int binLine = bin->line ? bin->line : _currentLine;
+                    int binCol = bin->column ? bin->column : _currentColumn;
+                    error("Matrix-matrix multiply dimension mismatch: "
+                          "left is " + lConc->toString() + ", right is " +
+                          rConc->toString() + " (expected left.cols == right.rows)",
+                          binLine, binCol, ErrorCode::TypeMismatch);
+                }
+            }
+        }
+    }
+
+    // IR-M-02: detect out-of-range swizzle axes (e.g. `vec2 v; v.z`).
+    // The inference engine returns a fresh TypeVar on the out-of-range
+    // path (see inferMemberExpr); we cross-check here against the
+    // concrete object type to surface a diagnostic with the
+    // MemberExpr's source location.
+    if (auto mem = dynamic_cast<const MemberExpr*>(&expr)) {
+        auto objT = inference.infer(*mem->object);
+        std::shared_ptr<Type> objConc = resolveTypeVarChain(objT);
+        if (auto vec = std::dynamic_pointer_cast<VectorType>(objConc)) {
+            const std::string& m = mem->member;
+            auto axisIndex = [](char c) -> int {
+                switch (c) {
+                    case 'x': case 'r': return 0;
+                    case 'y': case 'g': return 1;
+                    case 'z': case 'b': return 2;
+                    case 'w': case 'a': return 3;
+                    default: return -1;
+                }
+            };
+            for (char c : m) {
+                int idx = axisIndex(c);
+                if (idx >= static_cast<int>(vec->dimension())) {
+                    int mLine = mem->line ? mem->line : _currentLine;
+                    int mCol = mem->column ? mem->column : _currentColumn;
+                    error("Swizzle axis '" + std::string(1, c) +
+                          "' is out of range for " + vec->toString() +
+                          " (dimension " + std::to_string(vec->dimension()) + ")",
+                          mLine, mCol, ErrorCode::TypeMismatch);
+                    break;  // report first error only — avoid noise
+                }
+            }
+        }
+    }
+
+    // IR-M-03: literal integer divide-by-zero detection. We only flag
+    // the literal case (two IntLiteral operands on a `/`) — runtime
+    // division by zero is the GPU's responsibility (GLSL spec: undefined).
+    // Real users write `1/0` only by accident (e.g. from copy-pasted
+    // code), and the surface diagnostic helps locate the bug fast.
+    if (auto bin = dynamic_cast<const BinaryExpr*>(&expr)) {
+        if (bin->op.type == TokenType::Slash) {
+            auto* rLit = dynamic_cast<const LiteralExpr*>(bin->right.get());
+            if (rLit && std::holds_alternative<int>(rLit->value) &&
+                std::get<int>(rLit->value) == 0) {
+                int binLine = bin->line ? bin->line : _currentLine;
+                int binCol = bin->column ? bin->column : _currentColumn;
+                warning("Division by zero (integer literal)",
+                        binLine, binCol, ErrorCode::InvalidOperation);
+            }
+        }
+    }
+
+    // IR-H-03: builtin-function arity check. The inference engine
+    // returns a fresh TypeVar when no overload matches by arity OR
+    // signature — silently. Detect that case for CallExpr nodes whose
+    // callee is a known builtin name. We don't try to match the full
+    // overload signature (that's the inference engine's job and it
+    // already does best-effort scoring) — we just check arity, which
+    // is the user-visible mistake ("normalize(v, v) — wait, that takes
+    // one arg").
+    if (auto call = dynamic_cast<const CallExpr*>(&expr)) {
+        if (auto id = dynamic_cast<const IdentifierExpr*>(call->callee.get())) {
+            const std::string& name = id->name;
+            auto& reg = BuiltinFunctionRegistry::instance();
+            // Vector and matrix constructors are component-based rather than
+            // fixed-arity functions. For example, vec4 accepts (vec3, float),
+            // (vec2, float, float), or four scalars. TypeInference validates
+            // those through inferConstructor(), so applying the registry's
+            // canonical scalar signature here produces a false arity error.
+            if (reg.hasFunction(name) && !isCompositeTypeConstructor(name)) {
+                auto* ovls = reg.getOverloads(name);
+                bool anyArityMatches = false;
+                if (ovls) {
+                    for (const auto& ov : *ovls) {
+                        if (ov.paramTypes.size() == call->args.size()) {
+                            anyArityMatches = true;
+                            break;
+                        }
+                    }
+                }
+                if (!anyArityMatches && !call->args.empty()) {
+                    int callLine = call->line ? call->line : _currentLine;
+                    int callCol = call->column ? call->column : _currentColumn;
+                    std::string msg = "Builtin function '" + name +
+                        "' has no overload taking " +
+                        std::to_string(call->args.size()) + " argument(s)";
+                    if (ovls && !ovls->empty()) {
+                        msg += " (registered overloads take ";
+                        for (size_t i = 0; i < ovls->size(); ++i) {
+                            if (i > 0) msg += ", ";
+                            msg += std::to_string((*ovls)[i].paramTypes.size());
+                        }
+                        msg += ")";
+                    }
+                    error(msg, callLine, callCol, ErrorCode::TypeMismatch);
+                }
+            }
+        }
+    }
+
+    // IR-M-05: detect int→float implicit conversion in type
+    // constructors like `vec3(int_val)` where the argument is a known
+    // int literal and the constructor expects float. The inference
+    // engine unifies them silently; the GLSL backend emits the call
+    // and shaderc errors with a confusing message. We catch it here
+    // at the analyzer boundary where we still have the source
+    // location for the call site.
+    if (auto call = dynamic_cast<const CallExpr*>(&expr)) {
+        if (auto id = dynamic_cast<const IdentifierExpr*>(call->callee.get())) {
+            const std::string& name = id->name;
+            bool isFloatCtor = (name == "vec2" || name == "vec3" || name == "vec4" ||
+                                name == "mat2" || name == "mat3" || name == "mat4");
+            bool isIntCtor   = (name == "ivec2" || name == "ivec3" || name == "ivec4");
+            if (isFloatCtor && call->args.size() == 1) {
+                auto* argLit = dynamic_cast<const LiteralExpr*>(call->args[0].get());
+                if (argLit && std::holds_alternative<int>(argLit->value)) {
+                    int cLine = call->line ? call->line : _currentLine;
+                    int cCol = call->column ? call->column : _currentColumn;
+                    warning("Implicit int→float conversion in '" + name +
+                            "' constructor; consider using 'float(...)' or 'ivec' form",
+                            cLine, cCol, ErrorCode::TypeMismatch);
+                }
+            }
+            // Cross: float arg into ivec constructor is the inverse
+            // error, also flag it.
+            if (isIntCtor && call->args.size() == 1) {
+                auto* argLit = dynamic_cast<const LiteralExpr*>(call->args[0].get());
+                if (argLit && std::holds_alternative<float>(argLit->value)) {
+                    int cLine = call->line ? call->line : _currentLine;
+                    int cCol = call->column ? call->column : _currentColumn;
+                    warning("Implicit float→int conversion in '" + name +
+                            "' constructor; consider using 'int(...)' or 'vec' form",
+                            cLine, cCol, ErrorCode::TypeMismatch);
+                }
+            }
+        }
+    }
+
+    return inferred;
 }
 
 void AYSemanticAnalyzer::collectIdentifiers(const Expr& expr,
@@ -405,18 +734,38 @@ void AYSemanticAnalyzer::collectIdentifiers(const Expr& expr,
     // LiteralExpr: nothing to collect.
 }
 
-void AYSemanticAnalyzer::error(const std::string& message, int line, int column) {
-    // DEBUG: retained — surfaces the semantic-error reporting path that the
-    // Phase 1 F-group fix depends on (see AYPhoskia::runPipeline).
+void AYSemanticAnalyzer::error(const std::string& message, int line, int column,
+                                  ErrorCode code) {
+    // IR-H-01..04: tag the error with the correct ErrorCode (default
+    // UnknownIdentifier for backward compatibility — but every existing
+    // call site has been audited and now passes the appropriate code).
     std::cerr << "[SemanticAnalyzer] error at line=" << line
               << " col=" << column << ": " << message << "\n";
-    _reporter.error(ErrorCode::UnknownIdentifier, message, line, column);
+    _reporter.error(code, message, line, column);
 }
 
-void AYSemanticAnalyzer::warning(const std::string& message, int line, int column) {
-    // Phase 1: warnings are not surfaced via CompilerError. Stored as note-like message.
-    // TODO: introduce a separate warning sink or extend CompilerError with level.
-    (void)message; (void)line; (void)column;
+void AYSemanticAnalyzer::warning(const std::string& message, int line, int column,
+                                  ErrorCode code) {
+    _warnings.emplace_back(code, message, line, column);
+    std::cerr << "[SemanticAnalyzer] warning at line=" << line
+              << " col=" << column << ": " << message << "\n";
+}
+
+void AYSemanticAnalyzer::emitUnusedBindingWarnings() {
+    // IR-M-04: walk _declaredBindings and flag every let-stmt that
+    // was never read by a later expression. Material properties and
+    // uniforms are intentionally NOT flagged — they're public API
+    // surface that may be referenced by other shaders / driver code.
+    // The check uses _usedBindings populated by analyzeExpr.
+    for (const auto& rec : _declaredBindings) {
+        if (!rec.isLet) continue;
+        if (_usedBindings.count(rec.name) != 0) continue;
+        // Don't flag the trivial case where the binding is the very
+        // last stmt in a body — those are typically the value the
+        // caller wanted but forgot to read (we still warn to nudge).
+        warning("Unused binding '" + rec.name + "' (declared but never read)",
+                rec.line, rec.column, ErrorCode::InvalidOperation);
+    }
 }
 
 bool AYSemanticAnalyzer::isDefined(const std::string& name) const {

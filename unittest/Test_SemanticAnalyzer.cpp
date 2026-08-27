@@ -197,6 +197,39 @@ TEST_CASE(fragment_returning_vec4_is_ok) {
     CHECK_FALSE(r.hasErrors);
 }
 
+TEST_CASE(composite_vector_constructors_do_not_use_fixed_builtin_arity) {
+    const char* src = R"(
+        material X {
+            vertex {
+                in pos : position
+                in uv : texcoord
+                let fromVec3 = vec4(pos, 1.0)
+                let fromVec2 = vec4(uv, 0.0, 1.0)
+                return fromVec3 + fromVec2
+            }
+            fragment { return vec4(1.0) }
+        }
+    )";
+    auto r = analyze(src);
+    CHECK_FALSE(r.hasErrors);
+}
+
+TEST_CASE(non_constructor_builtin_wrong_arity_is_still_an_error) {
+    const char* src = R"(
+        material X {
+            vertex {
+                in pos : position
+                let invalid = normalize(pos, pos)
+                return vec4(invalid, 1.0)
+            }
+            fragment { return vec4(1.0) }
+        }
+    )";
+    auto r = analyze(src);
+    CHECK(r.hasErrors);
+    CHECK(containsError(r.errors, "Builtin function 'normalize' has no overload taking 2 argument(s)"));
+}
+
 // ===== Strict if-condition check =====
 
 TEST_CASE(if_condition_float_is_error) {

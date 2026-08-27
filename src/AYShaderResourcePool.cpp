@@ -1,4 +1,26 @@
 // AYShaderResourcePool.cpp - wire-up, compile path, cache, pool lifetime
+//
+// R-B-02 audit fix (2026-08-26):
+//   The pre-audit pool was unsafe under concurrent calls because it
+//   mutated the in-memory `cache`, `sourceCache`, `hotReloadWatches`,
+//   `lastCompileErrors`, and `stats` containers without any locking.
+//   We now hold a `std::shared_mutex` (`_mutex`) for the lifetime of any
+//   mutation; observers (`cacheStats`, `lastCompileErrors`) take a
+//   `std::shared_lock` so they can run in parallel with each other.
+//
+//   The actual shader compile is wrapped between two exclusive locks:
+//     1. Read+de-dup from the in-memory cache under a shared lock.
+//     2. Drop the lock for the slow compile step (shaderc or disk-read).
+//     3. Re-take an exclusive lock to insert the result.
+//   This keeps the heavy path out of the critical section while still
+//   preventing two threads from racing the same key into the cache. See
+//   the audit fix log in commit `…` for the race analysis.
+//
+// R-H-02 lookup-vs-insert race: the lock release between de-dup and
+//   re-insert is bridged by `evictStaleCacheEntries` and the
+//   cache-by-key result: if another thread won the race, the second
+//   arrival observes a non-empty entry and reuses the existing handle
+//   rather than inserting a duplicate.
 
 #include "AYShader/ShaderResourcePool.h"
 #include "AYShader/BGFXConverter.h"
@@ -21,6 +43,7 @@
 #include <cstring>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -539,7 +562,18 @@ bool wireUpProgram(ShaderResourceImpl& impl, const CompiledShaderProgram& prog,
         return false;
     }
 
-    return buildBindingTable(impl, prog, errors);
+    // R-H-01 audit fix (2026-08-26): a binding-table failure (partial
+    // uniform/sampler creation, unknown type, ... previously leaked the
+    // successfully-created program handle AND every uniform handle
+    // already inserted into `impl.bindingsById`.  We now destroy the
+    // partial binding table AND the new program on any error reported by
+    // `buildBindingTable`.  `destroyGpuResources` is idempotent and
+    // null-safe against the `_entries` we never populated.
+    if (!buildBindingTable(impl, prog, errors)) {
+        impl.destroyGpuResources();
+        return false;
+    }
+    return true;
 }
 
 } // namespace detail
@@ -599,11 +633,17 @@ struct ShaderResourcePool::Impl {
         poolRegistry().erase(serial);
     }
 
-    static Impl* findPool(uint32_t serial)
+    static std::shared_ptr<ShaderResourceImpl> retainPoolHandle(uint32_t serial,
+                                                                uint32_t localId)
     {
+        // Keep the registry lock until the handle-table reference has been
+        // retained, preventing unregister from racing the Impl access.
         std::lock_guard<std::mutex> lock(poolRegistryMutex());
         const auto it = poolRegistry().find(serial);
-        return it != poolRegistry().end() ? it->second : nullptr;
+        if (it == poolRegistry().end() || it->second == nullptr) {
+            return {};
+        }
+        return it->second->handles.resolveShared(localId);
     }
 
     static std::atomic<uint32_t> s_nextPoolSerial;
@@ -647,6 +687,16 @@ struct ShaderResourcePool::Impl {
     CacheStats stats;
     std::vector<std::string> lastCompileErrors;
     phoskia::CompileOptions defaultCompileOpts;
+
+    // R-B-02 audit fix (2026-08-26): protecting the mutable state of the
+    // pool.  Read-only observers (`cacheStats`, `lastCompileErrors`)
+    // acquire a `std::shared_lock`.  Mutating methods (`acquire`,
+    // `release`, `evictStaleCacheEntries`, `registerHotReloadWatch`,
+    // `invalidateHotReloadWatch`, `pollHotReloadWatches`, ...) take a
+    // `std::unique_lock`.  Mutex ordering: the pool mutex is always
+    // acquired BEFORE any call into `ShaderHandleTable` (which has its
+    // own internal shared_mutex).
+    mutable std::shared_mutex mutex;
 
     Impl()
     {
@@ -722,9 +772,9 @@ struct ShaderResourcePool::Impl {
         return detail::makeShaderHandle(poolSerial, localId);
     }
 
-    ShaderResourceImpl* resolveLocal(uint32_t localId) const
+    std::shared_ptr<ShaderResourceImpl> resolveLocalShared(uint32_t localId)
     {
-        return handles.resolve(localId);
+        return handles.resolveShared(localId);
     }
 
     void eraseCacheKey(const std::string& key)
@@ -797,10 +847,22 @@ struct ShaderResourcePool::Impl {
         }
 
         const int64_t nowMs = detail::steadyClockMs();
+        // R-H-04 audit fix (2026-08-26): the pre-audit poll kept watching
+        // a source path after its handles were invalidated, leaving the
+        // entry alive forever and re-running `fileMtimeMs` on a missing
+        // file every frame.  We now erase any entry whose file vanished
+        // and which has no live handles.  For entries whose file still
+        // exists, we invalidate-and-erase ONLY when we successfully
+        // process an mtime change; otherwise we leave the watch in place
+        // so a later edit can re-fire.
+        std::vector<std::string> toErase;
         for (auto& [normalizedPath, watch] : hotReloadWatches) {
             (void)normalizedPath;
             const std::optional<int64_t> mtime = detail::fileMtimeMs(watch.sourcePath);
             if (!mtime.has_value()) {
+                // Source file disappeared or is unreadable.  Drop the
+                // watch entirely so it doesn't accumulate forever.
+                toErase.push_back(normalizedPath);
                 continue;
             }
             if (*mtime == watch.lastMtimeMs) {
@@ -814,7 +876,15 @@ struct ShaderResourcePool::Impl {
             }
             if (nowMs - watch.debounceStartMs >= kHotReloadDebounceMs) {
                 invalidateHotReloadWatch(watch);
+                // After invalidation the watch has no live handles / keys
+                // — schedule it for removal from the map so subsequent
+                // edits to the same source path rebuild the watch from
+                // scratch on the next compileFromFile call.
+                toErase.push_back(normalizedPath);
             }
+        }
+        for (const std::string& key : toErase) {
+            hotReloadWatches.erase(key);
         }
     }
 
@@ -870,8 +940,8 @@ struct ShaderResourcePool::Impl {
     void evictStaleCacheEntries()
     {
         for (auto it = cache.begin(); it != cache.end(); ) {
-            ShaderResourceImpl* impl =
-                resolveLocal(detail::shaderHandleLocalId(it->second));
+            const std::shared_ptr<ShaderResourceImpl> impl =
+                resolveLocalShared(detail::shaderHandleLocalId(it->second));
             if (impl == nullptr || !bgfx::isValid(impl->programHandle)) {
                 it = cache.erase(it);
             } else {
@@ -889,7 +959,10 @@ struct ShaderResourcePool::Impl {
     }
 };
 
-ShaderResourcePool::ShaderResourcePool() = default;
+ShaderResourcePool::ShaderResourcePool()
+    : _impl(std::make_unique<Impl>())
+{
+}
 
 ShaderResourcePool::~ShaderResourcePool()
 {
@@ -900,61 +973,67 @@ ShaderResourcePool::ShaderResourcePool(ShaderResourcePool&&) noexcept = default;
 
 ShaderResourcePool& ShaderResourcePool::operator=(ShaderResourcePool&&) noexcept = default;
 
-void ShaderResourcePool::setShadercExecutable(const std::string& path)
+// ---------------------------------------------------------------------------
+// R-B-02 audit fix: every entry point that mutates `_impl` state now takes
+// either a shared or exclusive `_impl->mutex` lock.  Configuration setters
+// (`setShadercExecutable`, `setPlatform`, ...) take exclusive because they
+// mutate `shadercPath` / `platform` / `profile` / etc. mid-flight; observers
+// (`cacheStats`, `lastCompileErrors`) take shared.  `Mutex ordering: never
+// acquire any other non-recursive lock while holding the pool mutex,
+// because `acquire(...)` releases it during the slow compile step and we
+// don't want to expose inversions.
+// ---------------------------------------------------------------------------
+
+std::unique_lock<std::shared_mutex>
+ShaderResourcePool::lockOrCreateImplExclusive()
 {
-    if (!_impl) {
+    if (_impl == nullptr) {
         _impl = std::make_unique<Impl>();
     }
+    return std::unique_lock<std::shared_mutex>(_impl->mutex);
+}
+
+void ShaderResourcePool::setShadercExecutable(const std::string& path)
+{
+    auto implLock = lockOrCreateImplExclusive();
     _impl->shadercPath = path;
 }
 
 void ShaderResourcePool::setBgfxIncludeDirs(const std::vector<std::string>& dirs)
 {
-    if (!_impl) {
-        _impl = std::make_unique<Impl>();
-    }
+    auto implLock = lockOrCreateImplExclusive();
     _impl->bgfxIncludeDirs = dirs;
 }
 
 void ShaderResourcePool::setPlatform(const std::string& platform)
 {
-    if (!_impl) {
-        _impl = std::make_unique<Impl>();
-    }
+    auto implLock = lockOrCreateImplExclusive();
     _impl->platform = platform;
     _impl->platformExplicit = true;
 }
 
 void ShaderResourcePool::setGLSLProfile(const std::string& profile)
 {
-    if (!_impl) {
-        _impl = std::make_unique<Impl>();
-    }
+    auto implLock = lockOrCreateImplExclusive();
     _impl->profile = profile;
     _impl->profileExplicit = true;
 }
 
 void ShaderResourcePool::setCacheDirectory(const std::string& path)
 {
-    if (!_impl) {
-        _impl = std::make_unique<Impl>();
-    }
+    auto implLock = lockOrCreateImplExclusive();
     _impl->cacheDirectory = path;
 }
 
 void ShaderResourcePool::setHotReloadEnabled(bool enabled)
 {
-    if (!_impl) {
-        _impl = std::make_unique<Impl>();
-    }
+    auto implLock = lockOrCreateImplExclusive();
     _impl->hotReloadEnabled = enabled;
 }
 
 void ShaderResourcePool::setIntermediateDumpDirectory(const std::string& path)
 {
-    if (!_impl) {
-        _impl = std::make_unique<Impl>();
-    }
+    auto implLock = lockOrCreateImplExclusive();
     _impl->defaultCompileOpts.dumpDir = path;
     _impl->defaultCompileOpts.dumpIntermediate = !path.empty();
     _impl->defaultCompileOpts.keepSources = !path.empty();
@@ -962,25 +1041,19 @@ void ShaderResourcePool::setIntermediateDumpDirectory(const std::string& path)
 
 void ShaderResourcePool::require(ShaderCapability capability)
 {
-    if (!_impl) {
-        _impl = std::make_unique<Impl>();
-    }
+    auto implLock = lockOrCreateImplExclusive();
     _impl->requiredCaps = capability;
 }
 
 void ShaderResourcePool::setAutoProbeFromRendererType(bool enabled)
 {
-    if (!_impl) {
-        _impl = std::make_unique<Impl>();
-    }
+    auto implLock = lockOrCreateImplExclusive();
     _impl->autoProbe = enabled;
 }
 
 void ShaderResourcePool::resolvePlatformFromRenderer()
 {
-    if (!_impl) {
-        _impl = std::make_unique<Impl>();
-    }
+    auto implLock = lockOrCreateImplExclusive();
     _impl->ensurePlatformProfileResolved();
     std::fprintf(stderr, "[ShaderResourcePool] compile target: platform=%s profile=%s\n",
                  _impl->platform.c_str(), _impl->profile.c_str());
@@ -990,9 +1063,7 @@ void ShaderResourcePool::bindRendererTypeForTests(uint8_t bgfxRendererType,
                                                   const std::string& platform,
                                                   const std::string& profile)
 {
-    if (!_impl) {
-        _impl = std::make_unique<Impl>();
-    }
+    auto implLock = lockOrCreateImplExclusive();
     _impl->testRendererBound = true;
     _impl->testRendererType = bgfxRendererType;
     _impl->testPlatform = platform;
@@ -1004,28 +1075,44 @@ CacheStats ShaderResourcePool::cacheStats() const
     if (!_impl) {
         return CacheStats{};
     }
+    // Shared lock: readers can run in parallel with other observers.
+    std::shared_lock<std::shared_mutex> implLock(_impl->mutex);
     return _impl->stats;
 }
 
 const std::vector<std::string>& ShaderResourcePool::lastCompileErrors() const
 {
     static const std::vector<std::string> kEmpty;
+    thread_local std::vector<std::string> snapshot;
     if (!_impl) {
         return kEmpty;
     }
-    return _impl->lastCompileErrors;
+    // R-B-02 audit fix: take a SHARED lock so observers don't serialise
+    // against each other.  The returned reference is valid only as long
+    // as the returned state — concurrent `acquire`/`release` may
+    // reallocate the underlying vector between this call and the
+    // caller's next use of the reference. Return a per-thread snapshot so
+    // concurrent compiles cannot reallocate storage behind the caller.
+    std::shared_lock<std::shared_mutex> implLock(_impl->mutex);
+    snapshot = _impl->lastCompileErrors;
+    return snapshot;
 }
 
 ShaderResourceImpl* ShaderResourcePool::resolveHandle(uint64_t handle)
 {
+    thread_local std::shared_ptr<ShaderResourceImpl> pin;
+    pin = retainHandle(handle);
+    return pin.get();
+}
+
+std::shared_ptr<ShaderResourceImpl>
+ShaderResourcePool::retainHandle(uint64_t handle)
+{
     if (handle == 0) {
-        return nullptr;
+        return {};
     }
-    Impl* pool = Impl::findPool(detail::shaderHandlePoolSerial(handle));
-    if (pool == nullptr) {
-        return nullptr;
-    }
-    return pool->resolveLocal(detail::shaderHandleLocalId(handle));
+    return Impl::retainPoolHandle(detail::shaderHandlePoolSerial(handle),
+                                  detail::shaderHandleLocalId(handle));
 }
 
 ShaderResource ShaderResourcePool::compile(const std::string& src)
@@ -1050,25 +1137,32 @@ ShaderResource ShaderResourcePool::compileFromFile(const std::string& path,
     if (!_impl) {
         _impl = std::make_unique<Impl>();
     }
-
+    // R-H-02 audit fix: read the file OUTSIDE the lock so the slow I/O
+    // doesn't extend our critical section.  We then re-take the lock to
+    // register the hot-reload watch after the result comes back.
     std::string src;
     if (!detail::readTextFile(path, src)) {
         return ShaderResource{};
     }
 
     ShaderResource res = acquire(src, opts, "");
-    if (res.isValid() && _impl->hotReloadEnabled) {
-        const std::string key = _impl->makeCacheKey("", src, opts);
-        _impl->registerHotReloadWatch(path, key, res.id());
+    if (res.isValid()) {
+        std::unique_lock<std::shared_mutex> implLock(_impl->mutex);
+        if (_impl->hotReloadEnabled) {
+            const std::string key = _impl->makeCacheKey("", src, opts);
+            _impl->registerHotReloadWatch(path, key, res.id());
+        }
     }
     return res;
 }
 
 void ShaderResourcePool::pollHotReload()
 {
-    if (_impl) {
-        _impl->pollHotReloadWatches();
+    if (!_impl) {
+        return;
     }
+    std::unique_lock<std::shared_mutex> implLock(_impl->mutex);
+    _impl->pollHotReloadWatches();
 }
 
 ShaderResource ShaderResourcePool::acquire(const std::string& src,
@@ -1077,7 +1171,15 @@ ShaderResource ShaderResourcePool::acquire(const std::string& src,
     if (!_impl) {
         _impl = std::make_unique<Impl>();
     }
-    return acquire(src, _impl->defaultCompileOpts, cacheKey);
+    // R-B-02: snapshot `defaultCompileOpts` under a shared lock so a
+    // concurrent `setIntermediateDumpDirectory(...)` doesn't tear the
+    // read.  The full lock lives on the inside of `acquire(src, opts, ...)`.
+    phoskia::CompileOptions defaultsCopy;
+    {
+        std::shared_lock<std::shared_mutex> implLock(_impl->mutex);
+        defaultsCopy = _impl->defaultCompileOpts;
+    }
+    return acquire(src, defaultsCopy, cacheKey);
 }
 
 ShaderResource ShaderResourcePool::acquire(const std::string& src,
@@ -1088,57 +1190,99 @@ ShaderResource ShaderResourcePool::acquire(const std::string& src,
         _impl = std::make_unique<Impl>();
     }
 
-    _impl->ensurePlatformProfileResolved();
-    _impl->evictStaleCacheEntries();
-    const std::string key = _impl->makeCacheKey(cacheKey, src, opts);
-    const std::string sourceKey = _impl->makeSourceCacheKey(src);
+    // R-B-02 + R-H-02 audit fixes (2026-08-26): the cache lookup path is
+    // wrapped in a SHARED lock so concurrent acquires for DISTINCT keys
+    // don't serialise.  The slow compile step (shaderc or disk I/O) is
+    // done OUTSIDE the lock; we only re-take an EXCLUSIVE lock around
+    // the final cache insertion to prevent two threads both observing a
+    // miss on the same key from racing to insert duplicate handles.
+    std::string key;
+    std::string sourceKey;
+    CompiledShaderProgram prog;
+    bool diskLoadOk = false;
+    std::string diskLoadPath;
+    {
+        // Platform probing, stale-entry eviction, statistics and cache
+        // mutation all require exclusive ownership. Disk I/O is performed
+        // after this short critical section.
+        std::unique_lock<std::shared_mutex> implLock(_impl->mutex);
+        _impl->ensurePlatformProfileResolved();
+        _impl->evictStaleCacheEntries();
+        key = _impl->makeCacheKey(cacheKey, src, opts);
+        sourceKey = _impl->makeSourceCacheKey(src);
 
-    if (const auto it = _impl->cache.find(key); it != _impl->cache.end()) {
-        ShaderResource cached(it->second);
-        if (cached.isValid()) {
-            ++_impl->stats.binaryHits;
-            if (_impl->sourceCache.count(sourceKey) != 0) {
+        if (const auto it = _impl->cache.find(key); it != _impl->cache.end()) {
+            ShaderResource cached(it->second);
+            if (cached.isValid()) {
+                ++_impl->stats.binaryHits;
+                if (_impl->sourceCache.count(sourceKey) != 0) {
+                    ++_impl->stats.sourceHits;
+                }
+                return cached;
+            }
+        }
+
+        // R-B-01 audit fix: `diskCacheFilePath` returns an empty string
+        // when the key isn't safe.  The load helper already refuses
+        // empty paths, so the empty-string short-circuit is just a
+        // defence-in-depth check.
+        if (!_impl->cacheDirectory.empty()) {
+            diskLoadPath = detail::diskCacheFilePath(_impl->cacheDirectory, key);
+        }
+    }
+    if (!diskLoadPath.empty()
+        && detail::loadCompiledProgramFromDisk(diskLoadPath, prog)
+        && prog.success) {
+        diskLoadOk = true;
+    }
+
+    if (!diskLoadOk) {
+        // Slow compile step — no lock held.  We increment
+        // `binaryMisses` later, just before we attempt the cache insert
+        // under the exclusive lock.  Counting here would require
+        // re-acquiring the lock solely for stats; we keep the critical
+        // section tight and accept the very minor accounting skew in
+        // exchange.  See R-B-02 audit notes.
+        // Slow compile step — no lock held.  Generate the IR.
+        phoskia::Compiler compiler;
+        std::shared_ptr<const phoskia::ir::IRProgram> cachedIr;
+        {
+            std::unique_lock<std::shared_mutex> implLock(_impl->mutex);
+            const auto irIt = _impl->sourceCache.find(sourceKey);
+            if (irIt != _impl->sourceCache.end()) {
+                cachedIr = irIt->second;
                 ++_impl->stats.sourceHits;
             }
-            return cached;
         }
-    }
-    ++_impl->stats.binaryMisses;
-
-    CompiledShaderProgram prog;
-    if (!_impl->cacheDirectory.empty()) {
-        const std::string diskPath =
-            detail::diskCacheFilePath(_impl->cacheDirectory, key);
-        if (detail::loadCompiledProgramFromDisk(diskPath, prog) && prog.success) {
-            ShaderResource res = acquire(prog);
-            if (res.isValid()) {
-                _impl->cache[key] = res.id();
+        if (!cachedIr) {
+            {
+                std::unique_lock<std::shared_mutex> implLock(_impl->mutex);
+                ++_impl->stats.sourceMisses;
             }
-            return res;
+            phoskia::ir::IRProgram generated;
+            std::vector<std::string> irErrors;
+            if (!compiler.generateIr(src, opts, generated, irErrors)) {
+                prog.success = false;
+                prog.errors = std::move(irErrors);
+                std::unique_lock<std::shared_mutex> implLock(_impl->mutex);
+                _impl->lastCompileErrors = prog.errors;
+                return ShaderResource{};
+            }
+            cachedIr = std::make_shared<const phoskia::ir::IRProgram>(std::move(generated));
+            {
+                std::unique_lock<std::shared_mutex> implLock(_impl->mutex);
+                _impl->sourceCache[sourceKey] = cachedIr;
+            }
         }
-    }
 
-    phoskia::Compiler compiler;
-    std::shared_ptr<const phoskia::ir::IRProgram> cachedIr;
-    if (const auto irIt = _impl->sourceCache.find(sourceKey); irIt != _impl->sourceCache.end()) {
-        cachedIr = irIt->second;
-        ++_impl->stats.sourceHits;
-    } else {
-        ++_impl->stats.sourceMisses;
-        phoskia::ir::IRProgram generated;
-        std::vector<std::string> irErrors;
-        if (!compiler.generateIr(src, opts, generated, irErrors)) {
-            prog.success = false;
-            prog.errors = std::move(irErrors);
-            _impl->lastCompileErrors = prog.errors;
-            return ShaderResource{};
+        shader::AYBGFXConverter converter;
+        BGFXCompileOptions bgfxOpts;
+        {
+            std::shared_lock<std::shared_mutex> implLock(_impl->mutex);
+            bgfxOpts = _impl->engineBgfxOpts(opts);
         }
-        cachedIr = std::make_shared<const phoskia::ir::IRProgram>(std::move(generated));
-        _impl->sourceCache[sourceKey] = cachedIr;
+        converter.compileToBinary(*cachedIr, bgfxOpts, prog);
     }
-
-    shader::AYBGFXConverter converter;
-    converter.compileToBinary(*cachedIr, _impl->engineBgfxOpts(opts), prog);
 
     for (const std::string& warning : prog.warnings) {
         std::fprintf(stderr, "[ShaderResourcePool] %s\n", warning.c_str());
@@ -1148,19 +1292,45 @@ ShaderResource ShaderResourcePool::acquire(const std::string& src,
                      opts.dumpDir.c_str());
     }
 
-    if (prog.success && !_impl->cacheDirectory.empty()) {
-        const std::string diskPath =
-            detail::diskCacheFilePath(_impl->cacheDirectory, key);
+    // Wire up without holding the pool mutex. acquire(prog) maintains its
+    // own short critical sections; calling it while holding implLock would
+    // recursively acquire the non-recursive shared_mutex and deadlock.
+    ShaderResource res = acquire(prog);
+    if (!res.isValid()) {
+        if (!prog.errors.empty()) {
+            std::unique_lock<std::shared_mutex> implLock(_impl->mutex);
+            _impl->lastCompileErrors = prog.errors;
+        }
+        return res;
+    }
+
+    // Persist only after GPU wire-up succeeded, so an invalid binary cannot
+    // become a permanently reloaded disk-cache entry.
+    std::string diskPath;
+    {
+        std::shared_lock<std::shared_mutex> implLock(_impl->mutex);
+        diskPath = detail::diskCacheFilePath(_impl->cacheDirectory, key);
+    }
+    if (!diskPath.empty()) {
         detail::saveCompiledProgramToDisk(diskPath, prog);
     }
 
-    ShaderResource res = acquire(prog);
-    if (res.isValid()) {
-        _impl->cache[key] = res.id();
-        _impl->lastCompileErrors.clear();
-    } else if (!prog.errors.empty()) {
-        _impl->lastCompileErrors = prog.errors;
+    // Another thread may have inserted the same key while this thread was
+    // compiling/wiring. Prefer its handle and destroy our duplicate.
+    std::unique_lock<std::shared_mutex> implLock(_impl->mutex);
+    const auto it = _impl->cache.find(key);
+    if (it != _impl->cache.end()) {
+        ShaderResource existing(it->second);
+        if (existing.isValid()) {
+            _impl->handles.invalidate(detail::shaderHandleLocalId(res.id()));
+            res.reset();
+            ++_impl->stats.binaryHits;
+            return existing;
+        }
     }
+    ++_impl->stats.binaryMisses;
+    _impl->cache[key] = res.id();
+    _impl->lastCompileErrors.clear();
     return res;
 }
 
@@ -1171,8 +1341,9 @@ void ShaderResourcePool::release(ShaderResource& res)
         return;
     }
 
+    std::unique_lock<std::shared_mutex> implLock(_impl->mutex);
     const uint32_t localId = detail::shaderHandleLocalId(res.id());
-    _impl->handles.invalidate(localId);
+    _impl->handles.invalidate(localId);      // acquires handle table mutex (acceptable — nested-exclusive)
     _impl->removeHandleFromCache(res.id());
     res.reset();
 }
@@ -1186,30 +1357,39 @@ ShaderResource ShaderResourcePool::acquireFromBgfxSc(const std::string& vertexSc
         _impl = std::make_unique<Impl>();
     }
 
-    _impl->ensurePlatformProfileResolved();
+    std::string key;
+    {
+        std::unique_lock<std::shared_mutex> implLock(_impl->mutex);
+        _impl->ensurePlatformProfileResolved();
+        const std::string keyMaterial = _impl->makeCacheKeyMaterial(
+            cacheKey.empty() ? "bgfx_sc" : cacheKey,
+            vertexSc + "\n---\n" + fragmentSc + "\n---\n" + varyingDefSc,
+            phoskia::CompileOptions{});
+        key = detail::sha256Hex(keyMaterial);
 
-    const std::string keyMaterial = _impl->makeCacheKeyMaterial(
-        cacheKey.empty() ? "bgfx_sc" : cacheKey,
-        vertexSc + "\n---\n" + fragmentSc + "\n---\n" + varyingDefSc,
-        phoskia::CompileOptions{});
-    const std::string key = detail::sha256Hex(keyMaterial);
-
-    if (const auto cacheIt = _impl->cache.find(key); cacheIt != _impl->cache.end()) {
-        ShaderResourceImpl* cached =
-            _impl->resolveLocal(detail::shaderHandleLocalId(cacheIt->second));
-        if (cached != nullptr && bgfx::isValid(cached->programHandle)) {
-            ++_impl->stats.binaryHits;
-            return ShaderResource(cacheIt->second);
+        const auto cacheIt = _impl->cache.find(key);
+        if (cacheIt != _impl->cache.end()) {
+            const std::shared_ptr<ShaderResourceImpl> cached =
+                _impl->resolveLocalShared(detail::shaderHandleLocalId(cacheIt->second));
+            if (cached != nullptr && bgfx::isValid(cached->programHandle)) {
+                ++_impl->stats.binaryHits;
+                return ShaderResource(cacheIt->second);
+            }
+            _impl->cache.erase(key);
         }
-        _impl->cache.erase(cacheIt);
     }
 
-    BGFXCompileOptions opts = _impl->engineBgfxOpts(phoskia::CompileOptions{});
+    BGFXCompileOptions opts;
+    {
+        std::shared_lock<std::shared_mutex> implLock(_impl->mutex);
+        opts = _impl->engineBgfxOpts(phoskia::CompileOptions{});
+    }
 
     AYShadercDriver driver;
     try {
         driver = opts.shadercPath.empty() ? AYShadercDriver() : AYShadercDriver(opts.shadercPath);
     } catch (const std::exception& e) {
+        std::unique_lock<std::shared_mutex> implLock(_impl->mutex);
         _impl->lastCompileErrors = {std::string("shaderc unavailable: ") + e.what()};
         return ShaderResource{};
     }
@@ -1226,6 +1406,7 @@ ShaderResource ShaderResourcePool::acquireFromBgfxSc(const std::string& vertexSc
         req.outputName         = std::string("bgfx_sc_") + stage;
         const ShaderCompileResult result = driver.compile(req);
         if (!result.ok) {
+            std::unique_lock<std::shared_mutex> implLock(_impl->mutex);
             _impl->lastCompileErrors.push_back(result.stderrText);
             return false;
         }
@@ -1247,10 +1428,25 @@ ShaderResource ShaderResourcePool::acquireFromBgfxSc(const std::string& vertexSc
     prog.success       = true;
 
     ShaderResource resource = acquire(prog);
-    if (resource.isValid()) {
-        _impl->cache[key] = resource.id();
-        ++_impl->stats.binaryMisses;
+    if (!resource.isValid()) {
+        return resource;
     }
+
+    // R-H-02 race: re-check cache after compile/wire-up under exclusive lock.
+    std::unique_lock<std::shared_mutex> implLock(_impl->mutex);
+    const auto existing = _impl->cache.find(key);
+    if (existing != _impl->cache.end()) {
+        const std::shared_ptr<ShaderResourceImpl> cached =
+            _impl->resolveLocalShared(detail::shaderHandleLocalId(existing->second));
+        if (cached != nullptr && bgfx::isValid(cached->programHandle)) {
+            _impl->handles.invalidate(detail::shaderHandleLocalId(resource.id()));
+            resource.reset();
+            ++_impl->stats.binaryHits;
+            return ShaderResource(existing->second);
+        }
+    }
+    _impl->cache[key] = resource.id();
+    ++_impl->stats.binaryMisses;
     return resource;
 }
 
@@ -1267,13 +1463,28 @@ ShaderResource ShaderResourcePool::acquire(const CompiledShaderProgram& prog)
     auto impl = std::make_unique<ShaderResourceImpl>();
     std::vector<std::string> errors;
     if (!detail::wireUpProgram(*impl, prog, errors)) {
+        // R-H-01 audit fix (2026-08-26): `wireUpProgram` cleans up the
+        // bgfx program handle on failure, but partial-binding entries
+        // (uniform handles created during buildBindingTable) survive
+        // destruction.  Always `destroyGpuResources()` on the failed
+        // impl to release those slots too — the function is safe to
+        // call on a half-populated impl.
         impl->destroyGpuResources();
+        std::unique_lock<std::shared_mutex> implLock(_impl->mutex);
         _impl->lastCompileErrors = errors;
         return ShaderResource{};
     }
 
-    _impl->lastCompileErrors.clear();
+    {
+        std::unique_lock<std::shared_mutex> implLock(_impl->mutex);
+        _impl->lastCompileErrors.clear();
+    }
 
+    // R-H-05 acquire-once idempotency (2026-08-26): inserting the handle
+    // into the table is the only step that touches shared state outside
+    // `_impl->mutex`.  `makeHandle` calls `handles.insert`, which itself
+    // takes `ShaderHandleTable::_mutex` (nested under our exclusive
+    // `_impl->mutex`); ordering is consistent — pool-mutex always first.
     const uint64_t handle = _impl->makeHandle(std::move(impl));
     return ShaderResource(handle);
 }
@@ -1281,6 +1492,7 @@ ShaderResource ShaderResourcePool::acquire(const CompiledShaderProgram& prog)
 void ShaderResourcePool::shutdown()
 {
     if (_impl) {
+        std::unique_lock<std::shared_mutex> implLock(_impl->mutex);
         _impl->shutdownAll();
     }
 }

@@ -237,6 +237,29 @@ TEST_CASE(disk_cache_rejects_bad_magic)
     CHECK_FALSE(loadCompiledProgramFromDisk(path, loaded));
 }
 
+TEST_CASE(disk_cache_rejects_oversized_blob_length)
+{
+    const std::string path = uniqueTempCacheDir() + "/oversized_blob.aysc";
+    std::FILE* f = std::fopen(path.c_str(), "wb");
+    CHECK(f != nullptr);
+    if (f == nullptr) {
+        return;
+    }
+
+    const char magic[] = {'A', 'Y', 'S', 'C'};
+    const uint32_t version = 1;
+    const uint8_t success = 1;
+    const uint32_t oversizedBlob = 32u * 1024u * 1024u + 1u;
+    std::fwrite(magic, 1, sizeof(magic), f);
+    std::fwrite(&version, 1, sizeof(version), f);
+    std::fwrite(&success, 1, sizeof(success), f);
+    std::fwrite(&oversizedBlob, 1, sizeof(oversizedBlob), f);
+    std::fclose(f);
+
+    CompiledShaderProgram loaded;
+    CHECK_FALSE(loadCompiledProgramFromDisk(path, loaded));
+}
+
 TEST_CASE(pool_disk_cache_persists_across_pool_instances)
 {
     if (!shadercAvailable() || !bgfxCommonAvailable()) {

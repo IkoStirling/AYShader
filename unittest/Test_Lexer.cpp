@@ -477,4 +477,146 @@ TEST_CASE(keyword_tangent) {
     CHECK(tokens[0].lexeme == "tangent");
 }
 
+// ===== L-B-01: block comments =====
+
+TEST_CASE(block_comment_basic) {
+    // Phoskia now accepts `/* ... */` block comments (nested, GLSL style).
+    Lexer lexer("a /* skip me */ b");
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    CHECK(tokens.size() == 3);  // a, b, EOF (the comment is silent)
+    CHECK(tokens[0].lexeme == "a");
+    CHECK(tokens[1].lexeme == "b");
+}
+
+TEST_CASE(block_comment_nested) {
+    // GLSL allows nested block comments; Phoskia follows.
+    Lexer lexer("a /* outer /* inner */ end */ b");
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    CHECK(tokens.size() == 3);
+    CHECK(tokens[0].lexeme == "a");
+    CHECK(tokens[1].lexeme == "b");
+}
+
+TEST_CASE(block_comment_multiline) {
+    // Block comments must track newlines so tokens after them are
+    // attributed to the right line.
+    Lexer lexer("a\n/* line2\nline3 */\nb");
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    CHECK(tokens.size() == 3);
+    CHECK(tokens[0].line == 1);  // a
+    CHECK(tokens[1].lexeme == "b");
+    CHECK(tokens[1].line == 4);  // after the multi-line comment
+}
+
+TEST_CASE(block_comment_unterminated) {
+    // An unterminated block comment surfaces as a single Unknown token so
+    // the parser can emit a location-aware diagnostic rather than a
+    // confusing cascade.
+    Lexer lexer("a /* never closes");
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    CHECK(tokens.size() == 3);  // a, Unknown, EOF
+    CHECK(tokens[0].lexeme == "a");
+    CHECK(tokens[1].type == TokenType::Unknown);
+}
+
+// ===== L-H-01: tokenize() resets state =====
+
+TEST_CASE(tokenize_resets_state_on_reuse) {
+    // Same Lexer instance, two calls. Without L-H-01, the second call
+    // would emit zero tokens (already at EOF) or resume mid-source.
+    Lexer lexer("a b c");
+    std::vector<Token> first;
+    lexer.tokenize(first);
+    CHECK(first.size() == 4);  // a, b, c, EOF
+
+    std::vector<Token> second;
+    lexer.tokenize(second);
+    CHECK(second.size() == 4);  // a, b, c, EOF (re-tokenized from start)
+    CHECK(second[0].lexeme == "a");
+    CHECK(second[3].type == TokenType::EndOfFile);
+}
+
+// ===== L-H-02 / L-H-03: string literal column + unterminated =====
+
+TEST_CASE(string_literal_column_points_at_opening_quote) {
+    // Multi-line string: token's reported column must be the column of the
+    // *opening* quote, not the column at end of the literal.
+    Lexer lexer("    \"hi\nthere\"");
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    CHECK(tokens[0].type == TokenType::StringLiteral);
+    CHECK(tokens[0].line == 1);
+    CHECK(tokens[0].column == 5);  // opening quote at column 5
+}
+
+TEST_CASE(string_literal_multiline_keeps_opening_line) {
+    Lexer lexer("\n\"abc\ndef\"");
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    CHECK(tokens[0].type == TokenType::StringLiteral);
+    CHECK(tokens[0].line == 2);  // opening quote is on line 2
+    CHECK(tokens[0].lexeme == "abc\ndef");
+}
+
+TEST_CASE(string_literal_unterminated_lexeme_no_leading_quote) {
+    // L-H-03: the Unknown lexeme for an unterminated string must NOT
+    // include the leading `"`. Previously the lexeme was `"hello` which
+    // made diagnostic messages confusing.
+    Lexer lexer("\"hello");
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    CHECK(tokens.size() == 2);  // Unknown + EOF
+    CHECK(tokens[0].type == TokenType::Unknown);
+    CHECK(tokens[0].lexeme == "hello");  // no leading quote
+}
+
+// ===== L-M-01: scientific notation =====
+
+TEST_CASE(number_scientific_notation) {
+    Lexer lexer("1.5e10");
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    CHECK(tokens[0].type == TokenType::FloatLiteral);
+    CHECK(tokens[0].lexeme == "1.5e10");
+}
+
+TEST_CASE(number_scientific_with_sign) {
+    Lexer lexer("2.0E-3");
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    CHECK(tokens[0].type == TokenType::FloatLiteral);
+    CHECK(tokens[0].lexeme == "2.0E-3");
+}
+
+TEST_CASE(number_scientific_integer_with_exponent) {
+    // Phoskia treats integer-with-exponent as FloatLiteral to match GLSL.
+    Lexer lexer("1e5");
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    CHECK(tokens[0].type == TokenType::FloatLiteral);
+    CHECK(tokens[0].lexeme == "1e5");
+}
+
+// ===== L-M-02: hex literals =====
+
+TEST_CASE(number_hex_literal) {
+    Lexer lexer("0x1F");
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    CHECK(tokens[0].type == TokenType::IntLiteral);
+    CHECK(tokens[0].lexeme == "0x1F");
+}
+
+TEST_CASE(number_hex_literal_lowercase) {
+    Lexer lexer("0xdeadbeef");
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    CHECK(tokens[0].type == TokenType::IntLiteral);
+    CHECK(tokens[0].lexeme == "0xdeadbeef");
+}
+
 TEST_SUITE_END

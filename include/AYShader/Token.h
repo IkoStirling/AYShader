@@ -55,7 +55,7 @@ enum class TokenType : uint8_t {
     Texcoord,
 
     // Phase 1 RD-03: skeletal skinning vertex attributes.
-    // Map to bgfx::Attrib::Indices (4x u8 normalized) and
+    // Map to bgfx::Attrib::Indices (4x u8 integer, not normalized) and
     // bgfx::Attrib::Weight (4x f32) via the BGFX converter.
     BoneIndices,
     BoneWeights,

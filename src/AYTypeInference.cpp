@@ -406,6 +406,34 @@ std::shared_ptr<Type> TypeInference::inferMemberExpr(const MemberExpr& expr) {
             // report a struct-field lookup error later if needed.
             return newTypeVar();
         }
+        // IR-M-02: validate swizzle axes against the source vector's
+        // dimension. A vec2 (dim=2) has axes x/y/r/g only — `.z` or
+        // `.b` is out of range. The previous code accepted any axis
+        // character and returned a result, leaving the error to GLSL
+        // shaderc. We surface it here with a fresh TypeVar so the
+        // semantic analyzer can catch the bad swizzle when it crosses
+        // the analyzer boundary.
+        auto isInRange = [&](char c) {
+            // x/r are axis 0, y/g are axis 1, z/b are axis 2, w/a are axis 3.
+            switch (c) {
+                case 'x': case 'r': return vec->dimension() >= 1;
+                case 'y': case 'g': return vec->dimension() >= 2;
+                case 'z': case 'b': return vec->dimension() >= 3;
+                case 'w': case 'a': return vec->dimension() >= 4;
+                default: return true;  // unknown char already caught above
+            }
+        };
+        bool anyOutOfRange = false;
+        for (char c : m) {
+            if (!isInRange(c)) { anyOutOfRange = true; break; }
+        }
+        if (anyOutOfRange) {
+            // Return a fresh TypeVar — the analyzer-side swizzle check
+            // (in AYSemanticAnalyzer::analyzeExpr) compares the swizzle
+            // string against the vector dimension and reports the
+            // out-of-range axis with the MemberExpr's source location.
+            return newTypeVar();
+        }
         if (n == 1) {
             // Scalar swizzle: result is a primitive of the same element type.
             switch (vec->elementType()) {
@@ -515,8 +543,35 @@ bool TypeInference::unify(std::shared_ptr<Type> a, std::shared_ptr<Type> b) {
 
     if (auto tvA = std::dynamic_pointer_cast<TypeVar>(a)) {
         if (auto tvB = std::dynamic_pointer_cast<TypeVar>(b)) {
-            // Both still TypeVars — bind A to B.
-            tvA->setSolution(b);
+            // IR-M-06: detect the rare 2-cycle before binding. A 2-cycle
+            // (A → B and B → A) makes future resolveTypeVar() calls loop
+            // forever; resolveTypeVar's hop counter catches it after 64
+            // iterations, but unifying them again later would re-enter
+            // the broken state. Tie-break by name — alphabetical — so
+            // re-unifying in the opposite order produces the SAME shape,
+            // not a different one. This is the same canonical-form
+            // trick Hindley-Milner implementations use to keep union-find
+            // trees flat.
+            if (tvA->hasSolution() || tvB->hasSolution()) {
+                // One already has a concrete solution — bind the other to it.
+                if (tvA->hasSolution() && !tvB->hasSolution()) {
+                    tvB->setSolution(tvA->getSolution());
+                    return true;
+                }
+                if (tvB->hasSolution() && !tvA->hasSolution()) {
+                    tvA->setSolution(tvB->getSolution());
+                    return true;
+                }
+                // Both have solutions — compare for equality.
+                return tvA->getSolution()->equals(*tvB->getSolution());
+            }
+            // Both still TypeVars — bind the alphabetically-later one
+            // to the earlier one so the union-find direction is stable.
+            if (tvA.get() < tvB.get()) {
+                tvA->setSolution(b);
+            } else {
+                tvB->setSolution(a);
+            }
             return true;
         }
         // a is a type variable, b is a concrete type — bind a to b

@@ -57,7 +57,7 @@ class VariantAttribute;
 // Mapping to bgfx semantic slots lives in the converter.
 //
 // Phase 1 RD-03: BoneIndices / BoneWeights feed skeletal skinning.
-// They map to bgfx::Attrib::Indices (4x u8 normalized) and
+// They map to bgfx::Attrib::Indices (4x u8 integer, not normalized) and
 // bgfx::Attrib::Weight (4x f32) — see VertexLayoutBridge.cpp.
 enum class PhoskiaSemantic : uint8_t {
     Position,
@@ -94,6 +94,11 @@ public:
     ExprPtr left;
     Token op;
     ExprPtr right;
+    // IR-H-01: source location for type-error reporting. Populated by
+    // the parser from `op` (the operator token). Defaults to 0,0 if
+    // the AST is constructed manually (e.g. in unit tests).
+    int line = 0;
+    int column = 0;
 };
 
 class UnaryExpr : public Expr {
@@ -112,6 +117,11 @@ public:
     void accept(AstVisitor& visitor) override;
     ExprPtr callee;
     std::vector<ExprPtr> args;
+    // IR-H-01/IR-H-03: source location for arity-mismatch / unknown-callable
+    // diagnostics. Populated by the parser from the callee token at the
+    // call site (best-effort — defaults to 0,0 if the AST is hand-built).
+    int line = 0;
+    int column = 0;
 };
 
 class IdentifierExpr : public Expr {
@@ -136,6 +146,10 @@ public:
     void accept(AstVisitor& visitor) override;
     ExprPtr object;
     std::string member;
+    // IR-M-02: source location for out-of-range swizzle / unknown-member
+    // diagnostics. Populated by the parser from the member token.
+    int line = 0;
+    int column = 0;
 };
 
 class IndexExpr : public Expr {
@@ -160,6 +174,9 @@ public:
     void accept(AstVisitor& visitor) override;
     std::string name;
     ExprPtr initializer;
+    // IR-H-01: source location for let-initializer type errors.
+    int line = 0;
+    int column = 0;
 };
 
 class ReturnStmt : public Stmt {
@@ -167,6 +184,9 @@ public:
     explicit ReturnStmt(ExprPtr value) : value(std::move(value)) {}
     void accept(AstVisitor& visitor) override;
     ExprPtr value;
+    // IR-H-02: source location for return-type-mismatch errors.
+    int line = 0;
+    int column = 0;
 };
 
 class IfStmt : public Stmt {
@@ -179,6 +199,9 @@ public:
     ExprPtr condition;
     std::vector<StmtPtr> thenBranch;
     std::vector<StmtPtr> elseBranch;
+    // IR-H-04: source location for condition-must-be-bool errors.
+    int line = 0;
+    int column = 0;
 };
 
 class ForStmt : public Stmt {
@@ -189,6 +212,9 @@ public:
     std::string variable;
     ExprPtr iterable;
     std::vector<StmtPtr> body;
+    // IR-H-01: source location for iterable / loop-var type errors.
+    int line = 0;
+    int column = 0;
 };
 
 class ExprStmt : public Stmt {
@@ -368,6 +394,9 @@ public:
     // In / Out param declarations in declaration order.
     std::vector<StmtPtr> params;
     std::vector<StmtPtr> body;
+    // IR-H-01/IR-H-02: source location for vertex-block errors.
+    int line = 0;
+    int column = 0;
 };
 
 class FragmentFunc : public Stmt {
@@ -387,6 +416,9 @@ public:
     // gl_FragData[0..N-1]. Empty → legacy single-target `return` → gl_FragColor.
     std::vector<StmtPtr> outputs;
     std::vector<StmtPtr> body;
+    // IR-H-01/IR-H-02: source location for fragment-block errors.
+    int line = 0;
+    int column = 0;
 };
 
 // Top-level GPGPU compute kernel declaration. Phase 2.5 introduces

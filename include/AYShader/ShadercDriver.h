@@ -70,6 +70,14 @@ struct ShaderCompileRequest {
     std::vector<std::string>   includeDirs;
     std::vector<std::string>   defines;
     std::string                outputName  = "shader";  // diagnostic only
+
+    // Audit fix M-01 (2026-08-26): bounded wait instead of INFINITE so
+    // a hung shaderc cannot wedge the calling thread. 0 means "wait
+    // forever" (legacy behavior); a positive value bounds the wait to
+    // that many milliseconds before TerminateProcess kills the child.
+    // The diagnostic surfaces "shaderc timeout after Nms; terminated."
+    // on `ShaderCompileResult::stderrText` and ok stays false.
+    uint32_t                   timeoutMs  = 0;
 };
 
 struct ShaderCompileResult {

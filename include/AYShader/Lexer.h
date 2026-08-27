@@ -24,7 +24,6 @@ private:
     void scanToken(std::vector<Token>& out);
     Token makeToken(std::vector<Token>& out, TokenType type, int length);
     TokenType identifierType(const std::string& lexeme);
-    void skipWhitespace();
     char advance();
     bool match(char expected);
     bool isAtEnd() const;

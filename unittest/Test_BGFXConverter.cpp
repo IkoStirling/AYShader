@@ -717,8 +717,13 @@ TEST_CASE(compiler_emits_three_pieces) {
     CHECK(files.vertex.find("$input") != std::string::npos);
 }
 
-// ===== Phase 2 Step 1: [variant] expands to opt-in #ifndef =====
-TEST_CASE(variant_expands_to_ifndef_in_fragment) {
+// ===== Phase 2 Step 1: [variant] expands to opt-in #ifdef =====
+//
+// Audit fix H-01 (2026-08-26): semantics were inverted from the comment.
+// The variant body now lives under #ifdef so the default build (no
+// --define) does not emit the variant body; the user passes
+// --define BGFX_VARIANT_<NAME> to shaderc to include the body.
+TEST_CASE(variant_expands_to_ifdef_in_fragment) {
     const char* src = R"(
         material PBR {
             vertex {
@@ -734,27 +739,29 @@ TEST_CASE(variant_expands_to_ifndef_in_fragment) {
         }
     )";
     auto files = compileFirstMaterial(src);
-    // The opt-in shape: #ifndef / #else / #endif. Without --define the
+    // The opt-in shape: #ifdef / #else / #endif. Without --define the
     // emission code is skipped; with `--define BGFX_VARIANT_USE_EMISSION`
-    // shaderc selects the #else branch.
-    CHECK(files.fragment.find("#ifndef BGFX_VARIANT_USE_EMISSION") != std::string::npos);
+    // shaderc selects the #ifdef branch.
+    CHECK(files.fragment.find("#ifdef BGFX_VARIANT_USE_EMISSION") != std::string::npos);
     CHECK(files.fragment.find("#else") != std::string::npos);
     CHECK(files.fragment.find("#endif") != std::string::npos);
     // The Phoskia [variant name] itself is NOT emitted as text.
     CHECK(files.fragment.find("[variant") == std::string::npos);
     CHECK(files.fragment.find("useEmission") == std::string::npos);
-    // Statements after [variant] are still present in the #else branch.
-    // The let emission = ... line should appear inside the #else block
-    // (between #else and #endif).
-    auto elsePos = files.fragment.find("#else");
-    auto endifPos = files.fragment.find("#endif");
-    auto letPos = files.fragment.find("emission = vec3(1.0, 0.0, 0.0)");
+    // Statements after [variant] are inside the #ifdef block (between
+    // #ifdef and #else), so they are gated by the macro, not the empty
+    // branch. The let emission = ... line should appear before #else.
+    auto ifdefPos = files.fragment.find("#ifdef BGFX_VARIANT_USE_EMISSION");
+    auto elsePos   = files.fragment.find("#else", ifdefPos);
+    auto endifPos  = files.fragment.find("#endif", elsePos);
+    auto letPos    = files.fragment.find("emission = vec3(1.0, 0.0, 0.0)");
     CHECK(letPos != std::string::npos);
-    CHECK(elsePos < letPos);
-    CHECK(letPos < endifPos);
+    CHECK(ifdefPos < letPos);
+    CHECK(letPos < elsePos);
+    CHECK(elsePos < endifPos);
 }
 
-TEST_CASE(variant_expands_to_ifndef_in_vertex) {
+TEST_CASE(variant_expands_to_ifdef_in_vertex) {
     const char* src = R"(
         material PBR {
             vertex {
@@ -767,12 +774,12 @@ TEST_CASE(variant_expands_to_ifndef_in_vertex) {
         }
     )";
     auto files = compileFirstMaterial(src);
-    CHECK(files.vertex.find("#ifndef BGFX_VARIANT_SKINNING") != std::string::npos);
+    CHECK(files.vertex.find("#ifdef BGFX_VARIANT_SKINNING") != std::string::npos);
     CHECK(files.vertex.find("#else") != std::string::npos);
     CHECK(files.vertex.find("#endif") != std::string::npos);
 }
 
-TEST_CASE(multiple_variants_each_get_their_own_ifndef) {
+TEST_CASE(multiple_variants_each_get_their_own_ifdef) {
     const char* src = R"(
         material PBR {
             vertex {
@@ -790,10 +797,10 @@ TEST_CASE(multiple_variants_each_get_their_own_ifndef) {
         }
     )";
     auto files = compileFirstMaterial(src);
-    CHECK(files.fragment.find("#ifndef BGFX_VARIANT_USE_EMISSION") != std::string::npos);
-    CHECK(files.fragment.find("#ifndef BGFX_VARIANT_USE_FRESNEL") != std::string::npos);
+    CHECK(files.fragment.find("#ifdef BGFX_VARIANT_USE_EMISSION") != std::string::npos);
+    CHECK(files.fragment.find("#ifdef BGFX_VARIANT_USE_FRESNEL") != std::string::npos);
     CHECK(files.fragment.find("#else") != std::string::npos);
-    // Two distinct #ifndef blocks ?two #endif blocks at least.
+    // Two distinct #ifdef blocks ?two #endif blocks at least.
     size_t endifCount = 0, pos = 0;
     while ((pos = files.fragment.find("#endif", pos)) != std::string::npos) {
         ++endifCount;
@@ -817,7 +824,7 @@ TEST_CASE(variant_macro_name_uppercases_and_replaces_special_chars) {
         }
     )";
     auto files = compileFirstMaterial(src);
-    CHECK(files.fragment.find("#ifndef BGFX_VARIANT_HDR2PASS") != std::string::npos);
+    CHECK(files.fragment.find("#ifdef BGFX_VARIANT_HDR2PASS") != std::string::npos);
 }
 
 // ===== Phase 2 closing: PBR builtin inlining =====

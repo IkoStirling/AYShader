@@ -90,6 +90,13 @@ struct BGFXConvertResult {
     // GLSL binding slot to target.
     std::vector<BGFXStorageBuffer> storageBuffers;
     std::vector<std::string> errors;
+
+    // Audit fix M-04 (2026-08-26): soft-warning channel. Filled by
+    // convertBGFX when convertMaterial sees a varying count that
+    // exceeds the per-profile interpolator budget. `success` stays
+    // true; the frontend can surface these in the diagnostics panel
+    // or use them to fail-fast before submitting to bgfx::createProgram.
+    std::vector<std::string> warnings;
 };
 
 // BGFX backend converter (Phoskia → BGFX .sc three-piece set)
@@ -98,13 +105,30 @@ public:
     Platform targetPlatform() const override { return Platform::BGFX; }
     const char* targetExtension() const override { return ".sc"; }
 
+    // Legacy overloads are retained for source/binary compatibility.
     BGFXConvertResult convertBGFX(const phoskia::ir::IRProgram& program);
+    BGFXConvertResult convertBGFX(const phoskia::ir::IRProgram& program,
+                                  const std::string& platform);
     // Out-param overload — preferred entry point. The return-by-value
     // overload above remains for callers that can tolerate the SSO /
     // NRVO risk; production paths in this repo use the out-param form
     // (the Phase 3.2-pre SSO bug fix landed the same pattern for
     // Compiler::compile / CompileResult).
-    void convertBGFX(const phoskia::ir::IRProgram& program, BGFXConvertResult& out);
+    //
+    // The `platform` parameter threads the target shader platform
+    // (e.g. "linux", "windows", "osx") through to the HLSL/GLSL
+    // branch in convertMaterial. Audit fix M-03 (2026-08-26):
+    // previously this lived in `_compilePlatform` member state that
+    // was mutated per call, making concurrent compileToBinary calls
+    // with different platforms race. The platform argument removes the
+    // shared mutable state and makes convertBGFX safe to call from
+    // multiple threads as long as each thread owns its own
+    // AYBGFXConverter (which is the historical usage pattern anyway).
+    void convertBGFX(const phoskia::ir::IRProgram& program,
+                     BGFXConvertResult& out);
+    void convertBGFX(const phoskia::ir::IRProgram& program,
+                     BGFXConvertResult& out,
+                     const std::string& platform);
     ConvertResult convert(const phoskia::ir::IRProgram& program) override;
 
     // Phase 3.6 productization entry point. Runs `convertBGFX(program)`
@@ -185,10 +209,21 @@ private:
     // entry per compute storage decl, with binding resolved
     // including any auto-assigned slots).
     std::vector<BGFXStorageBuffer> _storageBuffers;
+    // Non-fatal conversion diagnostics collected by convertMaterial and
+    // copied into BGFXConvertResult at the end of convertBGFX().
+    std::vector<std::string> _warnings;
     // Phase 1 RD-04 / SuzanneSkinnedDemo fix: target platform string
     // captured by compileToBinary() so convertBGFX can branch on
     // `windows` (D3D/DXBC) to emit HLSL cbuffer instead of GLSL
     // `layout(std140) uniform`. GLSL targets are unaffected.
+    //
+    // Audit fix M-03 (2026-08-26): this used to be the authoritative
+    // platform string, mutated per compileToBinary() call, which made
+    // concurrent compileToBinary calls with different platforms race.
+    // The platform is now threaded as a function argument through
+    // convertBGFX (see header overload). The member is kept only for
+    // backward-compatibility with external code that may reach in via
+    // a future hook, but compileToBinary() no longer writes to it.
     std::string _compilePlatform = "linux";
     // Phase 3.6: cached shaderc driver. Lazy-initialized on first
     // compileToBinary() call so that AYBGFXConverter construction

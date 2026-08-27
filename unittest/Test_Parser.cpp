@@ -973,4 +973,30 @@ TEST_CASE(parse_uniformblock_array_length_must_be_positive) {
     CHECK(parser.hasErrors());
 }
 
+TEST_CASE(compute_numthreads_accepts_hex_integer_literals) {
+    Lexer lexer("[numthreads(0x10, 0x2, 1)] compute HexGroup { }");
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    auto prog = parser.parse();
+
+    CHECK_FALSE(parser.hasErrors());
+    CHECK(prog != nullptr);
+    auto* compute = dynamic_cast<ComputeDecl*>(prog->declarations[0].get());
+    CHECK(compute != nullptr);
+    CHECK(compute->hasNumThreads);
+    CHECK(compute->numThreads[0] == 16u);
+    CHECK(compute->numThreads[1] == 2u);
+    CHECK(compute->numThreads[2] == 1u);
+}
+
+TEST_CASE(compute_numthreads_rejects_zero_component) {
+    Lexer lexer("[numthreads(8, 0, 1)] compute InvalidGroup { }");
+    std::vector<Token> tokens;
+    lexer.tokenize(tokens);
+    Parser parser(tokens);
+    parser.parse();
+    CHECK(parser.hasErrors());
+}
+
 TEST_SUITE_END

@@ -87,11 +87,35 @@ std::optional<int64_t> fileMtimeMs(const std::string& path)
     return static_cast<int64_t>(sec) * 1000;
 }
 
+namespace {
+
+// R-M-01 audit fix (2026-08-26): cap on `readTextFile` to prevent a
+// hostile or accidentally-binary file from being slurped into memory
+// in one shot.  Legitimate Phoskia sources stay well under 1 MiB even
+// with extreme included headers; 16 MiB is a deliberately generous
+// ceiling that's still small enough to refuse a multi-GiB file before
+// OOM.
+constexpr uint64_t kReadTextFileMaxBytes = 16u * 1024u * 1024u;
+
+} // namespace
+
 bool readTextFile(const std::string& path, std::string& out, std::string* error)
 {
     if (!ayt::io::File::exists(path)) {
         if (error != nullptr) {
             *error = "failed to open source file: " + path;
+        }
+        return false;
+    }
+    // R-M-01 audit fix: probe the on-disk size first.  We refuse to
+    // allocate a buffer larger than `kReadTextFileMaxBytes`; this catches
+    // the common case (user passes a binary by mistake) before we spend
+    // time on a read.
+    const auto attrs = ayt::io::File::queryAttributes(path);
+    if (attrs.size > kReadTextFileMaxBytes) {
+        if (error != nullptr) {
+            *error = "source file too large (>" + std::to_string(kReadTextFileMaxBytes)
+                + " bytes): " + path;
         }
         return false;
     }
@@ -107,7 +131,6 @@ bool readTextFile(const std::string& path, std::string& out, std::string* error)
     // produce bytes. readAllText returning "" on a >0-byte file is a
     // genuine failure.
     if (contents.empty()) {
-        const auto attrs = ayt::io::File::queryAttributes(path);
         if (attrs.size > 0) {
             if (error != nullptr) {
                 *error = "failed to read source file: " + path;

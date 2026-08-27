@@ -173,6 +173,7 @@ private:
 
     CompileOptions _options;
     CompilerErrorReporter _errorReporter;
+    std::vector<std::string> _warningMessages;
     std::shared_ptr<TypeEnvironment> _typeEnv;
     std::unordered_map<std::string, BackendFactory> _backends;
 };

@@ -7,6 +7,8 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <vector>
 
@@ -84,10 +86,19 @@ public:
     void shutdown();
 
     static ShaderResourceImpl* resolveHandle(uint64_t handle);
+    static std::shared_ptr<ShaderResourceImpl> retainHandle(uint64_t handle);
 
 private:
     struct Impl;
     std::unique_ptr<Impl> _impl;
+
+    // R-B-02 audit helper (2026-08-26): the only sanctioned path that
+    // mutates `_impl` and returns a live mutex lock.  Declared here as a
+    // private member so it can hold `_impl` exclusively without leaking
+    // its type.  Every setter / mutating operation in
+    // `AYShaderResourcePool.cpp` calls this method instead of touching
+    // `_impl` directly, which keeps the lock acquisition in one place.
+    std::unique_lock<std::shared_mutex> lockOrCreateImplExclusive();
 };
 
 } // namespace ayt::shader

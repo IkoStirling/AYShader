@@ -31,6 +31,7 @@
 #include <AYIO/Env.h>
 
 #include <atomic>
+#include <chrono>
 #include <memory>          // std::shared_ptr (for the global default)
 #include <stdexcept>
 #include <string>
@@ -40,6 +41,11 @@
 #  include <io.h>
 #  include <windows.h>
 #else
+#  include <cerrno>
+#  include <fcntl.h>
+#  include <poll.h>
+#  include <signal.h>
+#  include <sys/wait.h>
 #  include <unistd.h>
 #endif
 
@@ -65,14 +71,42 @@ inline bool fileExists(const std::string& p) {
 // pattern is the standard Win32 inheritance dance; POSIX uses popen
 // for brevity.
 //
+// Audit fix H-02 (2026-08-26): the prior version built `cmdLineW` with
+// `std::wstring(cmdLine.begin(), cmdLine.end())`, which:
+//
+//   * constructed wchar_t values from raw bytes (UTF-8 → UTF-16 NO-OP
+//     truncation — non-ASCII paths, defines, or the shaderc binary
+//     name itself would have been silently corrupted);
+//   * produced a std::wstring with NO trailing null, so
+//     `cmdLineW.data()` is undefined behavior even when the string is
+//     empty (data() since C++11 is null-terminated, but the conversion
+//     was already wrong).
+//
+// The fix below uses MultiByteToWideChar(CP_UTF8, …) to perform the
+// real UTF-8 → UTF-16 conversion into a std::vector<wchar_t> whose
+// `.data()` is guaranteed null-terminated and CreateProcessW-safe.
+//
 // NOTE: This stays as raw OS API for now — it's process spawn, not
 // file I/O. See design.md §16.3 for the future AYIO::Process module.
-struct SpawnResult { int exitCode; std::string output; };
+struct SpawnResult {
+    int exitCode;
+    std::string output;
+    // When the spawn timed out (M-01), the child is terminated via
+    // TerminateProcess and timedOut==true is set. The caller decides
+    // whether to surface this as a stderr diagnostic or treat it as a
+    // retryable error. The exitCode in that case is whatever the
+    // kernel reports for a terminated process (often 1).
+    bool timedOut = false;
+};
 
 #if defined(_WIN32)
 SpawnResult spawnCapturing(const std::string& exe,
-                           const std::vector<std::string>& args) {
-    SpawnResult r{-1, ""};
+                           const std::vector<std::string>& args,
+                           // M-01 timeout: 0 = wait forever (legacy
+                           // default); >0 = WaitForSingleObject with
+                           // this many ms, then TerminateProcess.
+                           DWORD timeoutMs = 0) {
+    SpawnResult r{-1, "", false};
 
     if (exe.empty()) {
         r.output = "spawnCapturing: executable path is empty";
@@ -113,7 +147,36 @@ SpawnResult spawnCapturing(const std::string& exe,
     si.wShowWindow = SW_HIDE;
 
     PROCESS_INFORMATION pi{};
-    std::wstring cmdLineW(cmdLine.begin(), cmdLine.end());
+
+    // H-02 fix: properly convert UTF-8 → UTF-16 into a vector that
+    // is null-terminated (CreateProcessW's second parameter requires
+    // a null-terminated wide string when the first parameter is
+    // nullptr). MultiByteToWideChar(CP_UTF8, 0, …) handles the
+    // non-ASCII bytes correctly; the prior `std::wstring(begin, end)`
+    // form truncated everything to low bytes and dropped the
+    // terminator, producing garbled command lines on Windows hosts.
+    std::vector<wchar_t> cmdLineW;
+    {
+        const int needed = MultiByteToWideChar(
+            CP_UTF8, 0, cmdLine.c_str(), -1, nullptr, 0);
+        if (needed <= 0) {
+            r.output = "MultiByteToWideChar size probe failed (error " +
+                       std::to_string(GetLastError()) + ") for: " + cmdLine;
+            CloseHandle(hRead);
+            CloseHandle(hWrite);
+            return r;
+        }
+        cmdLineW.assign(static_cast<size_t>(needed), L'\0');
+        const int written = MultiByteToWideChar(
+            CP_UTF8, 0, cmdLine.c_str(), -1, cmdLineW.data(), needed);
+        if (written <= 0) {
+            r.output = "MultiByteToWideChar conversion failed (error " +
+                       std::to_string(GetLastError()) + ") for: " + cmdLine;
+            CloseHandle(hRead);
+            CloseHandle(hWrite);
+            return r;
+        }
+    }
 
     constexpr DWORD kCreateNoWindow = 0x08000000u;
     BOOL ok = CreateProcessW(
@@ -131,14 +194,76 @@ SpawnResult spawnCapturing(const std::string& exe,
     }
     CloseHandle(hWrite);
 
-    char buf[4096];
-    DWORD got = 0;
-    while (ReadFile(hRead, buf, sizeof(buf), &got, nullptr) && got > 0) {
-        r.output.append(buf, buf + got);
-    }
-    CloseHandle(hRead);
+    // Do not perform a blocking ReadFile before waiting for the process:
+    // a silent/hung child keeps its pipe open forever and would bypass the
+    // timeout entirely. Poll the pipe while waiting so output-heavy shaderc
+    // processes cannot block on a full pipe either.
+    auto drainAvailableOutput = [&]() {
+        char buf[4096];
+        for (;;) {
+            DWORD available = 0;
+            if (!PeekNamedPipe(hRead, nullptr, 0, nullptr, &available, nullptr)
+                || available == 0) {
+                break;
+            }
+            const DWORD toRead = available < sizeof(buf)
+                ? available
+                : static_cast<DWORD>(sizeof(buf));
+            DWORD got = 0;
+            if (!ReadFile(hRead, buf, toRead, &got, nullptr) || got == 0) {
+                break;
+            }
+            r.output.append(buf, buf + got);
+        }
+    };
 
-    WaitForSingleObject(pi.hProcess, INFINITE);
+    constexpr DWORD kPollIntervalMs = 20;
+    const ULONGLONG startedAt = GetTickCount64();
+    DWORD waitResult = WAIT_TIMEOUT;
+    for (;;) {
+        drainAvailableOutput();
+
+        DWORD waitSlice = kPollIntervalMs;
+        if (timeoutMs != 0) {
+            const ULONGLONG elapsed = GetTickCount64() - startedAt;
+            if (elapsed >= timeoutMs) {
+                waitResult = WAIT_TIMEOUT;
+                break;
+            }
+            const DWORD remaining = timeoutMs - static_cast<DWORD>(elapsed);
+            if (remaining < waitSlice) {
+                waitSlice = remaining;
+            }
+        }
+
+        waitResult = WaitForSingleObject(pi.hProcess, waitSlice);
+        if (waitResult == WAIT_OBJECT_0 || waitResult == WAIT_FAILED) {
+            break;
+        }
+    }
+    if (waitResult == WAIT_TIMEOUT) {
+        // Hard kill the child — there's no graceful cancel signal
+        // shaderc understands. The output we collected so far is
+        // preserved in `r.output` for diagnostics; the bin file is
+        // either absent or partial, which the caller's read-back
+        // handles correctly (memory-map returns invalid for missing
+        // file, "exit 0 but .bin missing" for partial).
+        TerminateProcess(pi.hProcess, 1);
+        // Drain the process so the kernel releases handles; this
+        // also lets the exit code populate below.
+        WaitForSingleObject(pi.hProcess, 5000);
+        r.timedOut = true;
+        r.output += "\n[shaderc] timeout after " +
+                    std::to_string(timeoutMs) + "ms; terminated.";
+    } else if (waitResult == WAIT_FAILED) {
+        const DWORD waitError = GetLastError();
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, 5000);
+        r.output += "\n[shaderc] process wait failed (error " +
+                    std::to_string(waitError) + ").";
+    }
+    drainAvailableOutput();
+    CloseHandle(hRead);
     DWORD exitCode = 0;
     GetExitCodeProcess(pi.hProcess, &exitCode);
     CloseHandle(pi.hProcess);
@@ -149,21 +274,103 @@ SpawnResult spawnCapturing(const std::string& exe,
 }
 #else
 SpawnResult spawnCapturing(const std::string& exe,
-                           const std::vector<std::string>& args) {
-    SpawnResult r{0, ""};
-    std::string cmd = "\"" + exe + "\"";
-    for (const auto& a : args) { cmd += " \"" + a + "\""; }
-    cmd += " 2>&1";
-
-    FILE* pipe = popen(cmd.c_str(), "r");
-    if (!pipe) {
-        r.exitCode = -1;
-        r.output = "popen failed";
+                           const std::vector<std::string>& args,
+                           uint32_t timeoutMs = 0) {
+    SpawnResult r{-1, "", false};
+    int pipeFds[2] = {-1, -1};
+    if (::pipe(pipeFds) != 0) {
+        r.output = "pipe failed";
         return r;
     }
-    char buf[4096];
-    while (fgets(buf, sizeof(buf), pipe)) r.output += buf;
-    r.exitCode = pclose(pipe);
+
+    const pid_t pid = ::fork();
+    if (pid < 0) {
+        ::close(pipeFds[0]);
+        ::close(pipeFds[1]);
+        r.output = "fork failed";
+        return r;
+    }
+    if (pid == 0) {
+        ::close(pipeFds[0]);
+        ::dup2(pipeFds[1], STDOUT_FILENO);
+        ::dup2(pipeFds[1], STDERR_FILENO);
+        ::close(pipeFds[1]);
+
+        std::vector<char*> argv;
+        argv.reserve(args.size() + 2);
+        argv.push_back(const_cast<char*>(exe.c_str()));
+        for (const std::string& arg : args) {
+            argv.push_back(const_cast<char*>(arg.c_str()));
+        }
+        argv.push_back(nullptr);
+        ::execv(exe.c_str(), argv.data());
+        constexpr char kExecFailure[] = "execv failed\n";
+        (void)::write(STDERR_FILENO, kExecFailure, sizeof(kExecFailure) - 1);
+        ::_exit(127);
+    }
+
+    ::close(pipeFds[1]);
+    const int originalFlags = ::fcntl(pipeFds[0], F_GETFL, 0);
+    if (originalFlags >= 0) {
+        (void)::fcntl(pipeFds[0], F_SETFL, originalFlags | O_NONBLOCK);
+    }
+
+    auto drainOutput = [&]() {
+        char buf[4096];
+        for (;;) {
+            const ssize_t got = ::read(pipeFds[0], buf, sizeof(buf));
+            if (got > 0) {
+                r.output.append(buf, static_cast<size_t>(got));
+                continue;
+            }
+            if (got < 0 && errno == EINTR) {
+                continue;
+            }
+            break;
+        }
+    };
+
+    const auto startedAt = std::chrono::steady_clock::now();
+    int status = 0;
+    for (;;) {
+        pollfd outputPoll{pipeFds[0], POLLIN, 0};
+        (void)::poll(&outputPoll, 1, 20);
+        drainOutput();
+
+        const pid_t waitResult = ::waitpid(pid, &status, WNOHANG);
+        if (waitResult == pid) {
+            break;
+        }
+        if (waitResult < 0 && errno != EINTR) {
+            r.output += "\n[shaderc] waitpid failed.";
+            (void)::kill(pid, SIGKILL);
+            while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+            }
+            break;
+        }
+
+        if (timeoutMs != 0) {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - startedAt).count();
+            if (elapsed >= timeoutMs) {
+                (void)::kill(pid, SIGKILL);
+                while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+                }
+                r.timedOut = true;
+                r.output += "\n[shaderc] timeout after " +
+                            std::to_string(timeoutMs) + "ms; terminated.";
+                break;
+            }
+        }
+    }
+
+    drainOutput();
+    ::close(pipeFds[0]);
+    if (WIFEXITED(status)) {
+        r.exitCode = WEXITSTATUS(status);
+    } else if (WIFSIGNALED(status)) {
+        r.exitCode = 128 + WTERMSIG(status);
+    }
     return r;
 }
 #endif
@@ -208,6 +415,130 @@ std::string siblingBinPath(const std::string& scPath) {
 
 } // namespace
 
+// M-02: validate a user-supplied shaderc executable path beyond mere
+// existence. The check is intentionally conservative:
+//   * path must be absolute (relative paths are ambiguous w.r.t.
+//     the cwd at compile-time, and could be hijacked by a malicious
+//     shim dropped into the engine's working directory);
+//   * basename (without .exe on Windows) must equal "shaderc" — so a
+//     user pointing at "C:\tools\foo.exe" cannot accidentally invoke
+//     an unrelated binary;
+//   * shell metacharacters that could let an attacker break out of
+//     the quoted form in the command line (e.g. trailing "& calc.exe"
+//     or `<>|^`) are rejected; we own the command line so we don't
+//     need them.
+//
+// The validation runs before fileExists() so a malformed path fails
+// fast on construction with a useful diagnostic. Returns the
+// validated absolute path on success; throws std::invalid_argument on
+// any rule violation.
+static std::string validateShadercPath(const std::string& p) {
+    if (p.empty()) {
+        throw std::invalid_argument(
+            "AYShadercDriver: shadercExecutable path is empty. The host engine "
+            "must resolve the shaderc binary path (via env var, settings file, "
+            "or startup flag) and pass it to AYShadercDriver explicitly.");
+    }
+#ifdef _WIN32
+    // Absolute on Windows: starts with a drive letter ("X:\..." or
+    // "X:/...") OR a UNC prefix ("\\server\share\..."). We don't
+    // require the file to exist yet — fileExists() handles that —
+    // just that the path is unambiguously rooted.
+    const bool absolute =
+        (p.size() >= 3 &&
+         ((p[0] >= 'A' && p[0] <= 'Z') || (p[0] >= 'a' && p[0] <= 'z')) &&
+         p[1] == ':' && (p[2] == '\\' || p[2] == '/')) ||
+        (p.size() >= 2 && p[0] == '\\' && p[1] == '\\');
+    if (!absolute) {
+        throw std::invalid_argument(
+            "AYShadercDriver: shadercExecutable path '" + p + "' is not absolute. "
+            "An absolute path is required to prevent working-directory "
+            "hijack via shim binaries (audit fix M-02).");
+    }
+#else
+    if (p.front() != '/') {
+        throw std::invalid_argument(
+            "AYShadercDriver: shadercExecutable path '" + p + "' is not absolute. "
+            "An absolute path is required to prevent working-directory "
+            "hijack via shim binaries (audit fix M-02).");
+    }
+#endif
+
+    // Reject shell metacharacters that could break out of the quoted
+    // command-line form (even though we quote args, defense-in-depth
+    // — a future caller passing the path unquoted would otherwise be
+    // vulnerable). Note: ':' is allowed (Windows drive letter), '\\'
+    // and '/' are allowed (path separators). Spaces are allowed
+    // because the quoting path above handles them. The dangerous set
+    // is the Win32 + POSIX command-shell metacharacters.
+    for (char c : p) {
+        if (c == '&' || c == '|' || c == '<' || c == '>' || c == '^' ||
+            c == ';' || c == '$' || c == '`' || c == '\n' || c == '\r' ||
+            c == '\t') {
+            throw std::invalid_argument(
+                std::string("AYShadercDriver: shadercExecutable path '") + p +
+                "' contains forbidden shell metacharacter '0x" +
+                std::to_string(static_cast<unsigned>(c) & 0xFFu) +
+                "'. Refusing to spawn (audit fix M-02).");
+        }
+    }
+
+    // Basename check. We strip the directory portion and the (Windows)
+    // .exe suffix; the remainder must equal "shaderc" (case-insensitive
+    // on Windows, case-sensitive on POSIX — the executable is
+    // always named exactly "shaderc" by upstream bgfx).
+    auto findLastSep = [](const std::string& s) -> size_t {
+#ifdef _WIN32
+        const size_t p1 = s.find_last_of('\\');
+        const size_t p2 = s.find_last_of('/');
+        return p1 == std::string::npos ? p2
+             : p2 == std::string::npos ? p1
+             : (p1 > p2 ? p1 : p2);
+#else
+        return s.find_last_of('/');
+#endif
+    };
+    const size_t sep = findLastSep(p);
+    const std::string basename =
+        (sep == std::string::npos) ? p : p.substr(sep + 1);
+    std::string stem = basename;
+#ifdef _WIN32
+    // Strip a single trailing .exe (case-insensitive).
+    if (stem.size() >= 4) {
+        const std::string tail = stem.substr(stem.size() - 4);
+        auto ieq = [](char a, char b) {
+            return (a >= 'A' && a <= 'Z') ? (a + 32 == b) : a == b;
+        };
+        bool isExe = true;
+        for (size_t i = 0; i < 4 && isExe; ++i) {
+            isExe = ieq(tail[i], ".exe"[i]);
+        }
+        if (isExe) stem.resize(stem.size() - 4);
+    }
+#endif
+#ifdef _WIN32
+    auto ieqAll = [](const std::string& a, const std::string& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i) {
+            char x = a[i], y = b[i];
+            if (x >= 'A' && x <= 'Z') x = static_cast<char>(x + 32);
+            if (y >= 'A' && y <= 'Z') y = static_cast<char>(y + 32);
+            if (x != y) return false;
+        }
+        return true;
+    };
+    if (!ieqAll(stem, "shaderc")) {
+#else
+    if (stem != "shaderc") {
+#endif
+        throw std::invalid_argument(
+            "AYShadercDriver: shadercExecutable basename '" + stem +
+            "' does not match expected 'shaderc'. Refusing to spawn a binary "
+            "that is not bgfx's shaderc (audit fix M-02).");
+    }
+    return p;
+}
+
 // Explicit-path constructor. The host engine resolves the shaderc
 // binary path from its own config (env var, settings file, startup
 // flag) and passes the absolute path here. The driver does not
@@ -216,19 +547,13 @@ std::string siblingBinPath(const std::string& scPath) {
 // or empty path → std::invalid_argument so the caller can fail fast
 // at startup rather than at first-shader-compile time.
 AYShadercDriver::AYShadercDriver(const std::string& shadercExecutable) {
-    if (shadercExecutable.empty()) {
-        throw std::invalid_argument(
-            "AYShadercDriver: shadercExecutable path is empty. The host engine "
-            "must resolve the shaderc binary path (via env var, settings file, "
-            "or startup flag) and pass it to AYShadercDriver explicitly.");
-    }
-    if (!fileExists(shadercExecutable)) {
+    _shadercPath = validateShadercPath(shadercExecutable);  // M-02: validation
+    if (!fileExists(_shadercPath)) {
         throw std::invalid_argument(
             "AYShadercDriver: shaderc executable not found at '"
-            + shadercExecutable + "'. The host engine must resolve the shaderc "
+            + _shadercPath + "'. The host engine must resolve the shaderc "
             "binary path from its own configuration before constructing the driver.");
     }
-    _shadercPath = shadercExecutable;
 }
 
 // ---------------------------------------------------------------------------
@@ -290,13 +615,16 @@ AYShadercDriver::AYShadercDriver() {
             "AYShadercDriver: default executable is an empty string. "
             "Re-call setDefaultExecutable with a valid path.");
     }
-    if (!fileExists(*p)) {
+    // M-02: validate before existence so a configured malformed path
+    // (relative, basename mismatch, metacharacters) fails with a
+    // useful diagnostic instead of just "not found".
+    _shadercPath = validateShadercPath(*p);
+    if (!fileExists(_shadercPath)) {
         throw std::invalid_argument(
             "AYShadercDriver: configured default shaderc executable not "
-            "found at '" + *p + "'. Verify the path and call "
+            "found at '" + _shadercPath + "'. Verify the path and call "
             "setDefaultExecutable again.");
     }
-    _shadercPath = *p;
 }
 
 ShaderCompileResult AYShadercDriver::compile(const ShaderCompileRequest& req) {
@@ -357,8 +685,10 @@ ShaderCompileResult AYShadercDriver::compile(const ShaderCompileRequest& req) {
         };
         // Run the actual spawn and read-back through a scope that
         // deletes vdPath on the way out regardless of outcome.
-        SpawnResult sr = spawnCapturing(shadercPath, args);
-        if (sr.exitCode == 0) {
+        // M-01: thread req.timeoutMs through (0 = INFINITE for legacy
+        // callers, >0 = bounded wait + TerminateProcess on timeout).
+        SpawnResult sr = spawnCapturing(shadercPath, args, req.timeoutMs);
+        if (sr.exitCode == 0 && !sr.timedOut) {
             ayt::io::MemoryMappedFile mm(binPath);
             if (mm.isValid()) {
                 const uint8_t* p = static_cast<const uint8_t*>(mm.data());
@@ -376,12 +706,17 @@ ShaderCompileResult AYShadercDriver::compile(const ShaderCompileRequest& req) {
         return result;
     }
 
-    // 3) Spawn.
-    SpawnResult sr = spawnCapturing(shadercPath, args);
+    // 3) Spawn. M-01: thread req.timeoutMs through (0 = INFINITE legacy,
+    // >0 = bounded wait + TerminateProcess on timeout).
+    SpawnResult sr = spawnCapturing(shadercPath, args, req.timeoutMs);
 
     // 4) Read .bin back into memory via MemoryMappedFile (zero-copy
     //    versus the pre-migration std::ifstream + istreambuf_iterator).
-    if (sr.exitCode == 0) {
+    // M-01: a timedOut result counts as a failure even when
+    // GetExitCodeProcess reports 0 from a terminated child — there is
+    // no valid .bin in that case, so ok stays false and the timeout
+    // text from spawnCapturing is what the frontend sees.
+    if (sr.exitCode == 0 && !sr.timedOut) {
         ayt::io::MemoryMappedFile mm(binPath);
         if (mm.isValid()) {
             const uint8_t* p = static_cast<const uint8_t*>(mm.data());

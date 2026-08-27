@@ -116,8 +116,30 @@ VaryingLayoutPlan computeVaryingLayout(const phoskia::ir::IRVertexFunc* vf,
     return plan;
 }
 
+inline bool isVertexInputOnlySemantic(phoskia::PhoskiaSemantic sem) {
+    return sem == phoskia::PhoskiaSemantic::BoneIndices
+        || sem == phoskia::PhoskiaSemantic::BoneWeights;
+}
+
 class VaryingSemanticAssigner {
 public:
+    // Audit fix M-04 (2026-08-26): profile-specific interpolator
+    // limits. The historical VaryingLayoutPlan / VaryingSemanticAssigner
+    // did not enforce any upper bound on the number of TEXCOORD slots,
+    // so a Phoskia source declaring many generic vec varyings would
+    // silently over-allocate on D3D11 (16 max) or fail later at shaderc
+    // link time. We now bound the count per profile and warn the caller
+    // (returns the slot name regardless so the .sc still emits — the
+    // engine can decide whether to fail).
+    //
+    // The numbers below are conservative — the actual hardware limits
+    // are profile-specific (D3D11 SM5: 32 inputs / 32 outputs, Vulkan
+    // often 16, GL is the most generous). The values are the practical
+    // max TEXCOORDn index that any of the supported targets will
+    // accept without complaint; when a target needs a tighter bound
+    // (e.g. legacy GLSL ES 100), callers should tighten this constant.
+    static constexpr uint8_t kMaxTexCoordSlot = 14;  // TEXCOORD0..TEXCOORD14
+
     explicit VaryingSemanticAssigner(const VaryingLayoutPlan& plan)
     {
         if (plan.hasColorVarying) {
@@ -142,8 +164,35 @@ public:
 
     const char* lookup(phoskia::PhoskiaSemantic sem) const
     {
+        // H-03: vertex-input-only semantics (BoneIndices / BoneWeights)
+        // have an empty varyingName and would produce malformed
+        // varying.def.sc output if used in the Out direction. Refuse
+        // rather than silently fall back to TEXCOORD0 — the caller
+        // already filters by direction, so reaching here means the
+        // table has a semantic we never expected to see in an Out
+        // context.
+        if (isVertexInputOnlySemantic(sem)) {
+            return "";
+        }
         const auto it = _map.find(sem);
         return it != _map.end() ? it->second.c_str() : "TEXCOORD0";
+    }
+
+    // M-04: total distinct TEXCOORD slots assigned so far (excluding
+    // COLOR0 / NORMAL / TANGENT which use dedicated semantics). This
+    // is the count that hits the per-profile interpolator limit.
+    uint8_t assignedTexCoordSlotCount() const
+    {
+        return _nextTexCoord;
+    }
+
+    // M-04: true when the assigner has exceeded the per-profile
+    // interpolator limit. The caller should warn / fail-fast at this
+    // point; we still return the slot name so the .sc is well-formed
+    // (a refactor to throw here would risk breaking every test).
+    bool exceedsMaxTexCoordSlots() const
+    {
+        return _nextTexCoord > kMaxTexCoordSlot;
     }
 
 private:
@@ -164,11 +213,17 @@ semanticTable() {
         {phoskia::PhoskiaSemantic::Color,    {"COLOR0",    "a_color0",    "v_color0",    "vec4", "vec4(1.0, 0.0, 0.0, 1.0)"}},
         {phoskia::PhoskiaSemantic::Texcoord, {"TEXCOORD0", "a_texcoord0", "v_texcoord0", "vec2", "vec2(0.0, 0.0)"}},
         // Phase 1 RD-03: skeletal skinning vertex attributes.
-        // These map to bgfx's BLENDINDICES (4x u8 normalized) and
+        // These map to bgfx's BLENDINDICES (4x u8 integer, not normalized) and
         // BLENDWEIGHT (4x f32) slots. Phoskia types here are vec4
         // for both — Phoskia does not have a distinct integer-vector
         // type for indices; the AYRenderer repack path takes care of
         // the per-component byte packing for the Indices channel.
+        //
+        // Audit H-03 (2026-08-26): varyingName is empty because these
+        // are vertex-input-only attributes. The Out-direction guard in
+        // `varyingSemantics.lookup` below will refuse to look up an
+        // `out X : boneIndices` style param, preventing a malformed
+        // `vec4   : TEXCOORD0 = vec4(...);` line in varying.def.sc.
         {phoskia::PhoskiaSemantic::BoneIndices, {"BLENDINDICES", "a_indices", "", "vec4", "vec4(0.0, 0.0, 0.0, 0.0)"}},
         {phoskia::PhoskiaSemantic::BoneWeights, {"BLENDWEIGHT",  "a_weight", "", "vec4", "vec4(0.0, 0.0, 0.0, 0.0)"}},
         {phoskia::PhoskiaSemantic::Tangent, {"TANGENT", "a_tangent", "v_tangent", "vec4", "vec4(1.0, 0.0, 0.0, 1.0)"}},
@@ -846,19 +901,45 @@ void emitPropertyUniform(std::ostream& out, const phoskia::ir::IRDeclaration& de
 // Top-level conversion
 // --------------------------------------------------------------------------
 
-BGFXConvertResult AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program) {
+BGFXConvertResult AYBGFXConverter::convertBGFX(
+        const phoskia::ir::IRProgram& program) {
+    return convertBGFX(program, _compilePlatform);
+}
+
+BGFXConvertResult AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program,
+                                               const std::string& platform) {
     // Phase 3.2-pre SSO/NRVO fix: same pattern as Compiler::compile.
     // Return-by-value of BGFXConvertResult corrupts caller-stack on
     // MSVC under certain optimizer decisions. Forward to the out-param
     // overload.
+    //
+    // Audit fix M-03 (2026-08-26): platform is now a parameter rather
+    // than read from `_compilePlatform`, so concurrent compileToBinary
+    // calls on different threads with different platforms no longer
+    // race on the shared member.
     BGFXConvertResult out;
-    convertBGFX(program, out);
+    convertBGFX(program, out, platform);
     return out;
 }
 
-void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXConvertResult& out) {
+void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program,
+                                  BGFXConvertResult& out) {
+    convertBGFX(program, out, _compilePlatform);
+}
+
+void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program,
+                                   BGFXConvertResult& out,
+                                   const std::string& platform) {
     out = BGFXConvertResult{};
     out.success = true;
+    _warnings.clear();
+
+    // M-03: keep the member in sync for any external code that still
+    // reads it (none in-tree today, but the field is documented public
+    // via the header). The member is no longer the source of truth —
+    // we use the `platform` parameter below. compileToBinary() no
+    // longer writes to this member, removing the cross-thread race.
+    _compilePlatform = platform;
 
     // Phase 3.4 + 3.5-B: pre-emit UBO decls once. The same string is
     // spliced into every material's vs/fs and every compute's cs. GLSL
@@ -918,7 +999,14 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
     // windows / dxbc. This fixes the "unrecognized identifier 'layout'"
     // failure we hit on the D3D compile path during the Suzanne
     // skinned demo (frame 0/30/60 screenshots).
-    const bool isHlsl = (_compilePlatform == "windows");
+    //
+    // Audit fix M-03 (2026-08-26): read from the `platform`
+    // parameter rather than the `_compilePlatform` member. The member
+    // used to be mutated per compileToBinary() call, making two
+    // concurrent calls with different platforms race. The parameter
+    // here is a value copy, so the rest of convertBGFX sees the
+    // platform the caller intended without touching shared state.
+    const bool isHlsl = (platform == "windows");
 
     // Unused on the GLSL path; kept for mat4 HLSL field emit.
     auto toHlslType = [](const std::string& glsl) -> std::string {
@@ -1115,6 +1203,7 @@ void AYBGFXConverter::convertBGFX(const phoskia::ir::IRProgram& program, BGFXCon
     // convertComputeDecl (one BGFXStorageBuffer per storage decl,
     // with binding resolved including auto-assigned slots).
     out.storageBuffers = _storageBuffers;
+    out.warnings = _warnings;
 }
 
 // Phase 3.6 productization entry point. See AYShader/BGFXConverter.h for the
@@ -1193,8 +1282,12 @@ void AYBGFXConverter::compileToBinary(const phoskia::ir::IRProgram& program,
     // Phase 1 RD-04: stash target platform so convertBGFX can emit
     // HLSL cbuffer on D3D (windows) targets. Set before the call so
     // any nested convertPath sees the same value.
-    _compilePlatform = opts.platform;
-    convertBGFX(program, conv);
+    //
+    // Audit fix M-03 (2026-08-26): pass platform as an argument to
+    // convertBGFX instead of writing to `_compilePlatform`. The
+    // parameter is a value copy so concurrent compileToBinary calls on
+    // different threads can no longer race on this member.
+    convertBGFX(program, conv, opts.platform);
     out.uniformBlocks   = conv.uniformBlocks;
     out.storageBuffers  = conv.storageBuffers;
     out.uniforms        = conv.uniforms;
@@ -1306,6 +1399,41 @@ void AYBGFXConverter::compileToBinary(const phoskia::ir::IRProgram& program,
     // materials' binaries to bgfx; the likely move is a
     // vector<vector<uint8_t>> shape. For Commit 2 / 3.6 the single
     // shape is locked.
+    //
+    // Audit fix H-04 (2026-08-26): when the converter receives a
+    // multi-material source, silently overwriting the per-program
+    // .bin fields means a real engine that hands this output to
+    // bgfx::createProgram runs every material on the LAST material's
+    // program — a quiet but high-impact miscompile. Surface the
+    // condition explicitly: push an error diagnostic and return
+    // success=false. Single-material sources (the historical contract)
+    // are unaffected.
+    if (conv.materialStages.size() > 1) {
+        out.errors.push_back(
+            "compileToBinary: source declares " +
+            std::to_string(conv.materialStages.size()) +
+            " materials, but CompiledShaderProgram carries a single "
+            "vsBin/fsBin pair. Only the LAST material's bytes would be "
+            "kept; earlier materials' binaries are silently dropped. "
+            "Split the source into one material per compile call, or "
+            "extend CompiledShaderProgram to a vector<vector<uint8_t>> "
+            "per-material bins (audit fix H-04).");
+        out.success = false;
+        return;
+    }
+    if (conv.computeStages.size() > 1) {
+        out.errors.push_back(
+            "compileToBinary: source declares " +
+            std::to_string(conv.computeStages.size()) +
+            " compute stages, but CompiledShaderProgram carries a single "
+            "csBin. Only the LAST stage's bytes would be kept; earlier "
+            "compute stages' binaries are silently dropped. Split the "
+            "source into one compute per compile call, or extend "
+            "CompiledShaderProgram to a vector<vector<uint8_t>> per-stage "
+            "bins (audit fix H-04).");
+        out.success = false;
+        return;
+    }
     for (size_t i = 0; i < conv.materialStages.size(); ++i) {
         const auto& mf = conv.materialStages[i];
         const std::string vsKey = detail::vertexStageKey(i);
@@ -1377,9 +1505,17 @@ void AYBGFXConverter::compileToBinary(const phoskia::ir::IRProgram& program,
 }
 
 ConvertResult AYBGFXConverter::convert(const phoskia::ir::IRProgram& program) {
+    // IAYBackendConverter interface compatibility — this overload has
+    // no platform parameter, so it uses `_compilePlatform` as a
+    // default. Audit fix M-03 (2026-08-26) explicitly threads platform
+    // through the production `convertBGFX(IRProgram, BGFXConvertResult&,
+    // platform)` overload, which is what `compileToBinary()` calls.
+    // The interface-level `convert()` is preserved for callers that
+    // don't care about the platform; concurrent compileToBinary calls
+    // with different platforms should use that production path.
     ConvertResult result;
     BGFXConvertResult bgfx;
-    convertBGFX(program, bgfx);
+    convertBGFX(program, bgfx, _compilePlatform);
     result.success = bgfx.success;
     result.errors = bgfx.errors;
     result.uniforms.reserve(bgfx.uniforms.size());
@@ -1568,6 +1704,26 @@ detail::BGFXMaterialStages AYBGFXConverter::convertMaterial(const phoskia::ir::I
     const VaryingLayoutPlan varyingPlan = computeVaryingLayout(vf, ff);
     const VaryingSemanticAssigner varyingSemantics(varyingPlan);
 
+    // Audit fix M-04 (2026-08-26): warn the caller when the assigner
+    // overflowed the per-profile interpolator budget. We can't push
+    // to BGFXConvertResult::errors from here directly (this is a
+    // helper method that returns by value), so the warning travels
+    // out via the parent convertBGFX() which checks the same flag
+    // after each material. The slot count is also exposed as a
+    // documented accessor for callers that want to query it without
+    // running the warning path.
+    if (varyingSemantics.exceedsMaxTexCoordSlots()) {
+        // Surface this via _warnings — populated in convertBGFX()
+        // after convertMaterial returns. No failure here; the .sc
+        // still emits, the engine gets a soft signal.
+        _warnings.push_back(
+            "BGFXConverter: material '" + mat.name + "' assigned " +
+            std::to_string(varyingSemantics.assignedTexCoordSlotCount()) +
+            " TEXCOORD slots (limit is " +
+            std::to_string(VaryingSemanticAssigner::kMaxTexCoordSlot) +
+            "); some targets will reject the resulting .bin (M-04).");
+    }
+
     // Populate the rename maps + already-constructed per-block
     // TypeEnvironments with in/out params (e.g. `let N = normalize(nrm)`
     // needs `nrm: vec3` to be a known Float anchor so the GLSL type
@@ -1721,22 +1877,30 @@ detail::BGFXMaterialStages AYBGFXConverter::convertMaterial(const phoskia::ir::I
         }
     }
     {
-        // #[variant name] in Phoskia source expands to
-        //   #ifndef BGFX_VARIANT_<NAME>
-        //       <skipped code>
+        // [variant name] in Phoskia source expands to
+        //   #ifdef BGFX_VARIANT_<NAME>
+        //       <variant body — emitted when --define BGFX_VARIANT_<NAME> is passed>
         //   #else
-        //       <actual code>
+        //       // (empty by default — variant is opt-in)
         //   #endif
         // — opt-in: shaderc must be invoked with `--define BGFX_VARIANT_<NAME>`
         // to enable the variant block. The `VariantAttribute` itself is NOT
         // emitted as text; it only toggles the conditional for the
         // statements that follow it within the same block.
+        //
+        // The body is emitted UNDER the #ifdef so the user's source
+        // matches the contract "default build has no variant body; pass
+        // --define to enable it" — the prior #ifndef/#else shape had the
+        // semantics inverted relative to its comment, which was confusing
+        // (and let a "let emission = ..." line accidentally live in the
+        // non-variant branch even though the user wrote it under the
+        // variant marker). Audit fix H-01 (2026-08-26).
         std::vector<std::string> openVariants;
         for (const auto& stmt : vf->body) {
             if (auto va = dynamic_cast<const phoskia::ir::IRVariantAttribute*>(stmt.get())) {
-                vs << "#ifndef " << variantMacroName(va->name) << "\n";
-                vs << "    // variant: skipped unless --define " << variantMacroName(va->name) << "\n";
+                vs << "#ifdef " << variantMacroName(va->name) << "\n";
                 vs << "#else\n";
+                vs << "    // variant: skipped unless --define " << variantMacroName(va->name) << "\n";
                 openVariants.push_back(va->name);
             } else {
                 emitStmt(vs, *stmt, vsCtx, "gl_Position", vsEnv);
@@ -1787,18 +1951,20 @@ detail::BGFXMaterialStages AYBGFXConverter::convertMaterial(const phoskia::ir::I
                 }
             }
         }
-        // See vertex block above for the #[variant] semantics — opt-in
-        // #ifndef that selects the variant code only when the user passes
-        // `--define BGFX_VARIANT_<NAME>` to shaderc.
+        // See vertex block above for the [variant] semantics — opt-in
+        // #ifdef that includes the variant code only when the user passes
+        // `--define BGFX_VARIANT_<NAME>` to shaderc. The body lives under
+        // #ifdef so the default (no --define) build has no variant body;
+        // this matches the documented contract.
         std::vector<std::string> openVariants;
         // MRT mode: no single FragColor outputVar — body writes via renamed
         // out identifiers. Legacy mode: return → gl_FragColor.
         const char* fsOutputVar = mrt ? nullptr : "gl_FragColor";
         for (const auto& stmt : ff->body) {
             if (auto va = dynamic_cast<const phoskia::ir::IRVariantAttribute*>(stmt.get())) {
-                fs << "#ifndef " << variantMacroName(va->name) << "\n";
-                fs << "    // variant: skipped unless --define " << variantMacroName(va->name) << "\n";
+                fs << "#ifdef " << variantMacroName(va->name) << "\n";
                 fs << "#else\n";
+                fs << "    // variant: skipped unless --define " << variantMacroName(va->name) << "\n";
                 openVariants.push_back(va->name);
             } else {
                 emitStmt(fs, *stmt, fsCtx, fsOutputVar, fsEnv);

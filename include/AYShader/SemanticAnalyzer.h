@@ -7,6 +7,7 @@
 #include <vector>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <memory>
 
 namespace ayt::shader::phoskia
@@ -21,11 +22,22 @@ public:
 
     // Diagnostics collected during analysis.
     const std::vector<CompilerError>& errors() const { return _reporter.errors(); }
+    const std::vector<CompilerError>& warnings() const { return _warnings; }
     bool hasErrors() const { return _reporter.hasErrors(); }
 
     // Symbol table access
     bool isDefined(const std::string& name) const;
     std::shared_ptr<Type> getType(const std::string& name) const;
+
+    // IR-H-01/IR-H-02/IR-H-04: hint the analyzer with the parser's current
+    // cursor so errors at scope-less AST nodes (statements, declarations)
+    // carry a real source location. The analyzer walks AST nodes
+    // recursively; per-statement overrides (e.g. `line` field on
+    // ReturnStmt) take precedence over this hint when set.
+    void setCurrentLocation(int line, int column) {
+        _currentLine = line;
+        _currentColumn = column;
+    }
 
 private:
     void analyze(const Stmt& stmt);
@@ -52,17 +64,63 @@ private:
     void collectIdentifiers(const Expr& expr,
                             std::vector<const IdentifierExpr*>& out);
 
-    void error(const std::string& message, int line, int column);
-    void warning(const std::string& message, int line, int column);
+    // Error / warning reporters.
+    //   - error / warning default to the current location hint + UnknownIdentifier code.
+    //   - Pass an explicit ErrorCode for accurate categorization
+    //     (IR-H-01..04: TypeMismatch for unification / return / if-condition
+    //     errors so downstream diagnostic tooling can group them).
+    //   - Pass (line, column) explicitly when the AST node carries its own
+    //     location — takes precedence over the current-location hint.
+    void error(const std::string& message, int line, int column,
+               ErrorCode code = ErrorCode::UnknownIdentifier);
+    void warning(const std::string& message, int line, int column,
+                 ErrorCode code = ErrorCode::UnknownIdentifier);
+
+    // IR-M-04: walk the program once after the main pass to surface
+    // bindings that were declared (let / property / uniform / param)
+    // but never used. Warnings only — does NOT trip hasErrors().
+    void emitUnusedBindingWarnings();
 
     TypeEnvironment& _env;
     CompilerErrorReporter _reporter;
+    std::vector<CompilerError> _warnings;
     std::unordered_map<std::string, std::shared_ptr<Type>> _symbols;
     std::unordered_map<std::string, std::shared_ptr<Type>> _materialProperties;
     bool _inShaderFunc = false;
     // >0 while analyzing a fragment that declared MRT `out` targets.
     // Return→gl_FragColor is forbidden in that mode.
     size_t _fragmentMrtOutputCount = 0;
+
+    // IR-H-01: current source-location hint. AST nodes that carry their
+    // own line/column (ReturnStmt, IfStmt, BinaryExpr, ...) override
+    // this hint in their corresponding analyze* methods.
+    int _currentLine = 0;
+    int _currentColumn = 0;
+
+    // IR-M-04: track which let-bindings were *read* during analysis
+    // (their initializer IdentifierExpr references show up via
+    // collectIdentifiers). After the main pass, any let-stmt name not
+    // present in this set is unused.
+    std::unordered_set<std::string> _usedBindings;
+    // Counter for how many times each let-binding was referenced.
+    // Lets us skip the trivial `let x = 1.0; ...; x` pattern (one
+    // read after declaration) vs. multi-statement usage.
+    std::unordered_map<std::string, size_t> _bindingUseCount;
+
+    // Track which let / property / uniform declarations we've seen.
+    // After analyze() finishes, intersect with _usedBindings to find
+    // orphans.
+    struct DeclRecord {
+        std::string name;
+        int line;
+        int column;
+        bool isLet = false;       // false ⇒ property / uniform / param
+    };
+    std::vector<DeclRecord> _declaredBindings;
+
+    // Program-level AST pointer (kept for IR-M-04 unused-walker; owned
+    // by the caller — we only read it during emitUnusedBindingWarnings()).
+    const Program* _currentProgram = nullptr;
 };
 
 } // namespace ayt::shader::phoskia

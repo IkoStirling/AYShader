@@ -12,9 +12,9 @@ namespace ayt::shader
 
 namespace {
 
-ShaderResourceImpl* resolveImpl(uint64_t handle)
+std::shared_ptr<ShaderResourceImpl> resolveImpl(uint64_t handle)
 {
-    return ShaderResourcePool::resolveHandle(handle);
+    return ShaderResourcePool::retainHandle(handle);
 }
 
 BindingId lookupBinding(const std::unordered_map<std::string, BindingId>& table,
@@ -34,13 +34,13 @@ const BindingEntry* findBindingEntry(const ShaderResourceImpl& impl, BindingId i
 
 bool ShaderResource::isValid() const noexcept
 {
-    ShaderResourceImpl* impl = resolveImpl(_id);
+    auto impl = resolveImpl(_id);
     return impl != nullptr && bgfx::isValid(impl->programHandle);
 }
 
 BindingId ShaderResource::getUniformBinding(const std::string& name) const
 {
-    ShaderResourceImpl* impl = resolveImpl(_id);
+    auto impl = resolveImpl(_id);
     if (impl == nullptr) {
         return InvalidBinding;
     }
@@ -49,7 +49,7 @@ BindingId ShaderResource::getUniformBinding(const std::string& name) const
 
 BindingId ShaderResource::getTextureBinding(const std::string& name) const
 {
-    ShaderResourceImpl* impl = resolveImpl(_id);
+    auto impl = resolveImpl(_id);
     if (impl == nullptr) {
         return InvalidBinding;
     }
@@ -58,7 +58,7 @@ BindingId ShaderResource::getTextureBinding(const std::string& name) const
 
 uint8_t ShaderResource::getTextureStage(BindingId id) const
 {
-    ShaderResourceImpl* impl = resolveImpl(_id);
+    auto impl = resolveImpl(_id);
     if (impl == nullptr || id == InvalidBinding) {
         return 0;
     }
@@ -71,7 +71,7 @@ uint8_t ShaderResource::getTextureStage(BindingId id) const
 
 BindingId ShaderResource::getUniformBlockBinding(const std::string& name) const
 {
-    ShaderResourceImpl* impl = resolveImpl(_id);
+    auto impl = resolveImpl(_id);
     if (impl == nullptr) {
         return InvalidBinding;
     }
@@ -80,7 +80,7 @@ BindingId ShaderResource::getUniformBlockBinding(const std::string& name) const
 
 BindingId ShaderResource::getStorageBufferBinding(const std::string& name) const
 {
-    ShaderResourceImpl* impl = resolveImpl(_id);
+    auto impl = resolveImpl(_id);
     if (impl == nullptr) {
         return InvalidBinding;
     }
@@ -92,7 +92,7 @@ bool ShaderResource::hasUniformBinding(BindingId id) const
     if (id == InvalidBinding) {
         return false;
     }
-    ShaderResourceImpl* impl = resolveImpl(_id);
+    auto impl = resolveImpl(_id);
     if (impl == nullptr) {
         return false;
     }
@@ -106,7 +106,7 @@ bool ShaderResource::hasTextureBinding(BindingId id) const
     if (id == InvalidBinding) {
         return false;
     }
-    ShaderResourceImpl* impl = resolveImpl(_id);
+    auto impl = resolveImpl(_id);
     if (impl == nullptr) {
         return false;
     }
@@ -116,7 +116,7 @@ bool ShaderResource::hasTextureBinding(BindingId id) const
 
 size_t ShaderResource::getUniformBlockSize(BindingId blockId) const
 {
-    ShaderResourceImpl* impl = resolveImpl(_id);
+    auto impl = resolveImpl(_id);
     if (impl == nullptr || blockId == InvalidBinding) {
         return 0;
     }
@@ -130,7 +130,7 @@ size_t ShaderResource::getUniformBlockSize(BindingId blockId) const
 size_t ShaderResource::getUniformBlockFieldOffset(BindingId blockId,
                                                   const std::string& fieldName) const
 {
-    ShaderResourceImpl* impl = resolveImpl(_id);
+    auto impl = resolveImpl(_id);
     if (impl == nullptr || blockId == InvalidBinding) {
         return 0;
     }
@@ -145,7 +145,7 @@ size_t ShaderResource::getUniformBlockFieldOffset(BindingId blockId,
 size_t ShaderResource::getUniformBlockFieldSize(BindingId blockId,
                                                 const std::string& fieldName) const
 {
-    ShaderResourceImpl* impl = resolveImpl(_id);
+    auto impl = resolveImpl(_id);
     if (impl == nullptr || blockId == InvalidBinding) {
         return 0;
     }
@@ -159,7 +159,7 @@ size_t ShaderResource::getUniformBlockFieldSize(BindingId blockId,
 
 void ShaderResource::setUniform(BindingId id, const void* data, size_t sizeBytes) const
 {
-    ShaderResourceImpl* impl = resolveImpl(_id);
+    auto impl = resolveImpl(_id);
     if (impl == nullptr || id == InvalidBinding || data == nullptr || sizeBytes == 0) {
         return;
     }
@@ -201,7 +201,7 @@ void ShaderResource::setUniformBlock(BindingId blockId,
                                      const void* data,
                                      size_t sizeBytes) const
 {
-    ShaderResourceImpl* impl = resolveImpl(_id);
+    auto impl = resolveImpl(_id);
     if (impl == nullptr || blockId == InvalidBinding || data == nullptr || sizeBytes == 0) {
         return;
     }
@@ -229,7 +229,7 @@ void ShaderResource::setUniformBlock(BindingId blockId,
 
 void ShaderResource::setTexture(uint8_t stage, BindingId id, const TextureHandle& tex) const
 {
-    ShaderResourceImpl* impl = resolveImpl(_id);
+    auto impl = resolveImpl(_id);
     if (impl == nullptr || id == InvalidBinding || !tex.isValid()) {
         return;
     }
@@ -259,7 +259,7 @@ void ShaderResource::setTexture(uint8_t stage, BindingId id, const TextureHandle
 
 void ShaderResource::submit(const DrawCallContext& ctx) const
 {
-    ShaderResourceImpl* impl = resolveImpl(_id);
+    auto impl = resolveImpl(_id);
     if (impl == nullptr || !bgfx::isValid(impl->programHandle)) {
         return;
     }

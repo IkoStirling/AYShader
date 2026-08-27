@@ -134,15 +134,15 @@ std::unique_ptr<Program> Compiler::parse(const std::vector<Token>& tokens) {
 }
 
 std::shared_ptr<TypeEnvironment> Compiler::analyzeSemantics(Program& program) {
+    _warningMessages.clear();
     AYSemanticAnalyzer analyzer(*_typeEnv);
     analyzer.analyze(program);
-    // DEBUG: retained — surfaces semantic-error propagation in the global
-    // reporter for error-recovery tests in Phase 2 #1.
-    std::cerr << "[Compiler::analyzeSemantics] analyzer.errors().size()="
-              << analyzer.errors().size() << "\n";
     // Bubble analyzer errors back through the global reporter.
     for (const auto& e : analyzer.errors()) {
         _errorReporter.error(e.code, e.message, e.line, e.column);
+    }
+    for (const auto& warning : analyzer.warnings()) {
+        _warningMessages.push_back(warning.message);
     }
     return _typeEnv;
 }
@@ -152,6 +152,7 @@ void Compiler::runPipeline(const std::string& source,
                            CompileResult& out) {
     out = CompileResult{};
     _errorReporter.clear();
+    _warningMessages.clear();
 
     // 1) Tokenize
     std::vector<Token> tokens;
@@ -186,6 +187,9 @@ void Compiler::runPipeline(const std::string& source,
     // 3) Optional semantic analysis
     if (kEnableSemanticAnalysis) {
         analyzeSemantics(*out.ast);
+        out.warnings.insert(out.warnings.end(),
+                            _warningMessages.begin(),
+                            _warningMessages.end());
     }
 
     if (kEnableTypeInference) {
@@ -337,6 +341,7 @@ void Compiler::runToProgram(const std::string& source,
                             CompiledShaderProgram& out) {
     out = CompiledShaderProgram{};
     _errorReporter.clear();
+    _warningMessages.clear();
 
     // 1) Tokenize
     std::vector<Token> tokens;
@@ -374,6 +379,9 @@ void Compiler::runToProgram(const std::string& source,
     // 3) Optional semantic analysis (same gates as runPipeline).
     if (kEnableSemanticAnalysis && ast) {
         analyzeSemantics(*ast);
+        out.warnings.insert(out.warnings.end(),
+                            _warningMessages.begin(),
+                            _warningMessages.end());
         for (const auto& e : _errorReporter.errors()) {
             out.errors.push_back(e.message);
         }
@@ -404,7 +412,11 @@ void Compiler::runToProgram(const std::string& source,
     bgfxOpts.dumpIntermediate = opts.dumpIntermediate;
     bgfxOpts.dumpDir = opts.dumpDir;
 
+    const std::vector<std::string> semanticWarnings = _warningMessages;
     converter.compileToBinary(irProgram, bgfxOpts, out);
+    out.warnings.insert(out.warnings.begin(),
+                        semanticWarnings.begin(),
+                        semanticWarnings.end());
 }
 
 bool Compiler::generateIr(const std::string& source,
@@ -414,6 +426,7 @@ bool Compiler::generateIr(const std::string& source,
 {
     (void)opts;
     _errorReporter.clear();
+    _warningMessages.clear();
 
     std::vector<Token> tokens;
     try {
