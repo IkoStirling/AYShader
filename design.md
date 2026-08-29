@@ -1745,10 +1745,11 @@ class ShaderResourcePool {
 // ShaderResourcePool 构造时若没显式 setPlatform，
 // 调 bgfx::getCaps() 读当前 runtime 的 renderer type：
 //
-//   bgfx::RendererType::Direct3D11    → platform="windows"   profile="430"
-//   bgfx::RendererType::Direct3D12    → platform="windows"   profile="430"
-//   bgfx::RendererType::OpenGL        → platform="linux"     profile="430"
-//   bgfx::RendererType::Vulkan        → platform="linux"     profile="430"
+//   bgfx::RendererType::Direct3D11    → platform="windows"   profile="s_5_0"
+//   bgfx::RendererType::Direct3D12    → platform="windows"   profile="s_5_0"
+//   bgfx::RendererType::OpenGL        → platform="linux"     profile="120"
+//   bgfx::RendererType::OpenGLES      → platform="android"   profile="100_es"
+//   bgfx::RendererType::Vulkan        → platform="linux"     profile="spirv"
 //   bgfx::RendererType::Metal         → platform="osx"       profile="metal"
 //   WebGPU 不属于 bgfx renderer enum；未来切换 Dawn/wgpu-native 时单独映射
 //
@@ -1759,6 +1760,11 @@ class ShaderResourcePool {
 //   3. pool.setDefaultBackend(...)  / setShadercExecutable(...)
 //   4. 之后任意 frontend 调用都不再关心 backend / platform
 ```
+
+D3D12 使用 `s_5_0` 是 bundled shaderc/bgfx wire contract，不代表图形 backend 回退：当前工具只暴露
+Shader Model 4/5 profile，生成的 bgfx container/DXBC payload 可由 D3D12 renderer 消费；选择不存在的
+`s_6_0` 会让 runtime shader 初始化直接失败。若未来切换 DXC/原生 DXIL，必须以新的 compiler capability
+probe 和 cache-key schema 显式引入，不能在现有 shaderc 路径中猜测 profile。
 
 **frontend 完全见不到了**：
 

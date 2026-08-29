@@ -54,6 +54,11 @@ AYShader 是 AY Engine 的着色器子系统：接受 **Phoskia** DSL 源码，�
 | Phase 5+ | HLSL 后端（按需 — DXC 一手质量 / 减体积） | 🅿 暂缓 |
 | Phase 5+ | WGSL 后端（按需 — WebGPU 目标） | 🅿 暂缓 |
 
+运行时自动探测遵循 bundled bgfx shaderc 实际支持的 profile：D3D11 与 D3D12 都使用
+`platform=windows, profile=s_5_0`。这里不是把 D3D12 降级成 D3D11；shaderc 生成 bgfx 容器与 DXBC
+payload，D3D12 backend 可直接消费，而当前随引擎分发的 shaderc 不提供 `s_6_0`。Vulkan 使用
+`linux/spirv`，OpenGL 使用 `linux/120`，Metal 使用 `osx/metal`。显式配置仍覆盖自动选择。
+
 ---
 
 ## 测试

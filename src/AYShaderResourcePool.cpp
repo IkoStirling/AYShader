@@ -309,7 +309,10 @@ void mapRendererTypeToPlatformProfile(bgfx::RendererType::Enum type,
         break;
     case bgfx::RendererType::Direct3D12:
         platform = "windows";
-        profile = "s_6_0";
+        // bgfx shaderc emits the renderer-neutral shader container with
+        // DXBC payloads for both D3D11 and D3D12. The bundled shaderc does
+        // not expose an s_6_0 profile; D3D12 accepts its s_5_0 output.
+        profile = "s_5_0";
         break;
     case bgfx::RendererType::Metal:
         platform = "osx";
