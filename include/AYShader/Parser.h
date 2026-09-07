@@ -64,6 +64,7 @@ private:
 
     std::unique_ptr<Stmt> parseLetStmt();
     std::unique_ptr<Stmt> parseReturnStmt();
+    std::unique_ptr<Stmt> parseDiscardStmt();
     std::unique_ptr<Stmt> parseIfStmt();
     std::unique_ptr<Stmt> parseForStmt();
 

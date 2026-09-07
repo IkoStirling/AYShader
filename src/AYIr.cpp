@@ -560,6 +560,9 @@ std::unique_ptr<IRStmt> IRGenerator::lowerStmt(const phoskia::Stmt& s,
         }
         return out;
     }
+    if (dynamic_cast<const phoskia::DiscardStmt*>(&s)) {
+        return std::make_unique<IRDiscardStmt>();
+    }
     if (auto es = dynamic_cast<const phoskia::ExprStmt*>(&s)) {
         auto out = std::make_unique<IRExprStmt>(nullptr);
         if (es->expr) {

@@ -46,6 +46,7 @@ static const char* tokenTypeName(TokenType t) {
         case TokenType::In: return "In";
         case TokenType::Out: return "Out";
         case TokenType::Return: return "Return";
+        case TokenType::Discard: return "Discard";
         case TokenType::True: return "True";
         case TokenType::False: return "False";
         case TokenType::Variant: return "Variant";
@@ -233,6 +234,9 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
     }
     if (match(TokenType::Return)) {
         return parseReturnStmt();
+    }
+    if (match(TokenType::Discard)) {
+        return parseDiscardStmt();
     }
     if (match(TokenType::If)) {
         return parseIfStmt();
@@ -1090,6 +1094,15 @@ std::unique_ptr<Stmt> Parser::parseReturnStmt() {
     return std::move(retStmt);
 }
 
+std::unique_ptr<Stmt> Parser::parseDiscardStmt() {
+    const Token keyword = previous();
+    match(TokenType::Semicolon);
+    auto stmt = std::make_unique<DiscardStmt>();
+    stmt->line = keyword.line;
+    stmt->column = keyword.column;
+    return stmt;
+}
+
 std::unique_ptr<Stmt> Parser::parseIfStmt() {
     // IR-H-04: snapshot the `if` keyword's location before recursing into
     // the condition so we can stamp the IfStmt for source-location-aware
@@ -1534,6 +1547,7 @@ void Parser::synchronize() {
             case TokenType::Fragment:
             case TokenType::Let:
             case TokenType::Return:
+            case TokenType::Discard:
             case TokenType::If:
             case TokenType::For:
             case TokenType::LeftBrace:

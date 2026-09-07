@@ -447,4 +447,35 @@ TEST_CASE(shaderc_compiles_compute_with_two_storage_buffers_to_bin) {
     CHECK(program.sources.at("compute_stage_0").find("layout(std430, binding = 1) buffer outputs {") != std::string::npos);
 }
 
+TEST_CASE(shaderc_compiles_fragment_if_and_discard) {
+    std::string shadercDiag;
+    if (!shadercReachable(shadercDiag)) {
+        fatalNoShaderc("fragment_control_flow", shadercDiag);
+        CHECK(false);
+        return;
+    }
+    const char* src = R"(
+        material Cutout {
+            vertex { return vec4(0.0) }
+            fragment {
+                let alpha = 0.25
+                if (alpha < 0.1) { discard }
+                let color = vec4(0.0)
+                if (alpha < 0.5) { color = vec4(1.0) }
+                return color
+            }
+        }
+    )";
+    Compiler compiler;
+    CompiledShaderProgram program = compiler.compileToProgram(src);
+    if (!program.success) {
+        for (const auto& error : program.errors) {
+            std::cerr << "[fragment_control_flow] " << error << '\n';
+        }
+    }
+    CHECK(program.success);
+    CHECK(!program.vsBin.empty());
+    CHECK(!program.fsBin.empty());
+}
+
 TEST_SUITE_END

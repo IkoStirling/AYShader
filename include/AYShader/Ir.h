@@ -45,6 +45,7 @@ class IRIndexExpr;
 
 class IRLetStmt;
 class IRReturnStmt;
+class IRDiscardStmt;
 class IRIfStmt;
 class IRForStmt;
 class IRExprStmt;
@@ -157,6 +158,11 @@ class IRReturnStmt : public IRStmt {
 public:
     explicit IRReturnStmt(IRExprPtr value) : value(std::move(value)) {}
     IRExprPtr value;
+};
+
+class IRDiscardStmt : public IRStmt {
+public:
+    IRDiscardStmt() = default;
 };
 
 class IRIfStmt : public IRStmt {

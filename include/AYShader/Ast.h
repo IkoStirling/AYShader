@@ -36,6 +36,7 @@ class MemberExpr;
 class IndexExpr;
 class LetStmt;
 class ReturnStmt;
+class DiscardStmt;
 class IfStmt;
 class ForStmt;
 class ExprStmt;
@@ -185,6 +186,14 @@ public:
     void accept(AstVisitor& visitor) override;
     ExprPtr value;
     // IR-H-02: source location for return-type-mismatch errors.
+    int line = 0;
+    int column = 0;
+};
+
+class DiscardStmt : public Stmt {
+public:
+    DiscardStmt() = default;
+    void accept(AstVisitor& visitor) override;
     int line = 0;
     int column = 0;
 };
@@ -493,6 +502,7 @@ public:
 
     virtual void visit(LetStmt& node) = 0;
     virtual void visit(ReturnStmt& node) = 0;
+    virtual void visit(DiscardStmt& node) = 0;
     virtual void visit(IfStmt& node) = 0;
     virtual void visit(ForStmt& node) = 0;
     virtual void visit(ExprStmt& node) = 0;
@@ -510,6 +520,7 @@ inline void MemberExpr::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void IndexExpr::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void LetStmt::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void ReturnStmt::accept(AstVisitor& visitor) { visitor.visit(*this); }
+inline void DiscardStmt::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void IfStmt::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void ForStmt::accept(AstVisitor& visitor) { visitor.visit(*this); }
 inline void ExprStmt::accept(AstVisitor& visitor) { visitor.visit(*this); }

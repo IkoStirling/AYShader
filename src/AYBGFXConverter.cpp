@@ -381,19 +381,44 @@ void emitStmt(std::ostringstream& out, const phoskia::ir::IRStmt& s,
         if (outputVar) out << outputVar << " = ";
         if (ret->value) emitExpr(out, *ret->value, ctx);
         out << ";\n";
+    } else if (dynamic_cast<const phoskia::ir::IRDiscardStmt*>(&s)) {
+        out << "    discard;\n";
     } else if (auto es = dynamic_cast<const phoskia::ir::IRExprStmt*>(&s)) {
         if (es->expr) {
             out << "    ";
             emitExpr(out, *es->expr, ctx);
             out << ";\n";
         }
+    } else if (auto iff = dynamic_cast<const phoskia::ir::IRIfStmt*>(&s)) {
+        out << "    if (";
+        if (iff->condition) {
+            emitExpr(out, *iff->condition, ctx);
+        } else {
+            out << "false";
+        }
+        out << ") {\n";
+        env.pushScope();
+        for (const auto& stmt : iff->thenBranch) {
+            if (stmt) emitStmt(out, *stmt, ctx, outputVar, env);
+        }
+        env.popScope();
+        out << "    }";
+        if (!iff->elseBranch.empty()) {
+            out << " else {\n";
+            env.pushScope();
+            for (const auto& stmt : iff->elseBranch) {
+                if (stmt) emitStmt(out, *stmt, ctx, outputVar, env);
+            }
+            env.popScope();
+            out << "    }";
+        }
+        out << "\n";
     }
-    // ShaderParam / IfStmt / ForStmt / VariantAttribute at the body level
+    // ShaderParam / ForStmt / VariantAttribute at the body level
     // should not appear in IRVertexFunc::body / IRFragmentFunc::body —
     // ShaderParams live in params/inputs, VariantAttribute is consumed by
-    // the per-block body loops in convertMaterial. IfStmt / ForStmt are
-    // accepted by the IR but the BGFX backend has no path for them (the
-    // previous AST path silently skipped them too).
+    // the per-block body loops in convertMaterial. ForStmt remains reserved
+    // until its iterable/range lowering contract is finalized.
 }
 
 void emitExpr(std::ostringstream& out, const phoskia::ir::IRExpr& e,
@@ -1899,15 +1924,15 @@ detail::BGFXMaterialStages AYBGFXConverter::convertMaterial(const phoskia::ir::I
         for (const auto& stmt : vf->body) {
             if (auto va = dynamic_cast<const phoskia::ir::IRVariantAttribute*>(stmt.get())) {
                 vs << "#ifdef " << variantMacroName(va->name) << "\n";
-                vs << "#else\n";
-                vs << "    // variant: skipped unless --define " << variantMacroName(va->name) << "\n";
                 openVariants.push_back(va->name);
             } else {
                 emitStmt(vs, *stmt, vsCtx, "gl_Position", vsEnv);
             }
         }
-        for (size_t i = 0; i < openVariants.size(); ++i) {
-            (void)i;  // (no per-variant data needed; close them in order)
+        for (auto it = openVariants.rbegin(); it != openVariants.rend(); ++it) {
+            vs << "#else\n";
+            vs << "    // variant: skipped unless --define "
+               << variantMacroName(*it) << "\n";
             vs << "#endif\n";
         }
     }
@@ -1963,15 +1988,15 @@ detail::BGFXMaterialStages AYBGFXConverter::convertMaterial(const phoskia::ir::I
         for (const auto& stmt : ff->body) {
             if (auto va = dynamic_cast<const phoskia::ir::IRVariantAttribute*>(stmt.get())) {
                 fs << "#ifdef " << variantMacroName(va->name) << "\n";
-                fs << "#else\n";
-                fs << "    // variant: skipped unless --define " << variantMacroName(va->name) << "\n";
                 openVariants.push_back(va->name);
             } else {
                 emitStmt(fs, *stmt, fsCtx, fsOutputVar, fsEnv);
             }
         }
-        for (size_t i = 0; i < openVariants.size(); ++i) {
-            (void)i;
+        for (auto it = openVariants.rbegin(); it != openVariants.rend(); ++it) {
+            fs << "#else\n";
+            fs << "    // variant: skipped unless --define "
+               << variantMacroName(*it) << "\n";
             fs << "#endif\n";
         }
     }

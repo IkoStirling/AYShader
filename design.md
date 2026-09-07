@@ -2,6 +2,8 @@
 
 > **命名来源**：Phoskia — φῶς (光) + σκιά (影)，光与影的交织，shader 的本质。
 
+> **2026-09-02 — material 控制流补全**：BGFX 后端现在递归输出 `IRIfStmt` 的 `if/else`，并新增只允许出现在 fragment block 的 `discard` 语句（Lexer → AST → Parser → Semantic → IR → BGFX 全链路）。vertex/fragment 的 `return <expr>` 仍按既有契约写入 `gl_Position`/`gl_FragColor`，不是通用早退；这是为了兼容 shaderc 在 D3D 上生成的输出结构函数。需要条件输出的 shader 应采用单一最终 `return`，需要拒绝像素时使用 `discard`。用户函数与 `for` 后端输出仍未开放。
+
 ## 0. API Stability Promise
 
 > **承诺范围**：`include/AYShader.h` / `include/AYShader/ShaderProgram.h` / `include/AYShader/Phoskia.h` / `include/AYShader/IBackendConverter.h` 这 4 个公开头文件的 C++ 符号。
@@ -288,7 +290,7 @@ material PBR {
 ### 6.1 块（vertex / fragment）
 
 Phoskia 把每个 material 拆成**两个独立的 shader block**：`vertex { }` 和 `fragment { }`。
-每个 block 内部以 `in / out` 声明开头（可选），随后是 statement 列表（`let`、`return`、`if`、`for` 等）。
+每个 block 内部以 `in / out` 声明开头（可选），随后是 statement 列表（`let`、`return`、`if`、fragment-only `discard` 等；`for` 语法仍为预留能力）。
 
 **vertex / fragment 块的 return 语义。** `vertex { }` 里的 `return <expr>` 应当返回一个 vec4，后端 converter 会隐式把它绑定到 `gl_Position`（写入 `vs_*.sc`）。`fragment { }` 里的 `return <expr>` 应当返回一个 vec4，后端 converter 隐式绑定到 `gl_FragColor`（写入 `fs_*.sc`）。Phoskia 源码**绝不直接引用** `gl_Position` 或 `gl_FragColor`——这两个名字是 bgfx / GLSL 层的实现细节，对应"vertex 输出槽"和"fragment 输出槽"，由 converter 注入。
 
@@ -2280,6 +2282,7 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 <statement>         ::= <let_stmt>
                       | <assignment_stmt>
                       | <return_stmt>
+                      | <discard_stmt>
                       | <if_stmt>
                       | <for_stmt>
                       | <expression_stmt>
@@ -2289,6 +2292,8 @@ Phase 1 不实现缓存。Phase 2 引入 `AYShaderCache`（已存在类骨架）
 <assignment_stmt>   ::= <identifier> "=" <expression> ";"
 
 <return_stmt>       ::= "return" <expression> ";"
+
+<discard_stmt>      ::= "discard" ";"  ; fragment block only
 
 <if_stmt>           ::= "if" "(" <expression> ")" "{" <statement_list> "}"
                       | "if" "(" <expression> ")" "{" <statement_list> "}"

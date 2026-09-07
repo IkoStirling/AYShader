@@ -1244,4 +1244,23 @@ TEST_CASE(skinning_matrix_call_expands_to_weighted_sum) {
     CHECK(files.vertex.find("a_weight.w") != std::string::npos);
 }
 
+TEST_CASE(if_and_discard_emit_real_fragment_control_flow) {
+    const char* src = R"(
+        material Cutout {
+            vertex { return vec4(0.0) }
+            fragment {
+                let alpha = 0.25
+                if (alpha < 0.5) {
+                    discard
+                }
+                return vec4(0.0)
+            }
+        }
+    )";
+    const auto files = compileFirstMaterial(src);
+    CHECK(files.fragment.find("if ((alpha < 0.5))") != std::string::npos);
+    CHECK(files.fragment.find("discard;") != std::string::npos);
+    CHECK(files.fragment.find("gl_FragColor") != std::string::npos);
+}
+
 TEST_SUITE_END

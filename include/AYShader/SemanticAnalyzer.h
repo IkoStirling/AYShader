@@ -51,6 +51,7 @@ private:
     void analyzeShaderParam(const ShaderParam& param);
     void analyzeLetStmt(const LetStmt& stmt);
     void analyzeReturnStmt(const ReturnStmt& stmt);
+    void analyzeDiscardStmt(const DiscardStmt& stmt);
     void analyzeIfStmt(const IfStmt& stmt);
     void analyzeForStmt(const ForStmt& stmt);
     std::shared_ptr<Type> analyzeExpr(const Expr& expr);
@@ -87,6 +88,7 @@ private:
     std::unordered_map<std::string, std::shared_ptr<Type>> _symbols;
     std::unordered_map<std::string, std::shared_ptr<Type>> _materialProperties;
     bool _inShaderFunc = false;
+    bool _inFragmentFunc = false;
     // >0 while analyzing a fragment that declared MRT `out` targets.
     // Return→gl_FragColor is forbidden in that mode.
     size_t _fragmentMrtOutputCount = 0;

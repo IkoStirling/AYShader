@@ -71,18 +71,19 @@ TEST_CASE(keyword_vertex_fragment) {
     CHECK(tokens[1].type == TokenType::Fragment);
 }
 
-TEST_CASE(keyword_let_return_if_else_for_in_out) {
-    Lexer lexer("let return if else for in out");
+TEST_CASE(keyword_let_return_discard_if_else_for_in_out) {
+    Lexer lexer("let return discard if else for in out");
     std::vector<Token> tokens;
     lexer.tokenize(tokens);
-    CHECK(tokens.size() == 8);  // 7 keywords + EOF
+    CHECK(tokens.size() == 9);  // 8 keywords + EOF
     CHECK(tokens[0].type == TokenType::Let);
     CHECK(tokens[1].type == TokenType::Return);
-    CHECK(tokens[2].type == TokenType::If);
-    CHECK(tokens[3].type == TokenType::Else);
-    CHECK(tokens[4].type == TokenType::For);
-    CHECK(tokens[5].type == TokenType::In);
-    CHECK(tokens[6].type == TokenType::Out);
+    CHECK(tokens[2].type == TokenType::Discard);
+    CHECK(tokens[3].type == TokenType::If);
+    CHECK(tokens[4].type == TokenType::Else);
+    CHECK(tokens[5].type == TokenType::For);
+    CHECK(tokens[6].type == TokenType::In);
+    CHECK(tokens[7].type == TokenType::Out);
 }
 
 TEST_CASE(keyword_true_false) {

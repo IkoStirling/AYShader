@@ -679,6 +679,25 @@ TEST_CASE(fragment_if_else) {
     CHECK(ifs->elseBranch.size() == 1);
 }
 
+TEST_CASE(fragment_discard_statement) {
+    const char* src = R"(
+        material X {
+            vertex { return vec4(0.0) }
+            fragment {
+                discard
+                return vec4(1.0)
+            }
+        }
+    )";
+    auto prog = parseSource(src);
+    auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
+    auto* fs = dynamic_cast<FragmentFunc*>(mat->declarations[1].get());
+    CHECK(fs != nullptr);
+    CHECK(fs->body.size() == 2);
+    CHECK(dynamic_cast<DiscardStmt*>(fs->body[0].get()) != nullptr);
+    CHECK(dynamic_cast<ReturnStmt*>(fs->body[1].get()) != nullptr);
+}
+
 // ===== Expressions (unchanged from Phase 1) =====
 
 TEST_CASE(expression_binary) {

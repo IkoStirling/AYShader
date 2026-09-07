@@ -217,6 +217,7 @@ TokenType Lexer::identifierType(const std::string& lexeme) {
         {"in", TokenType::In},
         {"out", TokenType::Out},
         {"return", TokenType::Return},
+        {"discard", TokenType::Discard},
         {"true", TokenType::True},
         {"false", TokenType::False},
         {"variant", TokenType::Variant},

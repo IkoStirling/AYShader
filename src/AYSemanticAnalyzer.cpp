@@ -52,6 +52,7 @@ bool AYSemanticAnalyzer::analyze(const Program& program) {
     // analyze() while _inShaderFunc was still true would corrupt the
     // next call.
     _inShaderFunc = false;
+    _inFragmentFunc = false;
     _fragmentMrtOutputCount = 0;
     _currentLine = 0;
     _currentColumn = 0;
@@ -109,6 +110,8 @@ void AYSemanticAnalyzer::analyze(const Stmt& stmt) {
         analyzeLetStmt(*let);
     } else if (auto ret = dynamic_cast<const ReturnStmt*>(&stmt)) {
         analyzeReturnStmt(*ret);
+    } else if (auto discard = dynamic_cast<const DiscardStmt*>(&stmt)) {
+        analyzeDiscardStmt(*discard);
     } else if (auto ifstmt = dynamic_cast<const IfStmt*>(&stmt)) {
         analyzeIfStmt(*ifstmt);
     } else if (auto forstmt = dynamic_cast<const ForStmt*>(&stmt)) {
@@ -238,6 +241,7 @@ void AYSemanticAnalyzer::analyzeShaderParam(const ShaderParam& param) {
 void AYSemanticAnalyzer::analyzeVertexFunc(const VertexFunc& func) {
     _env.pushScope();
     _inShaderFunc = true;
+    _inFragmentFunc = false;
     detail::registerFrameBuiltins(_env);
     // IR-H-01 follow-up: anchor the location hint at the `vertex`
     // keyword line so statements inside the block inherit a sensible
@@ -257,12 +261,14 @@ void AYSemanticAnalyzer::analyzeVertexFunc(const VertexFunc& func) {
     _currentLine = savedLine;
     _currentColumn = savedCol;
     _inShaderFunc = false;
+    _inFragmentFunc = false;
     _env.popScope();
 }
 
 void AYSemanticAnalyzer::analyzeFragmentFunc(const FragmentFunc& func) {
     _env.pushScope();
     _inShaderFunc = true;
+    _inFragmentFunc = true;
     _fragmentMrtOutputCount = func.outputs.size();
     detail::registerFrameBuiltins(_env);
     // IR-H-01 follow-up: pull the fragment block's source location from
@@ -297,6 +303,7 @@ void AYSemanticAnalyzer::analyzeFragmentFunc(const FragmentFunc& func) {
     }
     _fragmentMrtOutputCount = 0;
     _inShaderFunc = false;
+    _inFragmentFunc = false;
     _env.popScope();
 }
 
@@ -369,6 +376,15 @@ void AYSemanticAnalyzer::analyzeReturnStmt(const ReturnStmt& stmt) {
                   "fragment outputs gl_FragColor); got " + concrete->toString(),
                   retLine, retCol, ErrorCode::TypeMismatch);
         }
+    }
+}
+
+void AYSemanticAnalyzer::analyzeDiscardStmt(const DiscardStmt& stmt) {
+    const int line = stmt.line ? stmt.line : _currentLine;
+    const int column = stmt.column ? stmt.column : _currentColumn;
+    if (!_inFragmentFunc) {
+        error("'discard' is only valid inside a fragment block",
+              line, column, ErrorCode::InvalidOperation);
     }
 }
 

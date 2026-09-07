@@ -303,6 +303,27 @@ TEST_CASE(return_at_program_level_is_error) {
     CHECK_FALSE(r.hasErrors);
 }
 
+TEST_CASE(discard_is_fragment_only) {
+    const char* valid = R"(
+        material X {
+            vertex { return vec4(0.0) }
+            fragment { discard; return vec4(1.0) }
+        }
+    )";
+    auto fragment = analyze(valid);
+    CHECK_FALSE(fragment.hasErrors);
+
+    const char* invalid = R"(
+        material X {
+            vertex { discard; return vec4(0.0) }
+            fragment { return vec4(1.0) }
+        }
+    )";
+    auto vertex = analyze(invalid);
+    CHECK(vertex.hasErrors);
+    CHECK(containsError(vertex.errors, "only valid inside a fragment"));
+}
+
 // ===== Swizzle and member access resolve =====
 
 TEST_CASE(swizzle_rgb_on_vec4_ok) {

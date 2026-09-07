@@ -100,7 +100,11 @@ enum class TokenType : uint8_t {
     EndOfFile,
     // Catch-all for unrecognized character runs. Phoskia doesn't use `#`;
     // the lexer silently consumes it (see `case '#'` in AYLexer.cpp).
-    Unknown
+    Unknown,
+
+    // Fragment-only control-flow statement. Appended to preserve every
+    // existing TokenType ordinal across incremental/stale-object builds.
+    Discard
 };
 
 // ABI sentinels for the AST/operator boundary.  These deliberately fail the
@@ -108,6 +112,7 @@ enum class TokenType : uint8_t {
 // ranges. Append new tokens after Unknown.
 static_assert(static_cast<uint8_t>(TokenType::Plus) == 30);
 static_assert(static_cast<uint8_t>(TokenType::Unknown) == 60);
+static_assert(static_cast<uint8_t>(TokenType::Discard) == 61);
 
 struct Token {
     TokenType type = TokenType::Unknown;
