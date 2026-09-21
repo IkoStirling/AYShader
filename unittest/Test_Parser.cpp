@@ -1018,4 +1018,51 @@ TEST_CASE(compute_numthreads_rejects_zero_component) {
     CHECK(parser.hasErrors());
 }
 
+TEST_CASE(binary_associativity_precedence_and_explicit_grouping) {
+    struct Case {
+        const char* expression;
+        TokenType root;
+        TokenType child;
+        bool childOnRight;
+    };
+    const Case cases[] = {
+        {"a-b-c", TokenType::Minus, TokenType::Minus, false},
+        {"a/b/c", TokenType::Slash, TokenType::Slash, false},
+        {"a/b*c", TokenType::Star, TokenType::Slash, false},
+        {"a%b%c", TokenType::Percent, TokenType::Percent, false},
+        {"a-b+c", TokenType::Plus, TokenType::Minus, false},
+        {"a+b*c", TokenType::Plus, TokenType::Star, true},
+        {"a*(b+c)", TokenType::Star, TokenType::Plus, true},
+        {"a-(b-c)", TokenType::Minus, TokenType::Minus, true},
+        {"a=b=c", TokenType::Equal, TokenType::Equal, true},
+        {"a=b||c", TokenType::Equal, TokenType::Or, true},
+        {"a||b&&c", TokenType::Or, TokenType::And, true},
+    };
+    for (const auto& c : cases) {
+        auto prog = parseSource(std::string("material X { vertex {} fragment { return ")
+                                + c.expression + "; } }");
+        CHECK(prog != nullptr);
+        if (!prog || prog->declarations.empty()) continue;
+        auto* mat = dynamic_cast<MaterialDecl*>(prog->declarations[0].get());
+        CHECK(mat != nullptr);
+        if (!mat || mat->declarations.size() < 2) continue;
+        auto* fs = dynamic_cast<FragmentFunc*>(mat->declarations[1].get());
+        CHECK(fs != nullptr);
+        if (!fs || fs->body.empty()) continue;
+        auto* ret = dynamic_cast<ReturnStmt*>(fs->body[0].get());
+        CHECK(ret != nullptr);
+        if (!ret) continue;
+        auto* root = dynamic_cast<BinaryExpr*>(ret->value.get());
+        CHECK(root != nullptr);
+        if (!root) continue;
+        CHECK(root->op.type == c.root);
+        auto* child = dynamic_cast<BinaryExpr*>(
+            c.childOnRight ? root->right.get() : root->left.get());
+        CHECK(child != nullptr);
+        if (child) CHECK(child->op.type == c.child);
+        CHECK(dynamic_cast<BinaryExpr*>(
+            c.childOnRight ? root->left.get() : root->right.get()) == nullptr);
+    }
+}
+
 TEST_SUITE_END

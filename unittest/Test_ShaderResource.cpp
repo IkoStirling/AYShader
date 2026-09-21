@@ -549,4 +549,36 @@ TEST_CASE(submit_with_render_state_no_crash)
     pool.shutdown();
 }
 
+TEST_CASE(raw_shader_pool_uses_local_executable_without_process_default)
+{
+    if (!wireUpEnvironmentAvailable()) return;
+    BgfxNoopScope scope;
+    CHECK(scope.active);
+    if (!scope.active) return;
+    AYShadercDriver::clearDefaultExecutable();
+    ShaderResourcePool pool;
+    configurePool(pool);
+    const auto resource = pool.acquireFromBgfxSc(
+        "$input a_position\n#include <bgfx_shader.sh>\n"
+        "void main() { gl_Position = vec4(a_position, 1.0); }\n",
+        "#include <bgfx_shader.sh>\n"
+        "void main() { gl_FragColor = vec4(1.0); }\n",
+        "vec3 a_position : POSITION;\n", "local_driver_regression");
+    CHECK(resource.isValid());
+    CHECK(!AYShadercDriver::hasDefaultExecutable());
+    pool.shutdown();
+}
+
+TEST_CASE(raw_shader_pool_missing_executable_fails_closed)
+{
+    AYShadercDriver::clearDefaultExecutable();
+    ShaderResourcePool pool;
+    // No global or local executable: constructor failure is a normal compile
+    // error, not an exception escaping the pool and aborting the render pass.
+    const auto resource = pool.acquireFromBgfxSc("", "", "", "missing_driver");
+    CHECK(!resource.isValid());
+    CHECK(!pool.lastCompileErrors().empty());
+    pool.shutdown();
+}
+
 TEST_SUITE_END

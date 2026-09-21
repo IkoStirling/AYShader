@@ -286,7 +286,7 @@ TEST_CASE(pool_disk_cache_persists_across_pool_instances)
 
     {
         std::ostringstream oss;
-        oss << "aybgfx-v3|windows|430|" << AY_SHADER_SHADERC_HINT << "|";
+        oss << "aybgfx-v4-left-associative|windows|430|" << AY_SHADER_SHADERC_HINT << "|";
         for (const std::string& dir : shadercIncludeDirs()) {
             oss << dir << ';';
         }

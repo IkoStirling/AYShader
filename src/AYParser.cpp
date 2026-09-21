@@ -262,11 +262,8 @@ std::unique_ptr<Expr> Parser::parseBinary(int precedence) {
     while (!isAtEnd()) {
         TokenType op = current().type;
         int nextPrecedence = getPrecedence(op);
-        // '=' is right-associative and lowest precedence (1). We use strict <
-        // (not <=) so the recursive parseBinary(nextPrec) on the right side
-        // also consumes another '=' at the same precedence, building nested
-        // assignments `a = (b = c)`. For left-assoc ops (`+`, `*`, etc.) the
-        // recursion consumes only higher-precedence ops and naturally stops.
+        // Only assignment is right-associative. Other operators must stop
+        // the right-hand recursion at equal precedence (a-b-c == (a-b)-c).
         if (nextPrecedence < precedence) break;
         if (nextPrecedence == 0) break;
 
@@ -277,7 +274,9 @@ std::unique_ptr<Expr> Parser::parseBinary(int precedence) {
         // snapshot the operator here while `_current` is still on it.
         Token opTok = current();
         advance();
-        auto right = parseBinary(nextPrecedence);
+        const int rightPrecedence = nextPrecedence
+            + (op == TokenType::Equal ? 0 : 1);
+        auto right = parseBinary(rightPrecedence);
         // IR-H-01 / IR-M-01: stamp the binary operator's source line/column
         // so the analyzer's matrix-mismatch / type-error diagnostics can
         // point at the operator location rather than the program origin.
@@ -1498,24 +1497,21 @@ Token Parser::consumeName(const std::string& message) {
 
 int Parser::getPrecedence(TokenType op) {
     switch (op) {
-        // '=' is right-associative and lowest precedence — `a = b = c` parses
-        // as `a = (b = c)` semantically. We assign it precedence 1 (the same
-        // as `||`) but mark it via a separate RightAssoc check below so the
-        // parser loop treats it correctly.
+        // Assignment binds below logical OR and remains right-associative.
         case TokenType::Equal: return 1;
-        case TokenType::Or: return 1;
-        case TokenType::And: return 2;
+        case TokenType::Or: return 2;
+        case TokenType::And: return 3;
         case TokenType::EqualEqual:
-        case TokenType::BangEqual: return 3;
+        case TokenType::BangEqual: return 4;
         case TokenType::Less:
         case TokenType::LessEqual:
         case TokenType::Greater:
-        case TokenType::GreaterEqual: return 4;
+        case TokenType::GreaterEqual: return 5;
         case TokenType::Plus:
-        case TokenType::Minus: return 5;
+        case TokenType::Minus: return 6;
         case TokenType::Star:
         case TokenType::Slash:
-        case TokenType::Percent: return 6;
+        case TokenType::Percent: return 7;
         default: return 0;
     }
 }

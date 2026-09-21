@@ -57,7 +57,9 @@ namespace ayt::shader
 namespace {
 
 constexpr int64_t kHotReloadDebounceMs = 100;
-constexpr const char* kCompiledShaderCacheSchema = "aybgfx-v3";
+// v4 fixes Phoskia binary-operator associativity; unchanged source must not
+// reuse binaries generated with the old expression semantics.
+constexpr const char* kCompiledShaderCacheSchema = "aybgfx-v4-left-associative";
 
 struct HotReloadWatch {
     std::string sourcePath;
@@ -1388,9 +1390,12 @@ ShaderResource ShaderResourcePool::acquireFromBgfxSc(const std::string& vertexSc
         opts = _impl->engineBgfxOpts(phoskia::CompileOptions{});
     }
 
-    AYShadercDriver driver;
+    std::optional<AYShadercDriver> driver;
     try {
-        driver = opts.shadercPath.empty() ? AYShadercDriver() : AYShadercDriver(opts.shadercPath);
+        // A pool-local executable must not first require a process default.
+        // Construct inside the guard so missing configuration fails closed.
+        if (opts.shadercPath.empty()) driver.emplace();
+        else driver.emplace(opts.shadercPath);
     } catch (const std::exception& e) {
         std::unique_lock<std::shared_mutex> implLock(_impl->mutex);
         _impl->lastCompileErrors = {std::string("shaderc unavailable: ") + e.what()};
@@ -1407,7 +1412,7 @@ ShaderResource ShaderResourcePool::acquireFromBgfxSc(const std::string& vertexSc
         req.profile            = opts.profile;
         req.includeDirs        = opts.includeDirs;
         req.outputName         = std::string("bgfx_sc_") + stage;
-        const ShaderCompileResult result = driver.compile(req);
+        const ShaderCompileResult result = driver->compile(req);
         if (!result.ok) {
             std::unique_lock<std::shared_mutex> implLock(_impl->mutex);
             _impl->lastCompileErrors.push_back(result.stderrText);

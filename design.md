@@ -1,5 +1,13 @@
 # AYShader Design
 
+## 2026-09-21 — 运算结合性与资源池编译入口修复
+
+- 普通二元运算在递归右侧使用更高的最低优先级，恢复左结合：`a-b-c == (a-b)-c`、`a/b/c == (a/b)/c`。赋值仍右结合，且优先级低于逻辑 OR；显式括号继续决定分组。修复的是 Parser 通用语义，不依赖各 Pass 手工避让，不改变公开 C++ API。
+- 编译缓存 schema 从 `aybgfx-v3` 升至 `aybgfx-v4-left-associative`，同源文本不再命中旧解析语义生成的持久缓存；不删除用户素材或整个缓存目录。
+- 新增 AST 的减法、除法、取模、混合运算、优先级、括号和赋值回归；验证 BGFX 生成文本的分组，保留现有 golden/编译测试。
+- 实际 Skybox/GBuffer/Lighting 验证暴露 `acquireFromBgfxSc` 在 try 外默认构造 AYShadercDriver：即使 pool 已指定编译器路径，未设置全局默认也会抛异常。改成 optional 在 try 内按 pool 路径直接构造；无配置正常返回 invalid 和错误信息。新增局部路径/缺失路径测试，未新增生产 raw-SC shader。
+- VS 2026 Insider Debug 全量 **1466/1466**；Renderer **4556/4556**；D3D11/D3D12 的 Sky、Motion 和 TAA 真实 GPU 联合回归各 **6255/6255**。这不等于对全部用户材质完成视觉验收。
+
 > **命名来源**：Phoskia — φῶς (光) + σκιά (影)，光与影的交织，shader 的本质。
 
 > **2026-09-02 — material 控制流补全**：BGFX 后端现在递归输出 `IRIfStmt` 的 `if/else`，并新增只允许出现在 fragment block 的 `discard` 语句（Lexer → AST → Parser → Semantic → IR → BGFX 全链路）。vertex/fragment 的 `return <expr>` 仍按既有契约写入 `gl_Position`/`gl_FragColor`，不是通用早退；这是为了兼容 shaderc 在 D3D 上生成的输出结构函数。需要条件输出的 shader 应采用单一最终 `return`，需要拒绝像素时使用 `discard`。用户函数与 `for` 后端输出仍未开放。

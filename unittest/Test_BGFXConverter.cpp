@@ -1263,4 +1263,24 @@ TEST_CASE(if_and_discard_emit_real_fragment_control_flow) {
     CHECK(files.fragment.find("gl_FragColor") != std::string::npos);
 }
 
+TEST_CASE(binary_chains_preserve_left_associativity_in_generated_shader) {
+    const auto files = compileFirstMaterial(R"(
+        material Associativity {
+            property a = 12.0
+            property b = 3.0
+            property c = 2.0
+            vertex { in p : position; return vec4(p, 1.0) }
+            fragment {
+                let difference = a - b - c
+                let quotient = a / b / c
+                let grouped = a - (b - c)
+                return vec4(difference, quotient, grouped, 1.0)
+            }
+        }
+    )");
+    CHECK(files.fragment.find("((a - b) - c)") != std::string::npos);
+    CHECK(files.fragment.find("((a / b) / c)") != std::string::npos);
+    CHECK(files.fragment.find("(a - (b - c))") != std::string::npos);
+}
+
 TEST_SUITE_END
