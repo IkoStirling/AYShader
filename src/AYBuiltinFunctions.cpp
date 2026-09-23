@@ -311,6 +311,8 @@ void BuiltinFunctionRegistry::registerDefaults() {
         vec3Return, "Sample a texturecube or 2d array at vec3 coordinates");
     registerFunction("sampleLod", {BuiltinTypes::Dynamic, V2, F}, V4,
         vec3Return, "Sample a texture2d at UV with explicit LOD");
+    registerFunction("sampleLod", {BuiltinTypes::Dynamic, V3, F}, V4,
+        vec3Return, "Sample a texturecube at direction with explicit LOD");
     registerFunction("sampleGrad", {BuiltinTypes::Dynamic, V2, V2, V2}, V4,
         vec3Return, "Sample a texture2d with explicit gradients");
 

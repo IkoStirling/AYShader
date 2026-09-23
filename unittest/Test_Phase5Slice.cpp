@@ -79,4 +79,29 @@ TEST_CASE(texturecube_emits_samplercube_and_textureCube)
     CHECK(fs.find("textureCube(envMap, dir)") != std::string::npos);
 }
 
+TEST_CASE(texturecube_explicit_lod_emits_textureCubeLod)
+{
+    CompiledShaderProgram prog = compileWithSources(R"(
+        material IBLPrefilter {
+            texturecube prefilteredEnv
+            vertex {
+                in nrm : normal
+                out nrmOut : normal
+                return vec4(nrm, 1.0)
+            }
+            fragment {
+                in nrmOut : normal
+                let dir = normalize(nrmOut)
+                let rgb = sampleLod(prefilteredEnv, dir, 3.0)
+                return vec4(rgb.rgb, 1.0)
+            }
+        }
+    )");
+    CHECK(prog.success || !prog.sources.empty());
+    const auto& fs = prog.sources.at("fragment_stage_0");
+    CHECK(fs.find("SAMPLERCUBE(prefilteredEnv, 0)") != std::string::npos);
+    CHECK(fs.find("textureCubeLod(prefilteredEnv, dir, 3.0)")
+          != std::string::npos);
+}
+
 TEST_SUITE_END

@@ -485,6 +485,20 @@ void emitExpr(std::ostringstream& out, const phoskia::ir::IRExpr& e,
                 }
                 out << ((samplerKind == phoskia::ir::SamplerKind::SamplerCube)
                             ? "textureCube" : "texture2D");
+            } else if (callee->name == "sampleLod") {
+                phoskia::ir::SamplerKind samplerKind =
+                    phoskia::ir::SamplerKind::Sampler2D;
+                if (!call->args.empty()) {
+                    if (auto texId = dynamic_cast<const phoskia::ir::IRIdentifierExpr*>(
+                            call->args[0].get())) {
+                        const auto it = ctx.textureKinds.find(texId->name);
+                        if (it != ctx.textureKinds.end()) {
+                            samplerKind = it->second;
+                        }
+                    }
+                }
+                out << ((samplerKind == phoskia::ir::SamplerKind::SamplerCube)
+                            ? "textureCubeLod" : "texture2DLod");
             } else if (callee->name == "thread_id") {
                 // Phase 3.2 Block 2: compute builtin.
                 // Phoskia `thread_id()` → GLSL `gl_GlobalInvocationID`
