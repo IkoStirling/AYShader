@@ -19,16 +19,16 @@
 //   * `std::ifstream` read of .bin → `ayt::io::MemoryMappedFile` (zero-copy)
 //   * `::remove` cleanup → `ayt::io::File::remove`
 //
-// What stays:
-//   * CreateProcessW / popen / ReadFile over pipe — that's OS process
-//     API, not file I/O. AYIO does not (yet) expose a Process module.
-//     See design.md §16.3 Future Work.
+// Process ownership, UTF-8 arguments, output capture and timeouts are shared
+// through AYPlatform/ChildProcess.h; shader-specific staging stays here.
 
 #include "AYShader/ShadercDriver.h"
 
 #include <AYIO/File.h>
 #include <AYIO/Path.h>
 #include <AYIO/Env.h>
+#include <AYPlatform/ChildProcess.h>
+#include <filesystem>
 
 #include <atomic>
 #include <chrono>
@@ -99,281 +99,20 @@ struct SpawnResult {
     bool timedOut = false;
 };
 
-#if defined(_WIN32)
-SpawnResult spawnCapturing(const std::string& exe,
-                           const std::vector<std::string>& args,
-                           // M-01 timeout: 0 = wait forever (legacy
-                           // default); >0 = WaitForSingleObject with
-                           // this many ms, then TerminateProcess.
-                           DWORD timeoutMs = 0) {
-    SpawnResult r{-1, "", false};
-
-    if (exe.empty()) {
-        r.output = "spawnCapturing: executable path is empty";
-        return r;
-    }
-
-    auto quoteArg = [](const std::string& s) -> std::string {
-        std::string out = "\"";
-        for (char c : s) {
-            if (c == '"' || c == '\\') out += '\\';
-            out += c;
-        }
-        out += '"';
-        return out;
-    };
-
-    std::string cmdLine = quoteArg(exe);
-    for (const auto& a : args) { cmdLine += ' '; cmdLine += quoteArg(a); }
-
-    HANDLE hRead = nullptr, hWrite = nullptr;
-    SECURITY_ATTRIBUTES sa{};
-    sa.nLength = sizeof(sa);
-    sa.bInheritHandle = TRUE;
-    sa.lpSecurityDescriptor = nullptr;
-    if (!CreatePipe(&hRead, &hWrite, &sa, 0)) {
-        r.output = "CreatePipe failed";
-        return r;
-    }
-    SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
-
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    si.hStdError  = hWrite;
-    si.hStdOutput = hWrite;
-    si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
-    si.dwFlags   |= STARTF_USESTDHANDLES;
-    si.dwFlags   |= STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-
-    PROCESS_INFORMATION pi{};
-
-    // H-02 fix: properly convert UTF-8 → UTF-16 into a vector that
-    // is null-terminated (CreateProcessW's second parameter requires
-    // a null-terminated wide string when the first parameter is
-    // nullptr). MultiByteToWideChar(CP_UTF8, 0, …) handles the
-    // non-ASCII bytes correctly; the prior `std::wstring(begin, end)`
-    // form truncated everything to low bytes and dropped the
-    // terminator, producing garbled command lines on Windows hosts.
-    std::vector<wchar_t> cmdLineW;
-    {
-        const int needed = MultiByteToWideChar(
-            CP_UTF8, 0, cmdLine.c_str(), -1, nullptr, 0);
-        if (needed <= 0) {
-            r.output = "MultiByteToWideChar size probe failed (error " +
-                       std::to_string(GetLastError()) + ") for: " + cmdLine;
-            CloseHandle(hRead);
-            CloseHandle(hWrite);
-            return r;
-        }
-        cmdLineW.assign(static_cast<size_t>(needed), L'\0');
-        const int written = MultiByteToWideChar(
-            CP_UTF8, 0, cmdLine.c_str(), -1, cmdLineW.data(), needed);
-        if (written <= 0) {
-            r.output = "MultiByteToWideChar conversion failed (error " +
-                       std::to_string(GetLastError()) + ") for: " + cmdLine;
-            CloseHandle(hRead);
-            CloseHandle(hWrite);
-            return r;
-        }
-    }
-
-    constexpr DWORD kCreateNoWindow = 0x08000000u;
-    BOOL ok = CreateProcessW(
-        nullptr, cmdLineW.data(),
-        nullptr, nullptr,
-        TRUE, kCreateNoWindow, nullptr, nullptr,
-        &si, &pi);
-
-    if (!ok) {
-        r.output = "CreateProcess failed (error " +
-                   std::to_string(GetLastError()) + ") for: " + cmdLine;
-        CloseHandle(hRead);
-        CloseHandle(hWrite);
-        return r;
-    }
-    CloseHandle(hWrite);
-
-    // Do not perform a blocking ReadFile before waiting for the process:
-    // a silent/hung child keeps its pipe open forever and would bypass the
-    // timeout entirely. Poll the pipe while waiting so output-heavy shaderc
-    // processes cannot block on a full pipe either.
-    auto drainAvailableOutput = [&]() {
-        char buf[4096];
-        for (;;) {
-            DWORD available = 0;
-            if (!PeekNamedPipe(hRead, nullptr, 0, nullptr, &available, nullptr)
-                || available == 0) {
-                break;
-            }
-            const DWORD toRead = available < sizeof(buf)
-                ? available
-                : static_cast<DWORD>(sizeof(buf));
-            DWORD got = 0;
-            if (!ReadFile(hRead, buf, toRead, &got, nullptr) || got == 0) {
-                break;
-            }
-            r.output.append(buf, buf + got);
-        }
-    };
-
-    constexpr DWORD kPollIntervalMs = 20;
-    const ULONGLONG startedAt = GetTickCount64();
-    DWORD waitResult = WAIT_TIMEOUT;
-    for (;;) {
-        drainAvailableOutput();
-
-        DWORD waitSlice = kPollIntervalMs;
-        if (timeoutMs != 0) {
-            const ULONGLONG elapsed = GetTickCount64() - startedAt;
-            if (elapsed >= timeoutMs) {
-                waitResult = WAIT_TIMEOUT;
-                break;
-            }
-            const DWORD remaining = timeoutMs - static_cast<DWORD>(elapsed);
-            if (remaining < waitSlice) {
-                waitSlice = remaining;
-            }
-        }
-
-        waitResult = WaitForSingleObject(pi.hProcess, waitSlice);
-        if (waitResult == WAIT_OBJECT_0 || waitResult == WAIT_FAILED) {
-            break;
-        }
-    }
-    if (waitResult == WAIT_TIMEOUT) {
-        // Hard kill the child — there's no graceful cancel signal
-        // shaderc understands. The output we collected so far is
-        // preserved in `r.output` for diagnostics; the bin file is
-        // either absent or partial, which the caller's read-back
-        // handles correctly (memory-map returns invalid for missing
-        // file, "exit 0 but .bin missing" for partial).
-        TerminateProcess(pi.hProcess, 1);
-        // Drain the process so the kernel releases handles; this
-        // also lets the exit code populate below.
-        WaitForSingleObject(pi.hProcess, 5000);
-        r.timedOut = true;
-        r.output += "\n[shaderc] timeout after " +
-                    std::to_string(timeoutMs) + "ms; terminated.";
-    } else if (waitResult == WAIT_FAILED) {
-        const DWORD waitError = GetLastError();
-        TerminateProcess(pi.hProcess, 1);
-        WaitForSingleObject(pi.hProcess, 5000);
-        r.output += "\n[shaderc] process wait failed (error " +
-                    std::to_string(waitError) + ").";
-    }
-    drainAvailableOutput();
-    CloseHandle(hRead);
-    DWORD exitCode = 0;
-    GetExitCodeProcess(pi.hProcess, &exitCode);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-
-    r.exitCode = static_cast<int>(exitCode);
-    return r;
-}
-#else
 SpawnResult spawnCapturing(const std::string& exe,
                            const std::vector<std::string>& args,
                            uint32_t timeoutMs = 0) {
-    SpawnResult r{-1, "", false};
-    int pipeFds[2] = {-1, -1};
-    if (::pipe(pipeFds) != 0) {
-        r.output = "pipe failed";
-        return r;
-    }
-
-    const pid_t pid = ::fork();
-    if (pid < 0) {
-        ::close(pipeFds[0]);
-        ::close(pipeFds[1]);
-        r.output = "fork failed";
-        return r;
-    }
-    if (pid == 0) {
-        ::close(pipeFds[0]);
-        ::dup2(pipeFds[1], STDOUT_FILENO);
-        ::dup2(pipeFds[1], STDERR_FILENO);
-        ::close(pipeFds[1]);
-
-        std::vector<char*> argv;
-        argv.reserve(args.size() + 2);
-        argv.push_back(const_cast<char*>(exe.c_str()));
-        for (const std::string& arg : args) {
-            argv.push_back(const_cast<char*>(arg.c_str()));
-        }
-        argv.push_back(nullptr);
-        ::execv(exe.c_str(), argv.data());
-        constexpr char kExecFailure[] = "execv failed\n";
-        (void)::write(STDERR_FILENO, kExecFailure, sizeof(kExecFailure) - 1);
-        ::_exit(127);
-    }
-
-    ::close(pipeFds[1]);
-    const int originalFlags = ::fcntl(pipeFds[0], F_GETFL, 0);
-    if (originalFlags >= 0) {
-        (void)::fcntl(pipeFds[0], F_SETFL, originalFlags | O_NONBLOCK);
-    }
-
-    auto drainOutput = [&]() {
-        char buf[4096];
-        for (;;) {
-            const ssize_t got = ::read(pipeFds[0], buf, sizeof(buf));
-            if (got > 0) {
-                r.output.append(buf, static_cast<size_t>(got));
-                continue;
-            }
-            if (got < 0 && errno == EINTR) {
-                continue;
-            }
-            break;
-        }
-    };
-
-    const auto startedAt = std::chrono::steady_clock::now();
-    int status = 0;
-    for (;;) {
-        pollfd outputPoll{pipeFds[0], POLLIN, 0};
-        (void)::poll(&outputPoll, 1, 20);
-        drainOutput();
-
-        const pid_t waitResult = ::waitpid(pid, &status, WNOHANG);
-        if (waitResult == pid) {
-            break;
-        }
-        if (waitResult < 0 && errno != EINTR) {
-            r.output += "\n[shaderc] waitpid failed.";
-            (void)::kill(pid, SIGKILL);
-            while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {
-            }
-            break;
-        }
-
-        if (timeoutMs != 0) {
-            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - startedAt).count();
-            if (elapsed >= timeoutMs) {
-                (void)::kill(pid, SIGKILL);
-                while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {
-                }
-                r.timedOut = true;
-                r.output += "\n[shaderc] timeout after " +
-                            std::to_string(timeoutMs) + "ms; terminated.";
-                break;
-            }
-        }
-    }
-
-    drainOutput();
-    ::close(pipeFds[0]);
-    if (WIFEXITED(status)) {
-        r.exitCode = WEXITSTATUS(status);
-    } else if (WIFSIGNALED(status)) {
-        r.exitCode = 128 + WTERMSIG(status);
-    }
-    return r;
+    ayt::platform::ProcessOptions options;
+    options.executable = std::filesystem::u8path(exe);
+    options.arguments = args;
+    options.timeout = std::chrono::milliseconds(timeoutMs);
+    const auto process = ayt::platform::runProcess(options);
+    SpawnResult result{process.exitCode, process.output, process.timedOut};
+    if (!process.error.empty()) result.output += "\n[shaderc] " + process.error;
+    if (process.timedOut) result.output += "\n[shaderc] timeout after " + std::to_string(timeoutMs) + "ms; terminated.";
+    if (process.outputTruncated) result.output += "\n[shaderc] process output truncated.";
+    return result;
 }
-#endif
 
 // Build a unique temp .sc path. Process-pid + monotonic counter
 // sidesteps race conditions if multiple drivers / threads happen to

@@ -11,8 +11,8 @@
 //   * Caller hands the driver an in-memory .sc string + stage /
 //     platform / profile / include dirs.
 //   * Driver stages the .sc to a temp file (shaderc wants a `-f` path,
-//     not stdin), invokes shaderc.exe / shaderc via CreateProcessW /
-//     popen, reads the .bin bytes back into a vector<uint8_t>, and
+//     not stdin), invokes shaderc via AYPlatform's owned child-process API,
+//     reads the .bin bytes back into a vector<uint8_t>, and
 //     deletes the temp file.
 //   * Driver is constructed ONCE per AYBGFXConverter instance (cached
 //     as a member) and reuses the shaderc path across calls.

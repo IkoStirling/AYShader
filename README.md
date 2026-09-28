@@ -6,6 +6,9 @@ AYShader 是 AY Engine 的着色器子系统：接受 **Phoskia** DSL 源码，�
 
 完整设计见 [`design.md`](design.md)。本文档是面向开发者的概览。
 
+shaderc 的进程执行复用 `AYPlatform/ChildProcess.h`，统一 UTF-8 参数、有限输出捕获、
+超时及进程树收尾；Shader 保留临时源码、编译选项与诊断转换的领域逻辑。
+
 ---
 
 ## 状态
