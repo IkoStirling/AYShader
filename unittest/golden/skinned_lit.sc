@@ -25,7 +25,7 @@ void main()
 {
     v_normal = vec3(0.0, 0.0, 1.0);
     v_texcoord0 = vec2(0.0, 0.0);
-    vec4 skinned = ((a_weight.x) * (Skeleton.bones[int(a_indices.x)] * vec4(a_position, 1.0)) + (a_weight.y) * (Skeleton.bones[int(a_indices.y)] * vec4(a_position, 1.0)) + (a_weight.z) * (Skeleton.bones[int(a_indices.z)] * vec4(a_position, 1.0)) + (a_weight.w) * (Skeleton.bones[int(a_indices.w)] * vec4(a_position, 1.0)));
+    vec4 skinned = ((a_weight.x) * (mul(Skeleton.bones[int(a_indices.x)], vec4(a_position, 1.0))) + (a_weight.y) * (mul(Skeleton.bones[int(a_indices.y)], vec4(a_position, 1.0))) + (a_weight.z) * (mul(Skeleton.bones[int(a_indices.z)], vec4(a_position, 1.0))) + (a_weight.w) * (mul(Skeleton.bones[int(a_indices.w)], vec4(a_position, 1.0))));
     gl_Position = mul(u_modelViewProj, skinned);
 }
 
@@ -47,6 +47,6 @@ void main()
 {
     vec4 albedo = (texture2D(albedoMap, v_texcoord0) * baseColor);
     float ndotl = max(dot(normalize(v_normal), -lightDir), 0.05);
-    gl_FragColor = vec4((albedo.rgb * (lightColor * ndotl)), albedo.a);
+    gl_FragColor = vec4(((albedo.rgb * lightColor) * ndotl), albedo.a);
 }
 

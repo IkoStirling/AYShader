@@ -14,7 +14,7 @@ layout(std140, binding = 0) uniform Camera {
 
 void main()
 {
-    p = Camera.position;
+    vec3 p = Camera.position;
     gl_Position = vec4(p, 1.0);
 }
 

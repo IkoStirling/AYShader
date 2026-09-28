@@ -8,8 +8,8 @@
 // it as <name>.sc.
 //
 // Workflow:
-//   1. First run (no .sc file present)  -> generates <name>.sc from
-//      the Phoskia source. Subsequent runs compare byte-equal.
+//   1. Ordinary regression requires checked-in source and baseline;
+//      a missing file is a failure, never an automatic acceptance.
 //   2. AY_SHADER_REGEN_GOLDEN=1 in env  -> unconditionally regenerates
 //      the .sc file (used after intentional converter changes).
 //
@@ -72,6 +72,9 @@ void ensureShadercDefaultForGolden() {
 // during in-source builds and after install. We also try a couple of
 // fallback locations for robustness.
 std::string goldenDir() {
+#ifdef AY_SHADER_GOLDEN_DIR
+    return AY_SHADER_GOLDEN_DIR;
+#else
     const char* candidates[] = {
         "unittest/golden",                // run from project root
         "../unittest/golden",             // run from out/build/<cfg>/...
@@ -82,6 +85,7 @@ std::string goldenDir() {
         if (fs::exists(c) && fs::is_directory(c)) return c;
     }
     return "unittest/golden";  // best-effort default
+#endif
 }
 
 bool regenMode() {
@@ -213,9 +217,8 @@ void runOneFixture(const std::string& name) {
     std::string outPath = dir + "/" + name + ".sc";
 
     if (!fs::exists(srcPath)) {
-        std::fprintf(stderr,
-                     "SKIP golden_%s: missing fixture '%s' (set AY_SHADER_REGEN_GOLDEN=1 after adding fixtures)\n",
-                     name.c_str(), srcPath.c_str());
+        std::fprintf(stderr, "Missing required golden fixture: %s\n", srcPath.c_str());
+        CHECK(fs::exists(srcPath));
         return;
     }
 
@@ -227,12 +230,16 @@ void runOneFixture(const std::string& name) {
     CHECK_FALSE(actual.empty());
     if (actual.empty()) return;
 
-    if (!fs::exists(outPath) || regenMode()) {
+    if (regenMode()) {
         writeFile(outPath, actual);
+        CHECK(readFile(outPath) == actual);
         std::printf("  [GEN] wrote golden baseline %s (%zu bytes)\n",
                     outPath.c_str(), actual.size());
         return;
     }
+
+    CHECK(fs::exists(outPath));
+    if (!fs::exists(outPath)) return;
 
     std::string expected = readFile(outPath);
     if (actual == expected) {
@@ -267,8 +274,8 @@ TEST_CASE(golden_pbr_full)               { runOneFixture("pbr_full"); }
 TEST_CASE(golden_empty)                  { runOneFixture("empty"); }
 // Phase 3.2 Block 4: compute fixture exercises Blocks 1-3 end-to-end
 // (convertComputeDecl skeleton + thread_id inline + storage buffer
-// emission). The .sc baseline is auto-generated on first run if
-// missing; regenerate with AY_SHADER_REGEN_GOLDEN=1 after an
+// emission). The .sc baseline is required; regenerate explicitly
+// with AY_SHADER_REGEN_GOLDEN=1 after an
 // intentional converter change.
 TEST_CASE(golden_compute_minimal)        { runOneFixture("compute_minimal"); }
 // Phase 3.5-A: compute fixture exercising storage decl explicit
@@ -276,8 +283,8 @@ TEST_CASE(golden_compute_minimal)        { runOneFixture("compute_minimal"); }
 // the BGFX backend emits
 //   `layout(std430, binding = 0) buffer inputs { float data[]; } inputs;`
 //   `layout(std430, binding = 1) buffer outputs { float data[]; } outputs;`
-// in the cs output. The .sc baseline is auto-generated on first run if
-// missing; regenerate with AY_SHADER_REGEN_GOLDEN=1 after an
+// in the cs output. The .sc baseline is required; regenerate explicitly
+// with AY_SHADER_REGEN_GOLDEN=1 after an
 // intentional converter change.
 TEST_CASE(golden_compute_with_storage_binding) {
     runOneFixture("compute_with_storage_binding");
@@ -287,8 +294,8 @@ TEST_CASE(golden_compute_with_storage_binding) {
 // explicit `binding 3`; the BGFX backend emits
 //   `layout(std140, binding = 0) uniform Camera { ... } Camera;`
 //   `layout(std140, binding = 3) uniform Lighting { ... } Lighting;`
-// spliced into both vs and fs. The .sc baseline is auto-generated on
-// first run if missing; regenerate with AY_SHADER_REGEN_GOLDEN=1
+// spliced into both vs and fs. The .sc baseline is required;
+// regenerate explicitly with AY_SHADER_REGEN_GOLDEN=1
 // after an intentional converter change.
 TEST_CASE(golden_material_with_ubo_binding) {
     runOneFixture("material_with_ubo_binding");
@@ -297,7 +304,7 @@ TEST_CASE(golden_material_with_ubo_binding) {
 //   - BoneIndices / BoneWeights vertex semantics,
 //   - `mat4 bones[128]` UBO array field syntax,
 //   - skinningMatrix builtin call.
-// The .sc baseline is auto-generated on first run; regenerate with
+// The .sc baseline is required; regenerate explicitly with
 // AY_SHADER_REGEN_GOLDEN=1 after an intentional converter change.
 TEST_CASE(golden_skinned_lit) {
     runOneFixture("skinned_lit");

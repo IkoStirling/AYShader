@@ -192,6 +192,16 @@ std::shared_ptr<Type> TypeInference::inferCallExpr(const CallExpr& expr) {
                         score += 10;
                         continue;
                     }
+                    // An unsized builtin array parameter accepts a fixed-size
+                    // array of the same element type (e.g. bones[128]). Exact
+                    // array equality must still distinguish concrete lengths.
+                    auto argArray = std::dynamic_pointer_cast<ArrayType>(arg);
+                    auto paramArray = std::dynamic_pointer_cast<ArrayType>(param);
+                    if (argArray && paramArray && paramArray->size() == 0 &&
+                        argArray->elementType()->equals(*paramArray->elementType())) {
+                        score += 8;
+                        continue;
+                    }
                     ok = false;
                     break;
                 }

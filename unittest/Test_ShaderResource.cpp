@@ -208,26 +208,26 @@ TEST_CASE(invalid_binding_queries_return_zero)
 TEST_CASE(pool_acquire_unlit_wires_up)
 {
     if (!wireUpEnvironmentAvailable()) {
-        std::cerr << "[ShaderResource test] SKIP: shaderc/bgfx common not available.\n";
-        return;
+        SKIP_TEST("Configured shaderc or bgfx include dependency is unavailable");
     }
 
     clearPhase36Env();
     AYShadercDriver::clearDefaultExecutable();
     if (!shadercAvailable()) {
-        std::cerr << "[ShaderResource test] SKIP: shaderc not available.\n";
-        return;
+        SKIP_TEST("Configured shaderc or bgfx include dependency is unavailable");
     }
 
     BgfxNoopScope bgfxScope;
     if (!bgfxScope.active) {
-        std::cerr << "[ShaderResource test] SKIP: bgfx::init(Noop) failed.\n";
+        std::cerr << "[ShaderResource test] FAIL: bgfx::init(Noop) failed.\n";
+        CHECK_MSG(false, "Required Noop initialization or shader compilation failed");
         return;
     }
 
     CompiledShaderProgram prog = compileMinimalUnlit();
     if (!prog.success) {
-        std::cerr << "[ShaderResource test] SKIP: compileToProgram failed.\n";
+        std::cerr << "[ShaderResource test] FAIL: compileToProgram failed.\n";
+        CHECK_MSG(false, "Required Noop initialization or shader compilation failed");
         return;
     }
 
@@ -245,20 +245,19 @@ TEST_CASE(pool_acquire_unlit_wires_up)
 TEST_CASE(pool_compile_end_to_end)
 {
     if (!wireUpEnvironmentAvailable()) {
-        std::cerr << "[ShaderResource test] SKIP: shaderc/bgfx common not available.\n";
-        return;
+        SKIP_TEST("Configured shaderc or bgfx include dependency is unavailable");
     }
 
     clearPhase36Env();
     AYShadercDriver::clearDefaultExecutable();
     if (!shadercAvailable()) {
-        std::cerr << "[ShaderResource test] SKIP: shaderc not available.\n";
-        return;
+        SKIP_TEST("Configured shaderc or bgfx include dependency is unavailable");
     }
 
     BgfxNoopScope bgfxScope;
     if (!bgfxScope.active) {
-        std::cerr << "[ShaderResource test] SKIP: bgfx::init(Noop) failed.\n";
+        std::cerr << "[ShaderResource test] FAIL: bgfx::init(Noop) failed.\n";
+        CHECK_MSG(false, "Required Noop initialization or shader compilation failed");
         return;
     }
 
@@ -275,20 +274,19 @@ TEST_CASE(pool_compile_end_to_end)
 TEST_CASE(compiler_compile_to_shader_resource)
 {
     if (!wireUpEnvironmentAvailable()) {
-        std::cerr << "[ShaderResource test] SKIP: shaderc/bgfx common not available.\n";
-        return;
+        SKIP_TEST("Configured shaderc or bgfx include dependency is unavailable");
     }
 
     clearPhase36Env();
     AYShadercDriver::clearDefaultExecutable();
     if (!shadercAvailable()) {
-        std::cerr << "[ShaderResource test] SKIP: shaderc not available.\n";
-        return;
+        SKIP_TEST("Configured shaderc or bgfx include dependency is unavailable");
     }
 
     BgfxNoopScope bgfxScope;
     if (!bgfxScope.active) {
-        std::cerr << "[ShaderResource test] SKIP: bgfx::init(Noop) failed.\n";
+        std::cerr << "[ShaderResource test] FAIL: bgfx::init(Noop) failed.\n";
+        CHECK_MSG(false, "Required Noop initialization or shader compilation failed");
         return;
     }
 
@@ -306,20 +304,19 @@ TEST_CASE(compiler_compile_to_shader_resource)
 TEST_CASE(pool_acquire_cache_returns_same_resource)
 {
     if (!wireUpEnvironmentAvailable()) {
-        std::cerr << "[ShaderResource test] SKIP: shaderc/bgfx common not available.\n";
-        return;
+        SKIP_TEST("Configured shaderc or bgfx include dependency is unavailable");
     }
 
     clearPhase36Env();
     AYShadercDriver::clearDefaultExecutable();
     if (!shadercAvailable()) {
-        std::cerr << "[ShaderResource test] SKIP: shaderc not available.\n";
-        return;
+        SKIP_TEST("Configured shaderc or bgfx include dependency is unavailable");
     }
 
     BgfxNoopScope bgfxScope;
     if (!bgfxScope.active) {
-        std::cerr << "[ShaderResource test] SKIP: bgfx::init(Noop) failed.\n";
+        std::cerr << "[ShaderResource test] FAIL: bgfx::init(Noop) failed.\n";
+        CHECK_MSG(false, "Required Noop initialization or shader compilation failed");
         return;
     }
 
@@ -345,8 +342,7 @@ TEST_CASE(pool_acquire_cache_returns_same_resource)
 TEST_CASE(compile_to_program_std140_block_metadata)
 {
     if (!shadercAvailable() || !bgfxCommonAvailable()) {
-        std::cerr << "[ShaderResource test] SKIP: shaderc/bgfx common not available.\n";
-        return;
+        SKIP_TEST("Configured shaderc or bgfx include dependency is unavailable");
     }
 
     clearPhase36Env();
@@ -358,7 +354,8 @@ TEST_CASE(compile_to_program_std140_block_metadata)
     Compiler compiler;
     CompiledShaderProgram prog = compiler.compileToProgram(kUboMaterial);
     if (!prog.success) {
-        std::cerr << "[ShaderResource test] SKIP: compileToProgram(UBO) failed.\n";
+        std::cerr << "[ShaderResource test] FAIL: compileToProgram(UBO) failed.\n";
+        CHECK_MSG(false, "Required Noop initialization or shader compilation failed");
         return;
     }
 
@@ -375,8 +372,7 @@ TEST_CASE(compile_to_program_std140_block_metadata)
 TEST_CASE(pool_ubo_wires_std140_layout)
 {
     if (!wireUpEnvironmentAvailable()) {
-        std::cerr << "[ShaderResource test] SKIP: shaderc/bgfx common not available.\n";
-        return;
+        SKIP_TEST("Configured shaderc or bgfx include dependency is unavailable");
     }
 
     clearPhase36Env();
@@ -416,26 +412,26 @@ TEST_CASE(pool_ubo_wires_std140_layout)
 TEST_CASE(set_uniform_and_submit_no_crash)
 {
     if (!wireUpEnvironmentAvailable()) {
-        std::cerr << "[ShaderResource test] SKIP: shaderc/bgfx common not available.\n";
-        return;
+        SKIP_TEST("Configured shaderc or bgfx include dependency is unavailable");
     }
 
     clearPhase36Env();
     AYShadercDriver::clearDefaultExecutable();
     if (!shadercAvailable()) {
-        std::cerr << "[ShaderResource test] SKIP: shaderc not available.\n";
-        return;
+        SKIP_TEST("Configured shaderc or bgfx include dependency is unavailable");
     }
 
     BgfxNoopScope bgfxScope;
     if (!bgfxScope.active) {
-        std::cerr << "[ShaderResource test] SKIP: bgfx::init(Noop) failed.\n";
+        std::cerr << "[ShaderResource test] FAIL: bgfx::init(Noop) failed.\n";
+        CHECK_MSG(false, "Required Noop initialization or shader compilation failed");
         return;
     }
 
     CompiledShaderProgram prog = compileMinimalUnlit();
     if (!prog.success) {
-        std::cerr << "[ShaderResource test] SKIP: compileToProgram failed.\n";
+        std::cerr << "[ShaderResource test] FAIL: compileToProgram failed.\n";
+        CHECK_MSG(false, "Required Noop initialization or shader compilation failed");
         return;
     }
 
@@ -459,8 +455,7 @@ TEST_CASE(set_uniform_and_submit_no_crash)
 TEST_CASE(partial_mat4_array_uniform_submit_no_overread)
 {
     if (!wireUpEnvironmentAvailable()) {
-        std::cerr << "[ShaderResource test] SKIP: shaderc/bgfx common not available.\n";
-        return;
+        SKIP_TEST("Configured shaderc or bgfx include dependency is unavailable");
     }
 
     clearPhase36Env();
@@ -517,8 +512,7 @@ TEST_CASE(partial_mat4_array_uniform_submit_no_overread)
 TEST_CASE(submit_with_render_state_no_crash)
 {
     if (!wireUpEnvironmentAvailable()) {
-        std::cerr << "[ShaderResource test] SKIP: shaderc/bgfx common not available.\n";
-        return;
+        SKIP_TEST("Configured shaderc or bgfx include dependency is unavailable");
     }
 
     clearPhase36Env();

@@ -42,12 +42,13 @@ TEST_SUITE(CacheStatsTests)
 TEST_CASE(second_compile_records_source_and_binary_hits)
 {
     if (!envReady()) {
-        return;
+        SKIP_TEST("Configured shaderc or bgfx include dependency is unavailable");
     }
 
     bgfx::Init init;
     init.type = bgfx::RendererType::Noop;
     if (!bgfx::init(init)) {
+        CHECK_MSG(false, "Required Noop initialization failed");
         return;
     }
 

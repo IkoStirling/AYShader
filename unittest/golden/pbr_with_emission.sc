@@ -28,12 +28,12 @@ uniform vec3 emission;
 void main()
 {
     vec3 N = normalize(v_normal);
-    vec3 result = vec3(0.5);
-#ifndef BGFX_VARIANT_USE_EMISSION
-    // variant: skipped unless --define BGFX_VARIANT_USE_EMISSION
-#else
+    vec3 result = vec3_splat(0.5);
+#ifdef BGFX_VARIANT_USE_EMISSION
     (result = (result + emission));
     gl_FragColor = vec4(result, 1.0);
+#else
+    // variant: skipped unless --define BGFX_VARIANT_USE_EMISSION
 #endif
 }
 

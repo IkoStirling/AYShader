@@ -263,8 +263,7 @@ TEST_CASE(disk_cache_rejects_oversized_blob_length)
 TEST_CASE(pool_disk_cache_persists_across_pool_instances)
 {
     if (!shadercAvailable() || !bgfxCommonAvailable()) {
-        std::cerr << "[ShaderDiskCache test] SKIP: shaderc/bgfx common not available.\n";
-        return;
+        SKIP_TEST("Configured shaderc or bgfx include dependency is unavailable");
     }
 
     PUTENV_S("AY_PHOSKIA_KEEP_SOURCES", "");
@@ -272,7 +271,8 @@ TEST_CASE(pool_disk_cache_persists_across_pool_instances)
 
     BgfxNoopScope bgfxScope;
     if (!bgfxScope.active) {
-        std::cerr << "[ShaderDiskCache test] SKIP: bgfx::init(Noop) failed.\n";
+        std::cerr << "[ShaderDiskCache test] FAIL: bgfx::init(Noop) failed.\n";
+        CHECK_MSG(false, "Required Noop initialization or shader compilation failed");
         return;
     }
 

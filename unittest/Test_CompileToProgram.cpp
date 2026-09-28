@@ -16,6 +16,7 @@
 
 #include "AYShader/Phoskia.h"
 #include "AYShader/ShadercDriver.h"  // for AYShadercDriver::clearDefaultExecutable()
+#include "AYShader/detail/ShaderSourceKeys.h"
 #include "AYTest.h"
 
 #include <cstdio>
@@ -23,6 +24,10 @@
 #include <iostream>
 #include <string>
 #include <sys/stat.h>
+
+#ifndef AY_SHADER_SHADERC_HINT
+#define AY_SHADER_SHADERC_HINT ""
+#endif
 
 #ifdef _WIN32
 #  define PUTENV_S(name, val) _putenv_s(name, val)
@@ -71,6 +76,13 @@ void clearPhase36Env() {
 // env-var precedence results.)
 void clearShadercDefault() {
     AYShadercDriver::clearDefaultExecutable();
+    // Positive-path fixtures must configure their own driver, not depend on
+    // a previous suite. Only an actually missing dependency is a skip.
+    struct stat info;
+    if (!AY_SHADER_SHADERC_HINT[0] || ::stat(AY_SHADER_SHADERC_HINT, &info) != 0) {
+        SKIP_TEST("Configured shaderc executable is unavailable");
+    }
+    AYShadercDriver::setDefaultExecutable(AY_SHADER_SHADERC_HINT);
 }
 
 // stat()-based file existence check. Avoids `<filesystem>` for the
@@ -153,11 +165,11 @@ TEST_CASE(compileToProgram_keep_sources_via_opts) {
     CompiledShaderProgram program = c.compileToProgram(kMinimalUnlit, opts);
 
     if (!program.success) {
-        std::cerr << "[compileToProgram test] SKIP: shaderc not available.\n";
+        CHECK(program.success);
         return;
     }
-    CHECK(program.sources.count("vertex_stage_0") == 1);
-    CHECK(program.sources.count("fragment_stage_0") == 1);
+    CHECK(program.sources.count(detail::vertexStageKey(0)) == 1);
+    CHECK(program.sources.count(detail::fragmentStageKey(0)) == 1);
 }
 
 // Env var override: AY_PHOSKIA_KEEP_SOURCES=1 with opts.keepSources=false
@@ -173,12 +185,12 @@ TEST_CASE(env_AY_PHOSKIA_KEEP_SOURCES_overrides_opts_false) {
     CompiledShaderProgram program = c.compileToProgram(kMinimalUnlit, opts);
 
     if (!program.success) {
-        std::cerr << "[compileToProgram test] SKIP: shaderc not available.\n";
+        CHECK(program.success);
         return;
     }
     // Sources populated even though explicit opts.keepSources=false.
-    CHECK(program.sources.count("vertex_stage_0") == 1);
-    CHECK(program.sources.count("fragment_stage_0") == 1);
+    CHECK(program.sources.count(detail::vertexStageKey(0)) == 1);
+    CHECK(program.sources.count(detail::fragmentStageKey(0)) == 1);
 }
 
 // Env var override: same as above but explicit opts.keepSources=true
@@ -194,10 +206,10 @@ TEST_CASE(env_AY_PHOSKIA_KEEP_SOURCES_combines_with_opts_true) {
     CompiledShaderProgram program = c.compileToProgram(kMinimalUnlit, opts);
 
     if (!program.success) {
-        std::cerr << "[compileToProgram test] SKIP: shaderc not available.\n";
+        CHECK(program.success);
         return;
     }
-    CHECK(program.sources.count("vertex_stage_0") == 1);
+    CHECK(program.sources.count(detail::vertexStageKey(0)) == 1);
 }
 
 // Env var override: env says OFF, opts say ON �?the contract is
@@ -214,10 +226,10 @@ TEST_CASE(env_AY_PHOSKIA_KEEP_SOURCES_zero_opts_true_wins) {
     CompiledShaderProgram program = c.compileToProgram(kMinimalUnlit, opts);
 
     if (!program.success) {
-        std::cerr << "[compileToProgram test] SKIP: shaderc not available.\n";
+        CHECK(program.success);
         return;
     }
-    CHECK(program.sources.count("vertex_stage_0") == 1);
+    CHECK(program.sources.count(detail::vertexStageKey(0)) == 1);
 }
 
 // Env var override: env=0 + opts=false �?sources empty (both want it
@@ -266,11 +278,11 @@ TEST_CASE(env_AY_PHOSKIA_DUMP_SC_overrides_opts_false) {
     // missing path `program.success` is false and we don't assert
     // the file exists (the test can't run end-to-end).
     if (!program.success) {
-        std::cerr << "[dump_sc test] SKIP: shaderc not available.\n";
+        CHECK(program.success);
         return;
     }
-    CHECK(fileExists(opts.dumpDir + "/vertex_stage_0"));
-    CHECK(fileExists(opts.dumpDir + "/fragment_stage_0"));
+    CHECK(fileExists(opts.dumpDir + ("/" + detail::vertexStageKey(0))));
+    CHECK(fileExists(opts.dumpDir + ("/" + detail::fragmentStageKey(0))));
 }
 
 TEST_CASE(env_AY_PHOSKIA_DUMP_SC_combines_with_opts_true) {
@@ -285,10 +297,10 @@ TEST_CASE(env_AY_PHOSKIA_DUMP_SC_combines_with_opts_true) {
     CompiledShaderProgram program = c.compileToProgram(kMinimalUnlit, opts);
 
     if (!program.success) {
-        std::cerr << "[dump_sc test] SKIP: shaderc not available.\n";
+        CHECK(program.success);
         return;
     }
-    CHECK(fileExists(opts.dumpDir + "/vertex_stage_0"));
+    CHECK(fileExists(opts.dumpDir + ("/" + detail::vertexStageKey(0))));
 }
 
 TEST_CASE(env_AY_PHOSKIA_DUMP_SC_zero_opts_true_wins) {
@@ -303,11 +315,11 @@ TEST_CASE(env_AY_PHOSKIA_DUMP_SC_zero_opts_true_wins) {
     CompiledShaderProgram program = c.compileToProgram(kMinimalUnlit, opts);
 
     if (!program.success) {
-        std::cerr << "[dump_sc test] SKIP: shaderc not available.\n";
+        CHECK(program.success);
         return;
     }
     // opts wins because the contract is true-wins OR.
-    CHECK(fileExists(opts.dumpDir + "/vertex_stage_0"));
+    CHECK(fileExists(opts.dumpDir + ("/" + detail::vertexStageKey(0))));
 }
 
 TEST_CASE(env_AY_PHOSKIA_DUMP_SC_zero_opts_false_is_off) {
@@ -322,10 +334,10 @@ TEST_CASE(env_AY_PHOSKIA_DUMP_SC_zero_opts_false_is_off) {
     CompiledShaderProgram program = c.compileToProgram(kMinimalUnlit, opts);
 
     if (!program.success) {
-        std::cerr << "[dump_sc test] SKIP: shaderc not available.\n";
+        CHECK(program.success);
         return;
     }
-    CHECK(!fileExists(opts.dumpDir + "/vertex_stage_0"));
+    CHECK(!fileExists(opts.dumpDir + ("/" + detail::vertexStageKey(0))));
 }
 
 // Parse error surfaces in program.errors without throwing.
@@ -387,13 +399,14 @@ TEST_CASE(compileToProgram_respects_dump_dir) {
     CompiledShaderProgram program = c.compileToProgram(kMinimalUnlit, opts);
 
     if (!program.success) {
-        std::cerr << "[dump_dir test] SKIP: shaderc not available, "
+        std::cerr << "[dump_dir test] FAIL: configured shaderc compilation failed, "
                      "opt-in dump path not exercised.\n";
+        CHECK(program.success);
         return;
     }
     // Happy path: dumpDir is created and the .sc files exist.
-    CHECK(fileExists(opts.dumpDir + "/vertex_stage_0"));
-    CHECK(fileExists(opts.dumpDir + "/fragment_stage_0"));
+    CHECK(fileExists(opts.dumpDir + ("/" + detail::vertexStageKey(0))));
+    CHECK(fileExists(opts.dumpDir + ("/" + detail::fragmentStageKey(0))));
     CHECK(fileExists(opts.dumpDir + "/varying_definitions"));
 }
 

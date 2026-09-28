@@ -96,6 +96,17 @@ void BuiltinFunctionRegistry::registerDefaults() {
             std::vector<std::shared_ptr<Type>>{ sk_IV4, sk_V4, sk_M4, sk_V4 },
             sk_V4, sk_stub,
             "Linear-blend skinning transform (fallback non-array mat4 bones)");
+        // BoneIndices vertex semantics are vec4 (packed numeric indices).
+        // The converter casts each lane to int; preserve that frontend type
+        // instead of leaving the call unresolved and inferring mat4 * unknown.
+        registerFunction("skinningMatrix",
+            std::vector<std::shared_ptr<Type>>{ sk_V4, sk_V4, sk_M4Array, sk_V4 },
+            sk_V4, sk_stub,
+            "Linear-blend skinning transform (vec4 vertex indices, mat4[] bones)");
+        registerFunction("skinningMatrix",
+            std::vector<std::shared_ptr<Type>>{ sk_V4, sk_V4, sk_M4, sk_V4 },
+            sk_V4, sk_stub,
+            "Linear-blend skinning transform (vec4 vertex indices, fallback mat4 bones)");
     }
 
     // Phase 2 Step 2: placeholder runtime impl. The BGFX backend

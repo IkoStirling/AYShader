@@ -191,8 +191,7 @@ TEST_CASE(file_watch_helpers_roundtrip)
 TEST_CASE(hot_reload_debounce_invalidates_resource)
 {
     if (!shadercAvailable() || !bgfxCommonAvailable()) {
-        std::cerr << "[ShaderHotReload test] SKIP: shaderc/bgfx common not available.\n";
-        return;
+        SKIP_TEST("Configured shaderc or bgfx include dependency is unavailable");
     }
 
     PUTENV_S("AY_PHOSKIA_KEEP_SOURCES", "");
@@ -200,7 +199,8 @@ TEST_CASE(hot_reload_debounce_invalidates_resource)
 
     BgfxNoopScope bgfxScope;
     if (!bgfxScope.active) {
-        std::cerr << "[ShaderHotReload test] SKIP: bgfx::init(Noop) failed.\n";
+        std::cerr << "[ShaderHotReload test] FAIL: bgfx::init(Noop) failed.\n";
+        CHECK_MSG(false, "Required Noop initialization or shader compilation failed");
         return;
     }
 

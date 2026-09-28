@@ -93,9 +93,7 @@ TEST_CASE(set_default_then_default_ctor_uses_it) {
 
     const std::string path = AY_SHADER_SHADERC_HINT;
     if (!fileExists(path)) {
-        std::cerr << "[shaderc test] SKIP: configured shaderc not at '"
-                  << path << "'.\n";
-        return;
+        SKIP_TEST("Configured shaderc or bgfx include dependency is unavailable");
     }
 
     AYShadercDriver::setDefaultExecutable(path);
@@ -174,9 +172,7 @@ TEST_CASE(explicit_path_ctor_uses_given_path) {
     clearPhase36Env();
     const std::string path = AY_SHADER_SHADERC_HINT;
     if (!fileExists(path)) {
-        std::cerr << "[shaderc test] SKIP: configured shaderc not at '"
-                  << path << "'.\n";
-        return;
+        SKIP_TEST("Configured shaderc or bgfx include dependency is unavailable");
     }
     AYShadercDriver drv(path);
     CHECK(drv.shadercPath() == path);
@@ -210,9 +206,7 @@ TEST_CASE(shaderc_driver_in_memory_to_bytes_round_trip) {
 
     const std::string path = AY_SHADER_SHADERC_HINT;
     if (!fileExists(path)) {
-        std::cerr << "[shaderc test] SKIP: configured shaderc not at '"
-                  << path << "' �?round-trip test requires shaderc.\n";
-        return;
+        SKIP_TEST("Configured shaderc or bgfx include dependency is unavailable");
     }
 
     // Configure the global default so the test reflects how a real

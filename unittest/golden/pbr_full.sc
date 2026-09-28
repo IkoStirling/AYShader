@@ -46,19 +46,19 @@ void main()
     vec4 baseColor = texture2D(albedoMap, v_texcoord0);
     vec4 _normalSample = texture2D(normalMap, v_texcoord0);
     float NdotV = max(dot(N, V), 0.001);
-    vec3 F0 = mix(vec3(0.04), baseColor.rgb, metallic);
-    vec3 F = (F0 + (vec3(1.0) - F0) * pow(1.0 - NdotV, 5.0));
-    vec3 Fcc = (F0 + (max(vec3(clearcoatRoughness * clearcoatRoughness), vec3(1.0) - F0) - F0) * pow(1.0 - NdotV, 5.0));
+    vec3 F0 = mix(vec3_splat(0.04), baseColor.rgb, metallic);
+    vec3 F = (F0 + (vec3_splat(1.0) - F0) * pow(1.0 - NdotV, 5.0));
+    vec3 Fcc = (F0 + (max(vec3_splat(clearcoatRoughness * clearcoatRoughness), vec3_splat(1.0) - F0) - F0) * pow(1.0 - NdotV, 5.0));
     float D = (roughness * roughness / (3.14159265 * pow(NdotV * NdotV * (roughness * roughness - 1.0) + 1.0, 2.0)));
     float G = (NdotV / (NdotV * (1.0 - ((roughness + 1.0) * (roughness + 1.0)) / 8.0) + ((roughness + 1.0) * (roughness + 1.0)) / 8.0));
-    vec3 specular = (D * (G * (F / max((4.0 * NdotV), 0.001))));
-    vec3 diffuseIBL = (baseColor.rgb * (envColor * ((vec3(1.0) - F) * (1.0 - metallic))));
-    vec3 result = (baseColor.rgb + (specular + diffuseIBL));
-#ifndef BGFX_VARIANT_USE_EMISSION
-    // variant: skipped unless --define BGFX_VARIANT_USE_EMISSION
-#else
+    vec3 specular = (((D * G) * F) / max((4.0 * NdotV), 0.001));
+    vec3 diffuseIBL = (((baseColor.rgb * envColor) * (vec3_splat(1.0) - F)) * (1.0 - metallic));
+    vec3 result = ((baseColor.rgb + specular) + diffuseIBL);
+#ifdef BGFX_VARIANT_USE_EMISSION
     (result = (result + emission));
     gl_FragColor = vec4(result, 1.0);
+#else
+    // variant: skipped unless --define BGFX_VARIANT_USE_EMISSION
 #endif
 }
 

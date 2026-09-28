@@ -35,6 +35,7 @@ target_link_libraries(${TEST_NAME} PRIVATE
 # Defined AFTER add_executable so add_dependencies can target the
 # real ${TEST_NAME} executable (CMake rejects target-level deps on
 # non-existent targets).
+file(GLOB AY_SHADER_GOLDEN_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/golden/*")
 add_custom_command(
     OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/golden/.stamp
     COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -42,7 +43,7 @@ add_custom_command(
         ${CMAKE_CURRENT_BINARY_DIR}/golden
     COMMAND ${CMAKE_COMMAND} -E touch
         ${CMAKE_CURRENT_BINARY_DIR}/golden/.stamp
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/golden
+    DEPENDS ${AY_SHADER_GOLDEN_FILES}
     COMMENT "Syncing unittest/golden/ into the build tree"
     VERBATIM
 )
@@ -54,6 +55,7 @@ add_dependencies(${TEST_NAME} ay_shader_golden_fixtures)
 # AYBgfx.cmake provides shaderc from vcpkg, tracked common shader resources
 # from AYShader, and bgfx_shader.sh/bgfx_compute.sh from the package include.
 target_compile_definitions(${TEST_NAME} PRIVATE
+    AY_SHADER_GOLDEN_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden"
     AY_SHADER_SHADERC_HINT="${AY_SHADER_SHADERC_PATH}"
     AY_SHADER_BGFX_COMMON_HINT="${AY_SHADER_BGFX_COMMON_DIR}"
     AY_SHADER_BGFX_SRC_HINT="${AY_SHADER_BGFX_SRC_DIR}"
@@ -63,4 +65,7 @@ if(MSVC)
     target_compile_options(${TEST_NAME} PRIVATE /Zc:__cplusplus /Zc:preprocessor)
 endif()
 
-ay_add_test(${TEST_NAME})
+ay_add_test_tiers(${TEST_NAME} PREFIX shader DEFAULT_TIER integration
+    FAST_SUITES LexerTests ParserTests ParserRecoveryTests BuiltinTypesTests
+                HandleABITests Std140LayoutTests DiagnosticStructureTests
+    TIMEOUT 240 RUN_SERIAL)

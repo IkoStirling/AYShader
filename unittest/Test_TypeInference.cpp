@@ -426,6 +426,27 @@ TEST_CASE(mat4_constructor_from_four_vec4) {
     CHECK(t->equals(*m4));
 }
 
+TEST_CASE(skinning_matrix_accepts_numeric_vertex_indices_and_integer_indices) {
+    const std::shared_ptr<Type> indicesTypes[] = {
+        BuiltinTypes::Vec4(), std::make_shared<VectorType>(PrimitiveType::Int, 4)};
+    for (const auto& indicesType : indicesTypes) {
+      for (const size_t boneCount : {size_t(0), size_t(128)}) {
+        InferenceEnv e;
+        e.env.addVariable("indices", indicesType);
+        e.env.addVariable("weights", BuiltinTypes::Vec4());
+        e.env.addVariable("bones", std::make_shared<ArrayType>(BuiltinTypes::Mat4(), boneCount));
+        e.env.addVariable("position", BuiltinTypes::Vec4());
+        std::vector<ExprPtr> args;
+        for (const char* name : {"indices", "weights", "bones", "position"}) {
+            args.push_back(std::make_unique<IdentifierExpr>(name));
+        }
+        CallExpr call(std::make_unique<IdentifierExpr>("skinningMatrix"), std::move(args));
+        auto type = resolve(e.inference.infer(call));
+        CHECK(type->equals(*BuiltinTypes::Vec4()));
+      }
+    }
+}
+
 // ===== End-to-end via parser =====
 
 TEST_CASE(inferred_return_type_via_parser_for_vec4) {

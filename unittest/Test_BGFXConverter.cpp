@@ -1221,13 +1221,15 @@ TEST_CASE(skinning_matrix_call_expands_to_weighted_sum) {
                 in boneId : boneindices
                 in boneWt : boneweights
                 let pos = vec4(1.0)
-                return skinningMatrix(boneId, boneWt, Skeleton.bones, pos)
+                let skinned = skinningMatrix(boneId, boneWt, Skeleton.bones, pos)
+                return modelViewProjection * skinned
             }
             fragment { return vec4(1.0) }
         }
     )";
     auto files = compileFirstMaterial(src);
     // The expansion must reference the bones arg with index casts.
+    CHECK(files.vertex.find("vec4 skinned =") != std::string::npos);
     CHECK(files.vertex.find("Skeleton.bones[int(a_indices.x)]") != std::string::npos);
     CHECK(files.vertex.find("Skeleton.bones[int(a_indices.y)]") != std::string::npos);
     CHECK(files.vertex.find("Skeleton.bones[int(a_indices.z)]") != std::string::npos);
