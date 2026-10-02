@@ -195,10 +195,16 @@ struct BgfxNoopScope {
 
 TEST_SUITE(ShaderDiskCacheTests)
 
+TEST_CASE(disk_cache_uses_registered_suffix)
+{
+    const std::string path = diskCacheFilePath("cache", "abc123");
+    CHECK(path == "cache/abc123.shc");
+}
+
 TEST_CASE(disk_cache_roundtrip_preserves_program)
 {
     const CompiledShaderProgram original = makeSampleProgram();
-    const std::string path = uniqueTempCacheDir() + "/roundtrip.aysc";
+    const std::string path = uniqueTempCacheDir() + "/roundtrip.shc";
 
     CHECK(saveCompiledProgramToDisk(path, original));
     CHECK(fileExists(path));
@@ -224,7 +230,7 @@ TEST_CASE(disk_cache_roundtrip_preserves_program)
 
 TEST_CASE(disk_cache_rejects_bad_magic)
 {
-    const std::string path = uniqueTempCacheDir() + "/bad_magic.aysc";
+    const std::string path = uniqueTempCacheDir() + "/bad_magic.shc";
     {
         std::FILE* f = std::fopen(path.c_str(), "wb");
         CHECK(f != nullptr);
@@ -239,7 +245,7 @@ TEST_CASE(disk_cache_rejects_bad_magic)
 
 TEST_CASE(disk_cache_rejects_oversized_blob_length)
 {
-    const std::string path = uniqueTempCacheDir() + "/oversized_blob.aysc";
+    const std::string path = uniqueTempCacheDir() + "/oversized_blob.shc";
     std::FILE* f = std::fopen(path.c_str(), "wb");
     CHECK(f != nullptr);
     if (f == nullptr) {
@@ -293,6 +299,7 @@ TEST_CASE(pool_disk_cache_persists_across_pool_instances)
         oss << "|15||00|" << kMinimalUnlit;
         const std::string cacheFile =
             diskCacheFilePath(cacheDir, sha256Hex(oss.str()));
+        CHECK(cacheFile.ends_with(".shc"));
         CHECK(fileExists(cacheFile));
     }
 

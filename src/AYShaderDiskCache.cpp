@@ -13,6 +13,7 @@
 
 #include "AYShader/detail/ShaderDiskCache.h"
 
+#include <AYAssetFormat/AssetFormat.h>
 #include <AYIO/File.h>
 #include <AYIO/Directory.h>
 
@@ -274,7 +275,7 @@ bool ensureParentDirectory(const std::string& filePath)
 // a caller-supplied key.  Before this fix, any slash, backslash, `..`, or
 // drive letter in the key was passed straight through, which meant a
 // misbehaving caller (or a shader name that leaked a filesystem path from
-// upstream) could write `.aysc` files anywhere on the host.  We now refuse
+// upstream) could write cache files anywhere on the host. We now refuse
 // to construct a path when the key isn't a safe POSIX basename fragment.
 //
 // The sanitiser is intentionally restrictive: hex digests from
@@ -365,9 +366,11 @@ std::string diskCacheFilePath(const std::string& cacheDirectory,
         // Absolute cache roots are fine — the caller owns the choice.  We
         // still go through the same join so the rest of the function
         // remains a single string concatenation.
-        return cacheDirectory + "/" + safe + ".aysc";
+        return cacheDirectory + "/" + safe
+            + std::string(asset_format::suffix(asset_format::Id::ShaderCache));
     }
-    return cacheDirectory + "/" + safe + ".aysc";
+    return cacheDirectory + "/" + safe
+        + std::string(asset_format::suffix(asset_format::Id::ShaderCache));
 }
 
 bool loadCompiledProgramFromDisk(const std::string& path,
@@ -446,7 +449,7 @@ bool saveCompiledProgramToDisk(const std::string& path,
 
     // Serialize to an in-memory buffer first, then atomically write to disk
     // via AYIO. atomicWrite does write-temp-then-rename, which means a crash
-    // mid-write leaves the previous good .aysc on disk rather than a
+    // mid-write leaves the previous good .shc on disk rather than a
     // truncated corrupted one. Pre-migration used std::ofstream(trunc), which
     // truncated before any bytes were written — strict regression risk.
     std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);

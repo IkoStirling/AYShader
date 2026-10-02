@@ -39,7 +39,7 @@ shaderc 的进程执行复用 `AYPlatform/ChildProcess.h`，统一 UTF-8 参数�
 | Phase 4-E | `AYShader/ShaderProgram.h` 剥离 bgfx；legacy `ShaderProgram` → `detail/` | ✅ |
 | Phase 4-G | `AYShader.h` 不再 include legacy cache/converter（frontend 零 bgfx） | ✅ |
 | Phase 4-D | std140 layout 内化 + `getUniformBlockSize` / field offset API | ✅ |
-| Phase 4-I | 磁盘 cache tier（`.aysc`）收编进 `ShaderResourcePool`；key = SHA256 | ✅ |
+| Phase 4-I | 磁盘 cache tier（现行 `.shc`，旧 `.aysc` 自动重建）收编进 `ShaderResourcePool`；key = SHA256 | ✅ |
 | Phase 4-F | `DrawCallContext::state` + `submit()` 帧期 `bgfx::setState` | ✅ |
 | Phase 4-J | hot-reload：`compileFromFile` + `pollHotReload`（mtime + 100ms debounce） | ✅ |
 | Phase 4-K | `Test_ShaderCacheIntegration` — frontend TU 不含 `<bgfx/bgfx.h>` | ✅（contract 层） |

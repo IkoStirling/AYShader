@@ -39,6 +39,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/AYBgfx.cmake")
 
 target_link_libraries(AYShader PUBLIC
     AYIO
+    AYAssetFormat
     bgfx::bgfx
 )
 

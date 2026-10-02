@@ -3116,7 +3116,7 @@ AYShader 的 production `src/` 通过 `ayt::io`（AYFoundation/AYIO）收敛所�
 
 **决策**：
 - 文件读写主路径用 `ayt::io::File` (raw `read`/`write`) + `queryAttributes` 预 reserve；增加 `File::readAllText` / `readAllBytes` / `writeAllText` / `writeAllBytes` 四个便利函数（RFC-011 配套扩展）
-- 整文件读（.aysc cache、.phoskia 源）用 `ayt::io::MemoryMappedFile`（零拷贝）
+- 整文件读（现行 .shc cache、.phoskia 源）用 `ayt::io::MemoryMappedFile`（零拷贝）
 - 临时文件用 `ayt::io::TempFile::tempDir()` 探测系统 temp 目录，**保留手写的 pid_counter 命名以维持 .sc 后缀**（见 §16.5）
 - 写 cache / dump .sc 用 `ayt::io::File::writeAllText`（dump 是 best-effort，不需要 atomicWrite 的额外开销）
 - env-var 读取统一走 `ayt::io::env::get` / `env::contains`（RFC-013 新增 API）
@@ -3130,7 +3130,7 @@ AYShader 的 production `src/` 通过 `ayt::io`（AYFoundation/AYIO）收敛所�
 | `AYShadercDriver.cpp::compile`（写 .sc） | `std::ofstream` + RAII `::remove` cleanup | `ayt::io::File::writeAllText` + `File::remove` |
 | `AYShadercDriver.cpp::compile`（读 .bin） | `std::ifstream` + `istreambuf_iterator` | `ayt::io::MemoryMappedFile` |
 | `AYShaderDiskCache.cpp::loadCompiledProgram` | `std::ifstream` | `MemoryMappedFile` + `std::stringstream` |
-| `AYShaderDiskCache.cpp::saveCompiledProgram` | `std::ofstream(trunc)` | `File::atomicWrite`（write-temp-then-rename，防 crash 残留 truncated .aysc）|
+| `AYShaderDiskCache.cpp::saveCompiledProgram` | `std::ofstream(trunc)` | `File::atomicWrite`（write-temp-then-rename，防 crash 残留 truncated .shc）|
 | `AYShaderFileWatch.cpp::fileMtimeMs` | `GetFileAttributesExA` / `::stat` | `File::lastModifiedTime` × 1000（见 §16.4）|
 | `AYShaderFileWatch.cpp::readTextFile` | `std::ifstream` + seekg/tellg | `File::readAllText` + `File::queryAttributes` 兜底 |
 | `AYBGFXConverter.cpp::dumpScFile` | `std::ofstream` + `dir + "/" + key` 拼接 | `File::writeAllText` + `path::join` |
